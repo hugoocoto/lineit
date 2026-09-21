@@ -30,11 +30,12 @@ typedef struct Object {
                 union shape_data {
                         struct {
                                 int width, height;
-                        } square; // square
+                        } square;
                 } as;
                 void (*draw)(struct Object *);                       // custom draw function - required
                 int (*point_collide)(int x, int y, struct Object *); // true if x, y collide with the object
         } shape;
+        Da(struct Object *) children;
 } Object;
 
 struct Globals {
@@ -52,39 +53,39 @@ struct Globals {
         struct camera {
                 int x;
                 int y;
+                int use_global_geometry; // where to use screen geometry or
+                                         // window geometry
         } camera;
 } g = {
-        .window.width      = 300,
-        .window.heigh      = 300,
-        .window.title      = "Title",
-        .window.background = BLACK,
+        .window.width               = 300,
+        .window.heigh               = 300,
+        .window.title               = "Title",
+        .window.background          = BLACK,
+        .camera.use_global_geometry = false,
 };
 
-/* Window coords (mouse input, raylib drawing) -> world coords, which are
- * relative to the screen and offset by the camera. */
 static inline int
 to_world_x(int x)
 {
-        return x + GetWindowPosition().x + g.camera.x;
+        return x + (g.camera.use_global_geometry ? GetWindowPosition().x : 0) + g.camera.x;
 }
 
 static inline int
 to_world_y(int y)
 {
-        return y + GetWindowPosition().y + g.camera.y;
+        return y + (g.camera.use_global_geometry ? GetWindowPosition().y : 0) + g.camera.y;
 }
 
-/* World coords -> window coords, what raylib draw calls expect. */
 static inline int
 to_window_x(int x)
 {
-        return x - GetWindowPosition().x - g.camera.x;
+        return x - (g.camera.use_global_geometry ? GetWindowPosition().x : 0) - g.camera.x;
 }
 
 static inline int
 to_window_y(int y)
 {
-        return y - GetWindowPosition().y - g.camera.y;
+        return y - (g.camera.use_global_geometry ? GetWindowPosition().y : 0) - g.camera.y;
 }
 
 Object *
@@ -137,17 +138,32 @@ add_object(Object *o)
 }
 
 void
+inner_render_objects(Da(struct Object *) * _o)
+{
+        static int cum_x = 0;
+        static int cum_y = 0;
+        if (_o) Da_foreach(o, *_o)
+                {
+                        if ((*o)->properties.skip_render) continue;
+                        if ((*o)->shape.draw == NULL) {
+                                printf("Error: object does not have draw method\n");
+                                continue;
+                        }
+                        (*o)->shape.draw(*o);
+                        if ((*o)->children.count > 0) {
+                                cum_x += (*o)->position.x;
+                                cum_y += (*o)->position.y;
+                                inner_render_objects((void *) &(*o)->children);
+                                cum_x -= (*o)->position.x;
+                                cum_y -= (*o)->position.y;
+                        }
+                }
+}
+
+void
 render_objects()
 {
-        Da_foreach(o, g.object_list)
-        {
-                if ((*o)->properties.skip_render) continue;
-                if ((*o)->shape.draw == NULL) {
-                        printf("Error: object does not have draw method\n");
-                        continue;
-                }
-                (*o)->shape.draw(*o);
-        }
+        inner_render_objects((void *) &g.object_list);
 }
 
 Object *
@@ -191,6 +207,7 @@ process_events()
 void
 loop()
 {
+        SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
         InitWindow(g.window.width, g.window.heigh, g.window.title);
 
         Object *square = new_square(100);
@@ -204,6 +221,13 @@ loop()
                 render_objects();
                 EndDrawing();
         }
+}
+
+void
+objects_free()
+{
+        Da_foreach(o, g.object_list) if (*o) free(*o);
+        Da_destroy(&g.object_list);
 }
 
 int
@@ -220,15 +244,17 @@ main(int argc, char **argv)
 
         if (f_version) {
                 fprintf(stdout, "%s, version %s\n", basename(argv[0]), VERSION);
-                fprintf(stdout, "Copyright (C) 2025 Hugo Coto Flórez.\n");
+                fprintf(stdout, "Copyright (C) 2026 Hugo Coto Flórez.\n");
                 fprintf(stdout, "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n");
                 fprintf(stdout, "\n");
                 fprintf(stdout, "This is free software; you are free to change and redistribute it.\n");
                 fprintf(stdout, "There is NO WARRANTY, to the extent permitted by law.\n");
+                exit(0);
         }
 
         loop();
 
         flag_free();
+        objects_free();
         return 0;
 }
