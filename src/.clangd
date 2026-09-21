@@ -1,0 +1,7 @@
+CompileFlags:
+  Add:
+    - -I../raylib-6.0_linux_amd64/include
+    - -I../thirdparty/flag.h
+    - -I../thirdparty/conf.h
+    - -I/usr/include/lua5.1
+    - -std=c11
