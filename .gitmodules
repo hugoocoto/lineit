@@ -1,0 +1,3 @@
+[submodule "thirdparty/cum.h"]
+	path = thirdparty/cum.h
+	url = https://github.com/hugoocoto/cum.h
