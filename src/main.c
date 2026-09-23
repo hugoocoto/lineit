@@ -214,6 +214,22 @@ add_object(Object *o)
         Da_append(&g.object_list, o);
 }
 
+// move o to the end of the list it lives in (its parent's children, or the
+// global object list), so it is rendered last and stays on top of its
+// siblings.
+void
+raise_object(Object *o)
+{
+        Obj_List *list = o->parent ? &o->parent->children : &g.object_list;
+        Da_foreach(it, *list)
+        {
+                if (*it != o) continue;
+                Da_remove(list, Da_index(it, list));
+                Da_append(list, o);
+                return;
+        }
+}
+
 void
 inner_render_objects(Obj_List _o)
 {
@@ -415,6 +431,7 @@ on_event_default_dragable(Object *self, Event *e)
                         .x = self->position.x - e->mouse.x,
                         .y = self->position.y - e->mouse.y,
                 };
+                raise_object(self);
                 return 1;
         case EV_DRAG:
                 self->position.x = e->mouse.x + g.mouse_state.offset.x;
