@@ -41,6 +41,7 @@ struct Object {
         } position;
         struct properties {
                 Color color;
+                Color color_alt;
                 int skip_render;
         } properties;
         struct state {
@@ -51,6 +52,8 @@ struct Object {
                         INVALID = 0,
                         RECTANGLE,
                         TEXT,
+                        CONNECTOR,
+                        CIRCLE,
                 } type;
                 union shape_data {
                         struct {
@@ -61,6 +64,13 @@ struct Object {
                                 int size;
                                 int spacing;
                         } text;
+                        struct {
+                                int radius;
+                                Object *next_obj;
+                        } connector;
+                        struct {
+                                int radius;
+                        } circle;
                 } as;
                 void (*draw)(struct Object *);                       // custom draw function - required
                 int (*point_collide)(int x, int y, struct Object *); // true if (x, y) collide with the object
@@ -125,6 +135,36 @@ get_mouse_world()
         return GetScreenToWorld2D(GetMousePosition(), get_camera());
 }
 
+Object *
+get_object_at_xy_inner(Obj_List obj, int x, int y)
+{
+        // reverse of render order: objects drawn last are on top.
+        Da_foreach_reverse(o, obj)
+        {
+                Object *c = *o;
+                if (c->children.count > 0) {
+                        // children positions are relative to their parent, so
+                        // move the point into the parent's local space.
+                        c = get_object_at_xy_inner(c->children,
+                                                   x - c->position.x,
+                                                   y - c->position.y);
+                        // if get_object_at_xy_inner returns non null, the
+                        // object that is returned already has point collider
+                        // and the collider returns true.
+                        if (c) return c;
+                        c = *o; // came back if none of their childs collide.
+                }
+                if (c->shape.point_collide && c->shape.point_collide(x, y, c)) return c;
+        }
+        return NULL;
+}
+
+Object *
+get_object_at_xy(int x, int y)
+{
+        return get_object_at_xy_inner(g.object_list, x, y);
+}
+
 static inline void
 attach(Object *self, Object *parent)
 {
@@ -144,12 +184,170 @@ object_world_position(Object *o)
         return p;
 }
 
+void
+raise_object(Object *o)
+{
+        // move the parent to the top
+        if (o->parent) raise_object(o->parent);
+
+        // move itself to the top, from the parent children or from the global objects
+        Obj_List *list = o->parent ? &o->parent->children : &g.object_list;
+        Da_foreach(it, *list)
+        {
+                if (*it != o) continue;
+                Da_remove(list, Da_index(it, list));
+                Da_append(list, o);
+                return;
+        }
+}
+
 Object *
 new_empty_object()
 {
         Object *o = Memdup((Object) { 0 });
         if (o == NULL) abort();
         o->properties.color = RED;
+        return o;
+}
+
+int
+circle_point_collide(int x, int y, Object *o)
+{
+        return CheckCollisionPointCircle((Vector2) { x, y },
+                                         (Vector2) { o->position.x, o->position.y },
+                                         o->shape.as.circle.radius);
+}
+
+void
+circle_draw(Object *o)
+{
+        DrawCircle(o->position.x, o->position.y, o->shape.as.circle.radius, o->properties.color);
+}
+
+Object *
+new_circle(int r)
+{
+        Object *o                 = new_empty_object();
+        o->shape.type             = CIRCLE;
+        o->shape.as.circle.radius = r;
+        o->shape.draw             = circle_draw;
+        o->shape.point_collide    = circle_point_collide;
+        return o;
+}
+
+
+int
+connector_point_collide(int x, int y, Object *o)
+{
+        return 0 ||
+               CheckCollisionPointCircle((Vector2) { x, y }, (Vector2) { o->position.x, o->position.y }, o->shape.as.connector.radius);
+}
+
+void
+connector_draw(Object *o)
+{
+        DrawCircle(o->position.x, o->position.y, o->shape.as.connector.radius, o->properties.color);
+        if (o->shape.as.connector.next_obj) {
+                Vector2 pos = object_world_position(o->shape.as.connector.next_obj);
+                DrawLineEx((Vector2) { o->position.x, o->position.y }, pos, o->shape.as.connector.radius * 2, o->properties.color);
+        }
+}
+
+int
+connector_end_on_event(Object *self, Event *e)
+{
+        if (e->button != MOUSE_BUTTON_LEFT) return 0;
+        switch (e->type) {
+        case EV_PRESS:
+                g.mouse_state.offset = (Vector2) {
+                        .x = self->position.x - e->mouse.x,
+                        .y = self->position.y - e->mouse.y,
+                };
+                raise_object(self);
+                return 1;
+        case EV_DRAG:
+                self->position.x = e->mouse.x + g.mouse_state.offset.x;
+                self->position.y = e->mouse.y + g.mouse_state.offset.y;
+                return 1;
+        default:
+                return 0;
+        }
+}
+
+int
+connector_on_event(Object *self, Event *e)
+{
+        switch (e->type) {
+        case EV_PRESS: {
+                if (self->shape.as.connector.next_obj != NULL &&
+                    self->shape.as.connector.next_obj->parent != NULL) {
+                        // next already set
+                        return 1;
+                        // in the future it has to remove the next object or
+                        // something like that
+                }
+
+                Vector2 p            = object_world_position(self);
+                g.mouse_state.offset = (Vector2) {
+                        .x = p.x - e->mouse.x,
+                        .y = p.y - e->mouse.y,
+                };
+                raise_object(self);
+
+                Object *o                         = new_circle(self->shape.as.connector.radius);
+                o->properties.color               = YELLOW;
+                o->position.x                     = p.x;
+                o->position.y                     = p.y;
+                self->shape.as.connector.next_obj = o;
+                return 1;
+        }
+
+        case EV_DRAG:
+                if (self->shape.as.connector.next_obj != NULL &&
+                    self->shape.as.connector.next_obj->parent != NULL) {
+                        // next already set
+                        return 1;
+                        // in the future it has to remove the next object or
+                        // something like that
+                }
+                self->shape.as.connector.next_obj->position.x = e->mouse.x + g.mouse_state.offset.x;
+                self->shape.as.connector.next_obj->position.y = e->mouse.y + g.mouse_state.offset.y;
+                return 1;
+
+        case EV_RELEASE: {
+                if (self->shape.as.connector.next_obj != NULL &&
+                    self->shape.as.connector.next_obj->parent != NULL) {
+                        // next already set
+                        return 1;
+                        // in the future it has to remove the next object or
+                        // something like that
+                }
+                Object *hit = get_object_at_xy(e->mouse.x, e->mouse.y);
+
+                if (hit == NULL) {
+                        self->shape.as.connector.next_obj = NULL;
+                        return 1;
+                }
+
+                self->shape.as.connector.next_obj = hit;
+                return 0;
+        }
+
+        default:
+                return 0;
+        }
+}
+
+Object *
+new_connector()
+{
+        Object *o                    = new_empty_object();
+        o->shape.type                = CONNECTOR;
+        o->shape.as.connector.radius = 10;
+        o->shape.draw                = connector_draw;
+        o->shape.point_collide       = connector_point_collide;
+        o->on_event                  = connector_on_event;
+
         return o;
 }
 
@@ -187,6 +385,27 @@ new_rectangle(int w, int h)
         return o;
 }
 
+Object *
+new_block(int w, int h)
+{
+        Object *o = new_rectangle(w, h);
+
+        Object *connector           = new_connector();
+        connector->properties.color = BLUE;
+        connector->position.x       = w;
+        connector->position.y       = h / 2;
+
+        Object *end           = new_circle(connector->shape.as.connector.radius);
+        end->properties.color = LIGHTGRAY;
+        end->position.x       = 0;
+        end->position.y       = h / 2;
+        end->on_event         = connector_end_on_event;
+
+        attach(connector, o);
+        attach(end, o);
+        return o;
+}
+
 void
 text_draw(Object *o)
 {
@@ -212,22 +431,6 @@ void
 add_object(Object *o)
 {
         Da_append(&g.object_list, o);
-}
-
-// move o to the end of the list it lives in (its parent's children, or the
-// global object list), so it is rendered last and stays on top of its
-// siblings.
-void
-raise_object(Object *o)
-{
-        Obj_List *list = o->parent ? &o->parent->children : &g.object_list;
-        Da_foreach(it, *list)
-        {
-                if (*it != o) continue;
-                Da_remove(list, Da_index(it, list));
-                Da_append(list, o);
-                return;
-        }
 }
 
 void
@@ -265,36 +468,6 @@ void
 render_objects()
 {
         inner_render_objects(g.object_list);
-}
-
-Object *
-get_object_at_xy_inner(Obj_List obj, int x, int y)
-{
-        // reverse of render order: objects drawn last are on top.
-        Da_foreach_reverse(o, obj)
-        {
-                Object *c = *o;
-                if (c->children.count > 0) {
-                        // children positions are relative to their parent, so
-                        // move the point into the parent's local space.
-                        c = get_object_at_xy_inner(c->children,
-                                                   x - c->position.x,
-                                                   y - c->position.y);
-                        // if get_object_at_xy_inner returns non null, the
-                        // object that is returned already has point collider
-                        // and the collider returns true.
-                        if (c) return c;
-                        c = *o; // came back if none of their childs collide.
-                }
-                if (c->shape.point_collide && c->shape.point_collide(x, y, c)) return c;
-        }
-        return NULL;
-}
-
-Object *
-get_object_at_xy(int x, int y)
-{
-        return get_object_at_xy_inner(g.object_list, x, y);
 }
 
 // multiply zoom by factor keeping the world point under screen_point fixed.
@@ -447,16 +620,16 @@ on_event_menu_button(Object *self, Event *e)
 {
         switch (e->type) {
         case EV_HOVER_IN:
-                self->properties.color = SKYBLUE;
+                Swap(self->properties.color, self->properties.color_alt);
                 return 1;
         case EV_HOVER_OUT:
-                self->properties.color = BLUE;
+                Swap(self->properties.color, self->properties.color_alt);
                 return 1;
         case EV_CLICK:
                 if (e->button == MOUSE_BUTTON_LEFT) {
                         int l                       = 100;
-                        Object *rectangle           = new_rectangle(l, l);
-                        rectangle->properties.color = RED;
+                        Object *rectangle           = new_block(l, l);
+                        rectangle->properties.color = GREEN;
                         rectangle->on_event         = on_event_default_dragable;
                         rectangle->position.x       = e->mouse.x - l / 2.0;
                         rectangle->position.y       = e->mouse.y - l / 2.0;
@@ -481,19 +654,41 @@ init_menu_bar()
         Object *rectangle           = new_rectangle((l + m) * (n + 1) + m, 40 + 2 * m);
         rectangle->properties.color = WHITE;
         rectangle->on_event         = on_event_default_dragable;
+        Object *square;
+        Object *text;
 
         for (int i = 0; i < n; i++) {
-                Object *square           = new_rectangle(l, l);
-                square->properties.color = BLUE;
-                square->on_event         = on_event_menu_button;
-                square->data             = (void *) (intptr_t) i;
-                square->position.x       = (l + m) * i + m;
-                square->position.y       = m;
-                Object *text             = new_text("?");
-                text->position.x         = (l - text->shape.as.text.size) / 2;
-                text->position.y         = (l - text->shape.as.text.size) / 2;
-                attach(text, square);
-                attach(square, rectangle);
+                switch (i) {
+                case 0:
+                        square                          = new_rectangle(l, l);
+                        square->properties.color        = YELLOW;
+                        rectangle->properties.color_alt = ORANGE;
+                        square->on_event                = on_event_menu_button;
+                        square->data                    = (void *) (intptr_t) i;
+                        square->position.x              = (l + m) * i + m;
+                        square->position.y              = m;
+                        text                            = new_text("R");
+                        text->position.x                = (l - text->shape.as.text.size) / 2;
+                        text->position.y                = (l - text->shape.as.text.size) / 2;
+                        attach(text, square);
+                        attach(square, rectangle);
+                        break;
+
+                default:
+                        square                          = new_rectangle(l, l);
+                        square->properties.color        = BLUE;
+                        rectangle->properties.color_alt = SKYBLUE;
+                        square->on_event                = on_event_menu_button;
+                        square->data                    = (void *) (intptr_t) i;
+                        square->position.x              = (l + m) * i + m;
+                        square->position.y              = m;
+                        text                            = new_text("?");
+                        text->position.x                = (l - text->shape.as.text.size) / 2;
+                        text->position.y                = (l - text->shape.as.text.size) / 2;
+                        attach(text, square);
+                        attach(square, rectangle);
+                        break;
+                }
         }
 
         add_object(rectangle);
