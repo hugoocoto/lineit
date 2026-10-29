@@ -1,3 +1,12 @@
 [submodule "thirdparty/cum.h"]
 	path = thirdparty/cum.h
 	url = https://github.com/hugoocoto/cum.h
+[submodule "thirdparty/bt.h"]
+	path = thirdparty/bt.h
+	url = https://github.com/hugoocoto/bt.h
+[submodule "thirdparty/conf.h"]
+	path = thirdparty/conf.h
+	url = https://github.com/hugoocoto/conf.h
+[submodule "thirdparty/flag.h"]
+	path = thirdparty/flag.h
+	url = https://github.com/hugoocoto/flag.h
