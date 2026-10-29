@@ -1,0 +1,25 @@
+# Modules (modules/**/*.c) include lineit.h from src/. Include paths are
+# relative to the file, and modules can be in subfolders: missing ones are
+# ignored.
+If:
+  PathMatch: modules/.*
+CompileFlags:
+  Add:
+    - -I../src
+    - -I../../src
+    - -I../../../src
+    - -std=c11
+---
+# tools/ includes src/main.c, so it needs the same paths as src/
+If:
+  PathMatch: tools/.*
+CompileFlags:
+  Add:
+    - -I../src
+    - -I../raylib-6.0_linux_amd64/include
+    - -I../thirdparty/flag.h
+    - -I../thirdparty/conf.h
+    - -I../thirdparty/cum.h
+    - -I../thirdparty/bt.h
+    - -I/usr/include/lua5.1
+    - -std=c11

@@ -4,5 +4,13 @@ CompileFlags:
     - -I../thirdparty/flag.h
     - -I../thirdparty/conf.h
     - -I../thirdparty/cum.h
+    - -I../thirdparty/bt.h
     - -I/usr/include/lua5.1
     - -std=c11
+---
+# Headers are C, not C++
+If:
+  PathMatch: .*\.h
+CompileFlags:
+  Add:
+    - -xc-header

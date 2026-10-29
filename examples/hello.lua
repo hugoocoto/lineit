@@ -1,0 +1,16 @@
+-- hello
+-- Prints "Hello, world!" when you press Start.
+-- entry ticks once on Start. print writes its value to stdout and shows
+-- it: the text is typed in its value field (click it to change it).
+--
+-- Open it with: ./lineit -f examples/hello.lua, then press Start.
+camera = { x = 114.050781, y = 12, offset_x = 640, offset_y = 344, zoom = 1 }
+
+squares = {
+        { id = 0, module = "entry", x = -35, y = -35 },
+        { id = 1, module = "print", x = 116.898438, y = -73.1015625, inputs = { { name = "value", type = "string", value = "Hello, world!" }, } },
+}
+
+links = {
+        { from = 0, from_pin = 0, to = 1, to_pin = 0 },
+}
