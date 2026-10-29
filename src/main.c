@@ -639,7 +639,10 @@ output_add(const char *text, bool info)
 static void
 output_clear(void)
 {
-        Da_foreach(l, output.lines) free(l->text);
+        Da_foreach(l, output.lines)
+        {
+                free(l->text);
+        }
         output.lines.count = 0;
         output.scroll      = 0;
         output.unseen      = 0;
@@ -659,6 +662,15 @@ static Rectangle
 canvas_rect(void)
 {
         return (Rectangle) { 0, 0, GetScreenWidth(), output_rect().y };
+}
+
+static void
+select_all(bool on)
+{
+        Da_foreach(sp, squares)
+        {
+                (*sp)->selected = on;
+        }
 }
 
 static Vector2
@@ -2107,8 +2119,11 @@ modules_scan(bool reload)
                 return;
         }
 
-        Da_foreach(mp, modules)(*mp)->seen = false;
+        Da_foreach(mp, modules)
 
+        {
+                (*mp)->seen = false;
+        }
         FilePathList files = LoadDirectoryFilesEx(modules_dir, ".so", true);
         for (unsigned i = 0; i < files.count; i++) {
                 const char *path = files.paths[i];
@@ -2177,8 +2192,11 @@ modules_scan(bool reload)
         qsort(modules.items, modules.count, sizeof *modules.items, module_cmp);
         module_menu_build();
         if (!last_module || last_module->gone) {
-                last_module                                                           = NULL;
-                Da_foreach(mp, modules) if (!last_module && !(*mp)->gone) last_module = *mp;
+                last_module = NULL;
+                Da_foreach(mp, modules)
+                {
+                        if (!last_module && !(*mp)->gone) last_module = *mp;
+                }
         }
 }
 
@@ -2372,8 +2390,8 @@ update_menu(void)
                 if (h.square) {
                         /* Right click on a square that isn't selected selects only it */
                         if (!h.square->selected) {
-                                Da_foreach(sp, squares)(*sp)->selected = false;
-                                h.square->selected                     = true;
+                                select_all(false);
+                                h.square->selected = true;
                         }
                         square_menu_build(h.square);
                         menu_open(&square_menu, h.square->id, mouse);
@@ -2582,8 +2600,8 @@ update_mouse(void)
                                 h.square->selected = !h.square->selected;
                                 if (!h.square->selected) break;
                         } else if (!h.square->selected) {
-                                Da_foreach(sp, squares)(*sp)->selected = false;
-                                h.square->selected                     = true;
+                                select_all(false);
+                                h.square->selected = true;
                         }
 
                         /* Move to the top of the draw order */
@@ -3312,8 +3330,11 @@ canvas_read(Conf conf, ReadMode mode)
                 if (mode == READ_RESTORE && id >= 0 && (sq = square_get(id))) {
                         /* Already there: keep it (and its state) unless it's
                          * another module now, or a repeated id */
-                        bool seen               = false;
-                        Da_foreach(e, map) seen = seen || e->square == sq;
+                        bool seen = false;
+                        Da_foreach(e, map)
+                        {
+                                seen = seen || e->square == sq;
+                        }
                         if (sq->module != m || seen) {
                                 if (!seen) square_delete(id, NULL);
                                 sq = NULL;
@@ -3376,21 +3397,33 @@ canvas_read(Conf conf, ReadMode mode)
         if (mode == READ_RESTORE) {
                 /* Remove what isn't in it, and use its draw order */
                 for (int i = squares.count - 1; i >= 0; i--) {
-                        bool keep               = false;
-                        Da_foreach(e, map) keep = keep || e->square == squares.items[i];
+                        bool keep = false;
+                        Da_foreach(e, map)
+                        {
+                                keep = keep || e->square == squares.items[i];
+                        }
                         if (!keep) square_delete(squares.items[i]->id, NULL);
                 }
                 squares.count = 0;
-                Da_foreach(e, map) Da_append(&squares, e->square);
+                Da_foreach(e, map)
+                {
+                        Da_append(&squares, e->square);
+                }
                 links.count = 0;
         }
 
         if (mode == READ_PASTE && map.count) {
                 /* The top-left corner of what's pasted goes to the mouse */
-                Vector2 lo                        = map.items[0].square->pos;
-                Da_foreach(e, map) lo             = Vector2Min(lo, e->square->pos);
-                Vector2 off                       = Vector2Subtract(paste_at, lo);
-                Da_foreach(e, map) e->square->pos = Vector2Add(e->square->pos, off);
+                Vector2 lo = map.items[0].square->pos;
+                Da_foreach(e, map)
+                {
+                        lo = Vector2Min(lo, e->square->pos);
+                }
+                Vector2 off = Vector2Subtract(paste_at, lo);
+                Da_foreach(e, map)
+                {
+                        e->square->pos = Vector2Add(e->square->pos, off);
+                }
         }
 
         n = 0;
@@ -3493,7 +3526,10 @@ static void
 history_free_list(void *list)
 {
         Da(char *) *l = list;
-        Da_foreach(t, *l) free(*t);
+        Da_foreach(t, *l)
+        {
+                free(*t);
+        }
         l->count = 0;
 }
 
@@ -3562,7 +3598,10 @@ each_selected(void (*fn)(int id, void *arg))
         {
                 if ((*sp)->selected) Da_append(&ids, (*sp)->id);
         }
-        Da_foreach(id, ids) fn(*id, NULL);
+        Da_foreach(id, ids)
+        {
+                fn(*id, NULL);
+        }
         Da_destroy(&ids);
 }
 
@@ -3570,7 +3609,10 @@ static int
 selected_count(void)
 {
         int n = 0;
-        Da_foreach(sp, squares) n += (*sp)->selected;
+        Da_foreach(sp, squares)
+        {
+                n += (*sp)->selected;
+        }
         return n;
 }
 
@@ -3776,8 +3818,10 @@ config_reload(void)
         camera.zoom = Clamp(camera.zoom, cfg.canvas.zoom_min, cfg.canvas.zoom_max);
 
         /* Sizes depend on fonts, spacing and field width */
-        Da_foreach(sp, squares)(*sp)->side = 0;
-
+        Da_foreach(sp, squares)
+        {
+                (*sp)->side = 0;
+        }
         /* The old strings, now that nothing uses them */
         str_drop(prev.window.title, cfg.window.title, cfg_defaults.window.title);
         str_drop(prev.font.name, cfg.font.name, cfg_defaults.font.name);
@@ -3812,7 +3856,7 @@ update_shortcuts(void)
 
         if (!ctrl) {
                 if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) each_selected(square_delete);
-                if (IsKeyPressed(KEY_ESCAPE)) Da_foreach(sp, squares)(*sp)->selected = false;
+                if (IsKeyPressed(KEY_ESCAPE)) select_all(false);
                 return;
         }
 
@@ -3820,7 +3864,7 @@ update_shortcuts(void)
         if (IsKeyPressed(KEY_O)) bar_load();
         if (IsKeyPressed(KEY_Z) && !shift) history_step(true);
         if (IsKeyPressed(KEY_Y) || (IsKeyPressed(KEY_Z) && shift)) history_step(false);
-        if (IsKeyPressed(KEY_A)) Da_foreach(sp, squares)(*sp)->selected = true;
+        if (IsKeyPressed(KEY_A)) select_all(true);
         if (IsKeyPressed(KEY_C)) selection_copy();
         if (IsKeyPressed(KEY_X)) {
                 selection_copy();
