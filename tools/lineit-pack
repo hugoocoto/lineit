@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# lineit-pack: build a module with its own Makefile and pack it in a .li, a
+# zip with the module built for one or more platforms, its source and its
+# license, that lineit loads from its modules dir like a .so.
+# Run it with --howto to see what the Makefile has to do.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo=$(dirname "$here")
+api=$(sed -n 's/^#define LI_API_VERSION \([0-9]*\).*/\1/p' "$repo/src/lineit.h")
+
+usage() {
+        cat <<EOF
+Usage: $(basename "$0") [-o OUT.li] [MAKEFILE]
+       $(basename "$0") --howto
+
+Runs \`make lineit-package\` with MAKEFILE (asked if not given), checks what
+it made and packs it in OUT.li (default: NAME.li here, NAME from its
+manifest.lua). Put the .li in lineit's modules dir (build/modules): its
+folder there is its folder in the menu, like a .so.
+
+  -o OUT.li   where to write the package
+  --howto     what MAKEFILE has to do
+  -h, --help  this
+EOF
+}
+
+howto() {
+        cat <<EOF
+What the Makefile of a module has to do
+=======================================
+
+lineit-pack runs, from the folder of the Makefile:
+
+    make -f MAKEFILE lineit-package PACKAGE_DIR=DIR LINEIT_INCLUDE=INC LINEIT_API=$api
+
+The rule \`lineit-package\` has to fill DIR, an empty folder, with:
+
+  manifest.lua        Required. A Lua file that sets:
+                        name = "reverse"         -- [A-Za-z0-9_-], the file is NAME.li
+                        version = "1.0.0"        -- any text
+                        license = "MIT"          -- SPDX id, see LICENSE
+                        api = $api                  -- LI_API_VERSION it was built with
+                        description = "..."      -- optional
+                        platforms = { ... }      -- optional, see lib/
+  lib/PLATFORM.EXT    Required, at least one. The module built for PLATFORM:
+                        linux-x86_64.so    linux-arm64.so
+                        macos-x86_64.dylib macos-arm64.dylib
+                        windows-x86_64.dll windows-arm64.dll
+                      Only the ones it builds: a module with only
+                      lib/linux-*.so is linux only, and lineit skips it
+                      elsewhere ("not built for macos-arm64"). That is the
+                      way to mark a module for some platforms only.
+  LICENSE             Required (or LICENSE.txt, LICENSE.md, COPYING).
+  src/                Recommended: the source and the Makefile, so it can be
+                      built again and changed. Anything else can go too
+                      (README...), lineit only reads manifest.lua and lib/.
+
+If manifest.lua has no \`platforms\`, lineit-pack writes it from lib/:
+  platforms = { ["linux-x86_64"] = "lib/linux-x86_64.so", ... }
+If it has one, every library it names has to be there.
+
+Variables it gets:
+  PACKAGE_DIR     DIR above, absolute
+  LINEIT_INCLUDE  folder with lineit.h, for -I
+  LINEIT_API      LI_API_VERSION of that lineit.h, to write in manifest.lua
+
+Building each library:
+  Linux     cc -fPIC -shared -I\$(LINEIT_INCLUDE) module.c -o lib/linux-x86_64.so
+  macOS     cc -dynamiclib -undefined dynamic_lookup -I\$(LINEIT_INCLUDE) module.c \\
+               -o lib/macos-arm64.dylib     (on a mac, or with osxcross)
+            The li_* functions come from the lineit binary, not from a
+            library, hence -undefined dynamic_lookup (on Linux that's the
+            default).
+  Windows   not supported by lineit yet: a .dll can't take li_* from the
+            .exe that way.
+
+A minimal Makefile (examples/package has a full one):
+
+    lineit-package:
+            mkdir -p \$(PACKAGE_DIR)/lib \$(PACKAGE_DIR)/src
+            \$(CC) -O2 -fPIC -shared -I\$(LINEIT_INCLUDE) reverse.c \\
+                    -o \$(PACKAGE_DIR)/lib/linux-x86_64.so
+            cp manifest.lua LICENSE \$(PACKAGE_DIR)/
+            cp reverse.c Makefile \$(PACKAGE_DIR)/src/
+EOF
+}
+
+out=
+makefile=
+while (($#)); do
+        case $1 in
+        --howto) howto; exit 0 ;;
+        -h | --help) usage; exit 0 ;;
+        -o) out=${2:?-o needs a path}; shift 2 ;;
+        -*) usage >&2; exit 1 ;;
+        *) makefile=$1; shift ;;
+        esac
+done
+
+if [[ -z $makefile ]]; then
+        read -e -r -p "Path to the module's Makefile: " makefile
+fi
+makefile=${makefile/#\~/$HOME}
+[[ -f $makefile ]] || { echo "lineit-pack: $makefile: no such file" >&2; exit 1; }
+makefile=$(realpath "$makefile")
+
+lua=$(command -v lua5.1 || command -v luajit || command -v lua || true)
+[[ -n $lua ]] || { echo "lineit-pack: needs lua (5.1 or later) to check manifest.lua" >&2; exit 1; }
+command -v zip >/dev/null || { echo "lineit-pack: needs zip" >&2; exit 1; }
+
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+
+echo "lineit-pack: make lineit-package ($makefile)"
+make --no-print-directory -C "$(dirname "$makefile")" -f "$makefile" lineit-package \
+        PACKAGE_DIR="$stage" LINEIT_INCLUDE="$repo/src" LINEIT_API="$api"
+
+fail() {
+        echo "lineit-pack: $*" >&2
+        echo "lineit-pack: see $(basename "$0") --howto" >&2
+        exit 1
+}
+
+[[ -f $stage/manifest.lua ]] || fail "lineit-package made no manifest.lua"
+license=
+for f in LICENSE LICENSE.txt LICENSE.md COPYING; do [[ -f $stage/$f ]] && license=$f; done
+[[ -n $license ]] || fail "lineit-package made no LICENSE"
+[[ -d $stage/src ]] || echo "lineit-pack: warning: no src/, it can't be built again from the package" >&2
+libs=()
+if [[ -d $stage/lib ]]; then
+        while IFS= read -r f; do libs+=("$f"); done < <(cd "$stage" && find lib -maxdepth 1 -type f | sort)
+fi
+
+host="$(uname -s | sed 's/Linux/linux/;s/Darwin/macos/')-$(uname -m | sed 's/aarch64/arm64/')"
+
+# Check manifest.lua, and add platforms from lib/ if it has none. Prints
+# the name.
+name=$("$lua" - "$stage" "$api" "${libs[@]}" <<'EOF'
+local dir, api = arg[1], tonumber(arg[2])
+local function fail(msg) io.stderr:write("lineit-pack: manifest.lua: " .. msg .. "\n"); os.exit(1) end
+
+local env = {}
+local chunk, err = loadfile(dir .. "/manifest.lua")
+if not chunk then fail(err) end
+setfenv(chunk, env)
+local ok, err = pcall(chunk)
+if not ok then fail(err) end
+
+if type(env.name) ~= "string" or not env.name:match("^[%w_-]+$") then fail("name has to be [A-Za-z0-9_-]") end
+if type(env.version) ~= "string" then fail("no version") end
+if type(env.license) ~= "string" then fail("no license") end
+if env.api ~= api then fail("api is " .. tostring(env.api) .. ", this lineit has " .. api) end
+
+local ext = { linux = "so", macos = "dylib", windows = "dll" }
+local function platform_ok(p, file)
+        local os_, arch = p:match("^(%a+)%-([%w_]+)$")
+        if not os_ or not ext[os_] or (arch ~= "x86_64" and arch ~= "arm64") then
+                fail("unknown platform " .. p .. " (os-arch, see --howto)")
+        end
+        if not file:match("%." .. ext[os_] .. "$") then fail(file .. ": a " .. os_ .. " library ends in ." .. ext[os_]) end
+end
+
+local found = {}
+for i = 3, #arg do
+        local file = arg[i]
+        local p = file:match("^lib/(.+)%.[^.]+$")
+        platform_ok(p, file)
+        found[p] = file
+end
+
+if env.platforms == nil then
+        if next(found) == nil then fail("no libraries in lib/") end
+        local f = assert(io.open(dir .. "/manifest.lua", "a"))
+        f:write("\n-- Written by lineit-pack, from lib/\nplatforms = {\n")
+        local keys = {}
+        for p in pairs(found) do keys[#keys + 1] = p end
+        table.sort(keys)
+        for _, p in ipairs(keys) do f:write(string.format("        [%q] = %q,\n", p, found[p])) end
+        f:write("}\n")
+        f:close()
+        env.platforms = found
+else
+        if type(env.platforms) ~= "table" or next(env.platforms) == nil then fail("platforms is empty") end
+        for p, file in pairs(env.platforms) do
+                platform_ok(p, file)
+                local f = io.open(dir .. "/" .. file, "rb")
+                if not f then fail("platforms names " .. file .. ", it isn't there") end
+                f:close()
+        end
+end
+
+local keys = {}
+for p in pairs(env.platforms) do keys[#keys + 1] = p end
+table.sort(keys)
+io.stderr:write(string.format("lineit-pack: %s %s (%s), for %s\n", env.name, env.version, env.license, table.concat(keys, ", ")))
+print(env.name)
+EOF
+)
+
+# The library for here has to load as a module
+hostlib=$(cd "$stage" && ls lib/"$host".* 2>/dev/null | head -1 || true)
+if [[ -z $hostlib ]]; then
+        echo "lineit-pack: warning: not built for $host, lineit here will skip it" >&2
+elif command -v nm >/dev/null && ! nm -D --defined-only "$stage/$hostlib" 2>/dev/null | grep -qw module_init; then
+        fail "$hostlib has no module_init"
+fi
+
+out=${out:-$name.li}
+mkdir -p "$(dirname "$out")"
+out=$(realpath "$out")
+rm -f "$out"
+# manifest.lua first, then the rest
+(cd "$stage" && zip -q -X -9 "$out" manifest.lua && zip -q -X -r -9 "$out" . -x manifest.lua)
+echo "lineit-pack: wrote $out"

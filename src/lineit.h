@@ -60,6 +60,10 @@
    type except LI_TICK. A data input takes one wire, a tick input can take
    many. Build modules with `make`, see the Makefile.
 
+   To give a module to others, with its source, license and builds for
+   several platforms in one file, make a package (.li) with tools/lineit-pack.
+   It goes in the modules dir like a .so.
+
    Minimal example, modules/print.c:
 
      #include "lineit.h"
@@ -80,6 +84,11 @@
 #define LINEIT_H_
 
 #include <stdbool.h>
+
+/* Changes when this API changes in a way that breaks modules built for an
+ * older one. Packages (.li) say which one they were built for, and lineit
+ * skips the ones that don't match. See tools/lineit-pack --howto. */
+#define LI_API_VERSION 1
 
 #ifdef __cplusplus
 extern "C" {
@@ -173,14 +182,19 @@ int li_param(Li_Node *n, const char *name, Li_Value value);
 /* Current value of PARAM. A string is valid until the param changes. */
 Li_Value li_get_param(Li_Node *n, int param);
 
-/* Variables shared by every square of the canvas, by name (module globals
-   are per square). Strings are copied. li_var_get gives LI_NONE for a
-   variable never set, and a string valid until the variable is set again.
-   They start empty: they are not saved, and Clear all / Load empty them. */
+/* Variables, by name (module globals are per square). Like in C, they are
+   local to the canvas the square is in: each subgraph square has its own,
+   which the canvas around it can't see, and it can't see the ones around
+   it. li_global_* are shared by every canvas of the tab, subgraphs
+   included. Strings are copied. A variable never set gives LI_NONE, a
+   string is valid until the variable is set again. They start empty: they
+   are not saved, and Clear all / Load empty them. */
 void li_var_set(const char *name, Li_Value value);
 Li_Value li_var_get(const char *name);
+void li_global_set(const char *name, Li_Value value);
+Li_Value li_global_get(const char *name);
 
-/* Lists, by name, shared by every square like variables. They grow as
+/* Lists, by name, local to the canvas like variables. They grow as
    needed and start empty (not saved, Clear all / Load empty them). Strings
    are copied in. Negative indices count from the end: -1 is the last. */
 long li_list_len(const char *list);
@@ -192,7 +206,7 @@ bool li_list_remove(const char *list, long index);              /* false if out 
 void li_list_clear(const char *list);
 
 /* Trees: string keys to values, by name, in key order (a red-black tree,
-   bt.h). Shared, copied and emptied like lists. */
+   bt.h). Local, copied and emptied like lists. */
 void li_tree_set(const char *tree, const char *key, Li_Value value); /* add or replace */
 Li_Value li_tree_get(const char *tree, const char *key);             /* LI_NONE if missing */
 bool li_tree_has(const char *tree, const char *key);

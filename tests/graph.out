@@ -1,0 +1,63 @@
+clamped: 0
+clamped: 0
+clamped: 0
+clamped: 0
+clamped: 0
+clamped: 0
+clamped: 1
+clamped: 2
+clamped: 3
+clamped: 4
+clamped: 5
+clamped: 6
+clamped: 7
+clamped: 8
+clamped: 9
+clamped: 9
+clamped: 9
+clamped: 9
+clamped: 9
+clamped: 9
+after: 14
+done
+-- 10 squares, 9 links
+0 math/clamp: 
+    0 graph/input: x
+    1 graph/input: lo
+    2 graph/input: hi
+    3 math/max: 15
+    4 math/min: 10
+    5 graph/output: value
+1 math/clamp: 
+    0 graph/input: x
+    1 graph/input: lo
+    2 graph/input: hi
+    3 math/max: 0
+    4 math/min: 0
+    5 graph/output: value
+2 display: 10
+3 display: 0
+4 entry: 
+5 loop: 14
+6 math/clamp: 
+    0 graph/input: x
+    1 graph/input: lo
+    2 graph/input: hi
+    3 math/max: 14
+    4 math/min: 9
+    5 graph/output: value
+7 log: 
+    0 graph/input: tick
+    1 graph/input: label
+    2 graph/input: value
+    3 string/format: "clamped: 9"
+    4 print: clamped: 9
+    5 graph/output: then
+8 log: 
+    0 graph/input: tick
+    1 graph/input: label
+    2 graph/input: value
+    3 string/format: "after: 14"
+    4 print: after: 14
+    5 graph/output: then
+9 print: done

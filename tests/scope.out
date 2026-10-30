@@ -1,0 +1,26 @@
+-- 11 squares, 8 links
+0 entry: 
+1 var/set: total = 100
+2 var/set: ::g = 7
+3 loop: 4
+4 math/accumulate: 
+    0 graph/input: tick
+    1 graph/input: value
+    2 var/get: total = 10
+    3 math/add: 10
+    4 var/set: total = 10
+    5 graph/output: then
+    6 graph/output: total
+5 math/accumulate: 
+    0 graph/input: tick
+    1 graph/input: value
+    2 var/get: total = 50
+    3 math/add: 50
+    4 var/set: total = 50
+    5 graph/output: then
+    6 graph/output: total
+6 display: 10
+7 display: 50
+8 var/get: total = 100
+9 var/get: ::g = 7
+10 var/get: g = -

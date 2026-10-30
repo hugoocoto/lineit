@@ -40,6 +40,7 @@ font = {
 
 modules = {
         path = "build/modules", -- every .so here (and in subfolders) is loaded, `make` builds them from modules/
+        source = "modules",     -- Make subgraph (Ctrl+G) writes the new .lua here, and links it into path
 }
 
 save = {

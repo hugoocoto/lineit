@@ -1,0 +1,26 @@
+a | b |  | c
+x-y-z
+-- 23 squares, 8 links
+0 string/concat: "n = 5"
+1 string/concat: ""
+2 string/format: "1 + 2.5 = true {}"
+3 string/format: "[x] [] [] []"
+4 string/len: 5
+5 string/len: 0
+6 string/substr: "ine"
+7 string/substr: "it"
+8 string/substr: ""
+9 string/substr: "ab"
+10 string/find: 2
+11 string/find: -1
+12 string/upper: "HELLO, WORLD 1!"
+13 string/lower: "hello, world 1!"
+14 entry: 
+15 string/split: parts [4]
+16 string/join: "a | b |  | c"
+17 print: a | b |  | c
+18 string/split: chars [3]
+19 string/join: "x-y-z"
+20 print: x-y-z
+21 string/format: "len 5"
+22 string/upper: "LEN 5"
