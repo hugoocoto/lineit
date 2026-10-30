@@ -1,6 +1,7 @@
 # lineit
 
-A programming graphical compiled language.
+A graphical yet compiled modular programming language.
+
 
 You write programs by placing squares on a canvas and wiring them together. Each
 square is a module, and wires carry either values or ticks, the signal that
