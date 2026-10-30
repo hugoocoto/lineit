@@ -1,10 +1,10 @@
 285
 -- 8 squares, 10 links
-22 entry: 
+22 flow/entry: 
 23 var/set: sum = 285
-24 loop: 9
+24 flow/loop: 9
 25 math/mul: 81
 26 var/get: sum = 285
 27 math/add: 285
 28 var/set: sum = 285
-29 print: 285
+29 io/print: 285

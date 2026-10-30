@@ -9,7 +9,7 @@ squares = {
         { id = 1, module = "graph/input", x = 0, y = 100, params = { { name = "name", value = "label" }, }, inputs = { { name = "type", value = "string" }, } },
         { id = 2, module = "graph/input", x = 0, y = 200, params = { { name = "name", value = "value" }, }, inputs = { { name = "type", value = "any" }, } },
         { id = 3, module = "string/format", x = 200, y = 150, inputs = { { name = "template", type = "string", value = "{}: {}" }, } },
-        { id = 4, module = "print", x = 400, y = 0 },
+        { id = 4, module = "io/print", x = 400, y = 0 },
         { id = 5, module = "graph/output", x = 600, y = 0, params = { { name = "name", value = "then" }, }, inputs = { { name = "type", value = "tick" }, } },
 }
 

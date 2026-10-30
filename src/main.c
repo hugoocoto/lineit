@@ -41,6 +41,31 @@
 
 #define countof(a) ((int) (sizeof(a) / sizeof *(a)))
 
+/* ---- Keys ---- */
+
+/* Keys pressed this frame, from raylib's queue of presses: IsKeyPressed
+ * compares the key now with the last frame, so a key that goes down and up
+ * between two frames is lost. Tap-hold keys (Esc on tap, Ctrl on hold) do
+ * exactly that: on release they send the tap's down and up together. */
+static bool keys_pressed[512];
+
+/* Once per frame, before anything reads the keyboard */
+static void
+keys_poll(void)
+{
+        int key;
+        memset(keys_pressed, 0, sizeof keys_pressed);
+        while ((key = GetKeyPressed()))
+                if (key > 0 && key < countof(keys_pressed)) keys_pressed[key] = true;
+}
+
+/* Like IsKeyPressed, but it doesn't miss quick taps */
+static bool
+key_pressed(int key)
+{
+        return key > 0 && key < countof(keys_pressed) && keys_pressed[key];
+}
+
 /* Names used in the config (colors.types.<name>) */
 static const char *type_names[LI_TYPE_COUNT] = {
         [LI_NONE]   = "none",
@@ -95,6 +120,8 @@ static struct {
         } modules;
         struct {
                 const char *path; /* --file overrides it */
+                bool autosave;           /* at start, File > Autosave toggles it */
+                float autosave_interval; /* seconds */
         } save;
         struct {
                 int height; /* of the panel, pixels */
@@ -149,7 +176,7 @@ static struct {
         .menu    = { .font_size = 20, .padding = 8 },
         .font    = { .name = "Iosevka NFM", .spacing = 0 },
         .modules = { .path = "build/modules", .source = "modules" },
-        .save    = { .path = "canvas.lua" },
+        .save    = { .path = "canvas.lua", .autosave = false, .autosave_interval = 30 },
         .output  = { .height = 200, .font_size = 16, .lines = 2000, .clear_on_start = false },
         .colors  = {
         .bg            = { 24, 24, 27, 255 },
@@ -291,6 +318,8 @@ load_config(const char *path)
         conf_str(conf, &cfg.modules.path, "modules.path");
         conf_str(conf, &cfg.modules.source, "modules.source");
         conf_str(conf, &cfg.save.path, "save.path");
+        conf_bool(conf, &cfg.save.autosave, "save.autosave");
+        conf_float(conf, &cfg.save.autosave_interval, "save.autosave_interval");
 
         conf_int(conf, &cfg.output.height, "output.height");
         conf_int(conf, &cfg.output.font_size, "output.font_size");
@@ -332,6 +361,7 @@ load_config(const char *path)
         if (cfg.canvas.wire_curve_distance <= 0) cfg.canvas.wire_curve_distance = 1.0f;
         if (cfg.canvas.pin_spacing <= 0) cfg.canvas.pin_spacing = 24.0f;
         if (cfg.output.lines < 1) cfg.output.lines = 1;
+        if (cfg.save.autosave_interval < 1) cfg.save.autosave_interval = 1;
         return true;
 }
 
@@ -464,6 +494,7 @@ static int next_id;
 static Da(Module *) modules; /* sorted by name */
 static Module *last_module;  /* the last one placed, first in the canvas menu */
 static bool running;         /* module_frame is only called while running */
+static bool autosave;        /* cfg.save.autosave at start, toggled in the File menu (see Autosave) */
 static const ModuleFns graph_fns;
 static void square_open_tab(int id, void *arg);
 static void menu_subgraph(int id, void *arg);
@@ -1665,14 +1696,14 @@ text_input_update(TextInput *t, bool *changed)
                         *changed         = true;
                 }
         }
-        if ((IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && t->len > 0) {
+        if ((key_pressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && t->len > 0) {
                 t->buf[--t->len] = '\0';
                 *changed         = true;
         }
 
-        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) return TEXT_DONE;
-        if (IsKeyPressed(KEY_TAB)) return TEXT_NEXT;
-        if (IsKeyPressed(KEY_ESCAPE)) return TEXT_CANCEL;
+        if (key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER)) return TEXT_DONE;
+        if (key_pressed(KEY_TAB)) return TEXT_NEXT;
+        if (key_pressed(KEY_ESCAPE)) return TEXT_CANCEL;
         return TEXT_TYPING;
 }
 
@@ -2353,6 +2384,7 @@ static Module *module_find(const char *name);
 static void module_reload_squares(Module *m);
 static const ModuleFns graph_fns;
 static void graph_builtins(void);
+static bool canvas_check(const char *path, char *why, int size);
 static bool square_uses(Square *s, Module *m);
 
 /* Where load_modules found them */
@@ -2408,7 +2440,8 @@ modules_scan(bool reload)
                         free(name);
                         if (mtime == m->mtime || !settled) continue;
                         m->mtime = mtime; /* a broken build is tried again when it changes */
-                        if (package && !(lib = package_lib(path, why, sizeof why))) {
+                        if ((package && !(lib = package_lib(path, why, sizeof why))) ||
+                            (graph && !canvas_check(path, why, sizeof why))) {
                                 set_status("Module %s: %s, keeping the old one", m->name, why);
                                 continue;
                         }
@@ -2433,7 +2466,8 @@ modules_scan(bool reload)
                         continue;
                 }
                 if (package) lib = package_lib(path, why, sizeof why);
-                if ((package && !lib) || (!graph && !module_check(lib ? lib : path))) {
+                if ((package && !lib) || (graph && !canvas_check(path, why, sizeof why)) ||
+                    (!graph && !module_check(lib ? lib : path))) {
                         fprintf(stderr, "modules: %s skipped: %s\n", path, why);
                         if (reload) set_status("Module %s: %s", name, why);
                         if (lib) remove(lib);
@@ -2790,10 +2824,10 @@ update_menu(void)
                 /* Arrows, or C-n and C-p */
                 Menu *m   = menu.level[0].menu;
                 bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-                bool down = IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN) ||
-                            (ctrl && (IsKeyPressed(KEY_N) || IsKeyPressedRepeat(KEY_N)));
-                bool up   = IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP) ||
-                          (ctrl && (IsKeyPressed(KEY_P) || IsKeyPressedRepeat(KEY_P)));
+                bool down = key_pressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN) ||
+                            (ctrl && (key_pressed(KEY_N) || IsKeyPressedRepeat(KEY_N)));
+                bool up   = key_pressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP) ||
+                          (ctrl && (key_pressed(KEY_P) || IsKeyPressedRepeat(KEY_P)));
                 if (down) menu.selected = (menu.selected + 1) % m->count;
                 if (up) menu.selected = (menu.selected <= 0 ? m->count : menu.selected) - 1;
                 if (down || up) {
@@ -2814,9 +2848,12 @@ update_menu(void)
                         }
                         return true;
                 }
-                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mouse, menu_search_rect()))
+                /* A submenu can be over it (flipped left): that one gets the click */
+                int over_lvl = 0;
+                bool on_sub  = menu_hit(mouse, &over_lvl) >= 0 && over_lvl > 0;
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !on_sub && CheckCollisionPointRec(mouse, menu_search_rect()))
                         return true;
-        } else if (IsKeyPressed(KEY_ESCAPE)) {
+        } else if (key_pressed(KEY_ESCAPE)) {
                 menu.depth = 0;
                 return true;
         }
@@ -2856,6 +2893,19 @@ update_menu(void)
                 return true; /* clicking outside just closes it */
         }
         return true;
+}
+
+/* The search box of the canvas menu, on top of it */
+static void
+draw_menu_search(void)
+{
+        Rectangle b     = menu_search_rect();
+        TextInput *t    = menu_search();
+        const char *txt = t->len ? TextFormat("%s%s", t->buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "") : "Type to search modules";
+        DrawRectangleRec(b, cfg.colors.field);
+        DrawRectangleLinesEx(b, 1.0f, cfg.colors.menu_border);
+        draw_text(txt, b.x + 2 * cfg.menu.padding, b.y + cfg.menu.padding, cfg.menu.font_size,
+                  t->len ? cfg.colors.square_text : cfg.colors.name);
 }
 
 static void
@@ -2904,16 +2954,8 @@ draw_menu(void)
                         DrawRectangleRounded((Rectangle) { r.x + r.width - 5, ty + 2, 3, th - 4 }, 1.0f, 4, cfg.colors.name);
                 }
                 DrawRectangleLinesEx(r, 1.0f, cfg.colors.menu_border);
-        }
-
-        if (menu.depth && menu.searchable) {
-                Rectangle b     = menu_search_rect();
-                TextInput *t    = menu_search();
-                const char *txt = t->len ? TextFormat("%s%s", t->buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "") : "Type to search modules";
-                DrawRectangleRec(b, cfg.colors.field);
-                DrawRectangleLinesEx(b, 1.0f, cfg.colors.menu_border);
-                draw_text(txt, b.x + 2 * cfg.menu.padding, b.y + cfg.menu.padding, cfg.menu.font_size,
-                          t->len ? cfg.colors.square_text : cfg.colors.name);
+                /* Before the submenus: they may be over it (flipped left) */
+                if (k == 0 && menu.searchable) draw_menu_search();
         }
 }
 
@@ -3222,14 +3264,18 @@ draw_field(Square *s, int i)
                                                     cfg.colors.square_border;
         char buf[256], text[256];
 
-        DrawRectangleRec(f, cfg.colors.field);
-        DrawRectangleLinesEx(f, typing ? 2.0f : 1.0f, border);
-
+        /* Bools: a round checkbox, filled when true (clicked in the same box) */
         if (p->kind == PIN_VALUE && p->type == LI_BOOL) {
-                if (p->value.type == LI_BOOL && p->value.b)
-                        DrawRectangleRec((Rectangle) { f.x + 4, f.y + 4, f.width - 8, f.height - 8 }, cfg.colors.square_text);
+                Vector2 c = { f.x + f.width / 2, f.y + f.height / 2 };
+                float r   = fminf(f.width, f.height) / 2;
+                DrawCircleV(c, r, border); /* the border: a circle under the field */
+                DrawCircleV(c, r - 1, cfg.colors.field);
+                if (p->value.type == LI_BOOL && p->value.b) DrawCircleV(c, r - 4, cfg.colors.square_text);
                 return;
         }
+
+        DrawRectangleRec(f, cfg.colors.field);
+        DrawRectangleLinesEx(f, typing ? 2.0f : 1.0f, border);
 
         float arrow = p->kind == PIN_OPTIONS ? measure_canvas_text(FIELD_ARROW, fs) + 6 : 0;
         if (typing)
@@ -3450,7 +3496,7 @@ update_panel(void)
                 case TEXT_TYPING: break;
                 }
                 if (changed) panel.error = false;
-        } else if (IsKeyPressed(KEY_ESCAPE)) {
+        } else if (key_pressed(KEY_ESCAPE)) {
                 panel_close();
                 return true;
         }
@@ -3574,9 +3620,15 @@ enum {
 
 /* The canvas as Lua: camera, squares (draw order) and links. Squares keep
  * their params and typed inputs. */
+/* The format of the canvases canvas_write writes (lineit_canvas in them),
+ * and the newest one canvas_read reads. Bump it when a change means older
+ * lineits can't read new canvases. */
+#define CANVAS_VERSION 1
+
 static void
 canvas_write(FILE *f, int flags)
 {
+        fprintf(f, "lineit_canvas = %d -- format version, see CANVAS_VERSION\n\n", CANVAS_VERSION);
         if (flags & WRITE_CAMERA)
                 fprintf(f, "camera = { x = %.9g, y = %.9g, offset_x = %.9g, offset_y = %.9g, zoom = %.9g }\n\n",
                         camera.target.x, camera.target.y, camera.offset.x, camera.offset.y, camera.zoom);
@@ -3678,6 +3730,31 @@ module_find(const char *name)
         return NULL;
 }
 
+/* Index of the pin of L named NAME, -1 if none is */
+static int
+pin_named(PinList *l, const char *name)
+{
+        for (int i = 0; i < l->count; i++)
+                if (!strcmp(l->items[i].name, name)) return i;
+        return -1;
+}
+
+/* A module that was at the top of the modules dir and went into a folder
+ * ("print" is "io/print" now): the only one with NAME as its last part. NULL
+ * if there's none, or more than one. */
+static Module *
+module_find_moved(const char *name)
+{
+        Module *found = NULL;
+        Da_foreach(mp, modules)
+        {
+                if (strcmp((*mp)->label, name) != 0) continue;
+                if (found) return NULL;
+                found = *mp;
+        }
+        return found;
+}
+
 typedef enum ReadMode {
         READ_LOAD,    /* replace the canvas, camera included */
         READ_RESTORE, /* make the canvas match (undo): squares that are still there keep their state */
@@ -3732,7 +3809,14 @@ canvas_read(Conf conf, ReadMode mode)
 
                 /* Strings from Conf die on the next call, use them right away */
                 if (Conf_get_str(conf, &str, "squares.%d.module", i) != CONF_OK) continue;
-                if (!(m = module_find(str))) {
+                /* convert/int and the others are convert now, with "to" */
+                char convert_to[16] = "";
+                if (!strncmp(str, "convert/", 8) && !module_find(str) && module_find("convert")) {
+                        snprintf(convert_to, sizeof convert_to, "%s", str + 8);
+                        str = "convert";
+                }
+                if (!(m = module_find(str)) && !strchr(str, '/')) m = module_find_moved(str);
+                if (!m) {
                         fprintf(stderr, "load: module %s not found, square skipped\n", str);
                         continue;
                 }
@@ -3801,6 +3885,11 @@ canvas_read(Conf conf, ReadMode mode)
                                 fprintf(stderr, "load: invalid value for %s input %s, using default\n", m->name, name);
                 }
 
+                if (*convert_to) {
+                        int k = pin_named(&sq->inputs, "to");
+                        if (k >= 0) input_set_text(sq, k, convert_to, LI_NONE);
+                }
+
                 /* After the params, so state can override what module_param set */
                 if (state && sq->fn.load) sq->fn.load(sq, state);
                 free(state);
@@ -3862,13 +3951,75 @@ canvas_read(Conf conf, ReadMode mode)
         Da_destroy(&map);
 }
 
+/* Whether CONF is a canvas: a squares table, with a module in each square,
+ * and a links table if there are links, of a version this lineit reads. If
+ * not, why in WHY. */
+static bool
+canvas_conf_ok(Conf conf, char *why, int size)
+{
+        int n = 0, links_len = 0, version = 0;
+        const char *str;
+        if (Conf_get_len(conf, &n, "squares") != CONF_OK) {
+                snprintf(why, size, "not a lineit canvas, it has no squares table");
+                return false;
+        }
+        /* Canvases saved before there was a version have none: they're 1 */
+        if (Conf_get_int(conf, &version, "lineit_canvas") == CONF_OK && version > CANVAS_VERSION) {
+                snprintf(why, size, "made by a newer lineit (canvas version %d, this one reads up to %d)", version, CANVAS_VERSION);
+                return false;
+        }
+        for (int i = 1; i <= n; i++) {
+                if (Conf_get_str(conf, &str, "squares.%d.module", i) != CONF_OK) {
+                        snprintf(why, size, "square %d has no module", i);
+                        return false;
+                }
+        }
+        int err = Conf_get_len(conf, &links_len, "links");
+        if (err != CONF_OK && err != CONF_UNDEF) {
+                snprintf(why, size, "links isn't a table");
+                return false;
+        }
+        return true;
+}
+
+/* Whether PATH is a canvas file to open. An empty file is an empty
+ * canvas. If not, why in WHY. */
+static bool
+canvas_check(const char *path, char *why, int size)
+{
+        Conf conf;
+        if (DirectoryExists(path)) {
+                snprintf(why, size, "it's a folder");
+                return false;
+        }
+        if (!FileExists(path)) {
+                snprintf(why, size, "it isn't there");
+                return false;
+        }
+        if (GetFileLength(path) == 0) return true;
+        if (Conf_open(&conf, path) != CONF_OK) {
+                snprintf(why, size, "it isn't valid Lua (the error is in the terminal)");
+                return false;
+        }
+        bool ok = canvas_conf_ok(conf, why, size);
+        Conf_close(conf);
+        return ok;
+}
+
 /* Replace the canvas with the one in PATH. Squares of missing modules are
- * skipped with their wires. Returns false if the file can't be read. */
+ * skipped with their wires. Returns false, changing nothing, if the file
+ * can't be read or isn't a canvas (see canvas_check). */
 static bool
 canvas_read_file(const char *path, ReadMode mode)
 {
         Conf conf;
+        char why[128];
         if (Conf_open(&conf, path) != CONF_OK) return false;
+        if (!canvas_conf_ok(conf, why, sizeof why)) {
+                fprintf(stderr, "load: %s: %s\n", path, why);
+                Conf_close(conf);
+                return false;
+        }
         canvas_read(conf, mode);
         Conf_close(conf);
         return true;
@@ -4411,7 +4562,10 @@ bar_save(void)
 static void
 bar_load(void)
 {
-        if (canvas_path && canvas_read_file(canvas_path, READ_LOAD)) {
+        char why[128];
+        if (canvas_path && FileExists(canvas_path) && !canvas_check(canvas_path, why, sizeof why)) {
+                set_status("Can't load %s: %s", canvas_path, why);
+        } else if (canvas_path && canvas_read_file(canvas_path, READ_LOAD)) {
                 history_reset();
                 tab_mark_saved();
                 set_status("Loaded %s", canvas_path);
@@ -4547,6 +4701,7 @@ config_reload(void)
         }
         if (strcmp(cfg.window.title, prev.window.title)) SetWindowTitle(cfg.window.title);
         if (cfg.window.fps != prev.window.fps) SetTargetFPS(cfg.window.fps);
+        if (cfg.save.autosave != prev.save.autosave) autosave = cfg.save.autosave;
         camera.zoom = Clamp(camera.zoom, cfg.canvas.zoom_min, cfg.canvas.zoom_max);
 
         /* Sizes depend on fonts, spacing and field width */
@@ -4588,6 +4743,7 @@ typedef struct Tab {
 static Da(Tab *) tabs;
 static int tab_cur;      /* the one shown */
 static bool handed_over; /* a rebuilt editor took over: quit (see Reloading) */
+static bool quitting;    /* the editor closes after this frame: the window or the last tab was closed */
 
 #define SWAP(a, b)                    \
         do {                          \
@@ -4672,8 +4828,21 @@ tab_switch(int i)
         tab_title();
 }
 
-/* A new empty tab, shown. Its path is PATH (copied), and what's there is
- * loaded if there is something. */
+/* A new canvas starts with an entry in the middle of the view: it's where
+ * everything starts from */
+static void
+canvas_start(void)
+{
+        Module *m    = module_find("flow/entry");
+        Module *last = last_module; /* "Add ..." stays what the user added */
+        Rectangle r  = canvas_rect();
+        camera       = (Camera2D) { .offset = { r.x + r.width / 2, r.y + r.height / 2 }, .zoom = 1.0f };
+        if (m) square_new(m, (Vector2) { 0, 0 });
+        last_module = last;
+}
+
+/* A new tab, shown. Its path is PATH (copied), and what's there is loaded
+ * if there is something; if not, it's a new canvas (canvas_start). */
 static void
 tab_new(const char *path)
 {
@@ -4682,14 +4851,59 @@ tab_new(const char *path)
         Da_append(&tabs, t);
         /* The first one is the globals already */
         if (tabs.count > 1) tab_switch(tabs.count - 1);
+        char why[128];
         canvas_path = path ? strdup(path) : NULL;
-        if (path && FileExists(path) && !canvas_read_file(path, READ_LOAD)) set_status("Could not load %s", path);
+        if (path && FileExists(path) && !canvas_check(path, why, sizeof why)) {
+                /* Not adopted: saving would overwrite it */
+                set_status("Can't open %s: %s", path, why);
+                free((char *) canvas_path);
+                canvas_path = NULL;
+        } else if (path && FileExists(path) && GetFileLength(path) > 0 && !canvas_read_file(path, READ_LOAD)) {
+                set_status("Could not load %s", path);
+        }
+        if (!squares.count) canvas_start();
         history_reset();
-        tab_mark_saved();
+        tab_mark_saved(); /* with the entry: a new canvas has no changes yet */
         tab_title();
 }
 
 static void ask_close_tab(int i);
+
+/* Tabs closed, last last, for Ctrl+Shift+T: everything to bring one back as
+ * it was, unsaved changes included (they're still marked unsaved). Tabs
+ * never touched and never saved aren't kept. */
+typedef struct ClosedTab {
+        char *path; /* NULL if untitled */
+        char *canvas; /* canvas_text with camera and state */
+        char *saved;
+        Typeof(history.undo) undo;
+        Typeof(history.redo) redo;
+} ClosedTab;
+
+static Da(ClosedTab) closed_tabs;
+#define CLOSED_TABS_MAX 20
+
+static void
+closed_tab_free(ClosedTab *c)
+{
+        free(c->path);
+        free(c->canvas);
+        free(c->saved);
+        history_free_list(&c->undo);
+        history_free_list(&c->redo);
+        Da_destroy(&c->undo);
+        Da_destroy(&c->redo);
+}
+
+static void
+closed_tabs_free(void)
+{
+        Da_foreach(c, closed_tabs)
+        {
+                closed_tab_free(c);
+        }
+        Da_destroy(&closed_tabs);
+}
 
 /* Close tab I. With unsaved changes it asks first, unless FORCE. */
 static void
@@ -4701,7 +4915,25 @@ tab_close(int i, bool force)
                 return;
         }
 
+        bool keep = tab_dirty(i) || (i == tab_cur ? canvas_path : t->path);
         tab_visit(i);
+        if (keep) {
+                /* Remembered for Ctrl+Shift+T: its undo and redo go with it */
+                ClosedTab c = {
+                        .path   = canvas_path ? strdup(canvas_path) : NULL,
+                        .canvas = canvas_text(WRITE_CAMERA | WRITE_STATE),
+                        .saved  = t->saved ? strdup(t->saved) : NULL,
+                        .undo   = history.undo,
+                        .redo   = history.redo,
+                };
+                history.undo = (Typeof(history.undo)) { 0 };
+                history.redo = (Typeof(history.redo)) { 0 };
+                if (closed_tabs.count == CLOSED_TABS_MAX) {
+                        closed_tab_free(&closed_tabs.items[0]);
+                        Da_remove(&closed_tabs, 0);
+                }
+                Da_append(&closed_tabs, c);
+        }
         running = false;
         canvas_clear(-1, NULL);
         Da_destroy(&squares);
@@ -4725,8 +4957,9 @@ tab_close(int i, bool force)
                 tab_cur--;
         } else if (i == tab_cur) {
                 if (!tabs.count) {
-                        tab_cur = 0;
-                        tab_new(NULL); /* always one */
+                        /* The last one: closing it closes the editor */
+                        tab_cur  = 0;
+                        quitting = true;
                         return;
                 }
                 /* The globals are empty: bring the next one, or the last */
@@ -4740,13 +4973,19 @@ tab_close(int i, bool force)
         tab_title();
 }
 
-/* Show PATH: its tab if it's open, or a new one. An untitled empty tab
- * shown goes away, it was only there to have one. */
+/* Show PATH: its tab if it's open, or a new one. An untitled tab shown that
+ * wasn't touched goes away, it was only there to have one. */
 static void
 tab_open(const char *path)
 {
-        char want[PATH_MAX], have[PATH_MAX];
+        char want[PATH_MAX], have[PATH_MAX], why[128];
         bool known = realpath(path, want) != NULL;
+
+        /* A new file is fine, an existing one has to be a canvas */
+        if ((FileExists(path) || DirectoryExists(path)) && !canvas_check(path, why, sizeof why)) {
+                set_status("Can't open %s: %s", path, why);
+                return;
+        }
 
         for (int i = 0; known && i < tabs.count; i++) {
                 const char *p = i == tab_cur ? canvas_path : tabs.items[i]->path;
@@ -4756,12 +4995,56 @@ tab_open(const char *path)
                 }
         }
 
-        Tab *blank = tabs.count && !canvas_path && !squares.count && !tab_dirty(tab_cur) ? tabs.items[tab_cur] : NULL;
+        Tab *blank = tabs.count && !canvas_path && !tab_dirty(tab_cur) ? tabs.items[tab_cur] : NULL;
         tab_new(known ? want : path);
         for (int i = 0; blank && i < tabs.count; i++) {
                 if (tabs.items[i] == blank) tab_close(i, true);
         }
         set_status(FileExists(path) ? "Opened %s" : "New file %s", path);
+}
+
+/* Ctrl+Shift+T: the last tab closed, back as it was. If its file is open
+ * again already, that tab. An untitled tab shown that wasn't touched goes
+ * away, like with Open. */
+static void
+tab_reopen(void)
+{
+        char want[PATH_MAX], have[PATH_MAX];
+        if (!closed_tabs.count) {
+                set_status("No closed tabs to reopen");
+                return;
+        }
+        ClosedTab c = closed_tabs.items[--closed_tabs.count];
+
+        for (int i = 0; c.path && i < tabs.count; i++) {
+                const char *p = i == tab_cur ? canvas_path : tabs.items[i]->path;
+                if (p && realpath(p, have) && realpath(c.path, want) && !strcmp(want, have)) {
+                        tab_switch(i);
+                        set_status("%s is open already", tab_name(i));
+                        closed_tab_free(&c);
+                        return;
+                }
+        }
+
+        Tab *blank = tabs.count && !canvas_path && !tab_dirty(tab_cur) ? tabs.items[tab_cur] : NULL;
+        tab_new(NULL);
+        canvas_read_text(c.canvas, READ_LOAD);
+        free((char *) canvas_path);
+        canvas_path = c.path; /* its strings are the tab's now */
+        history_reset();
+        Da_destroy(&history.undo);
+        Da_destroy(&history.redo);
+        history.undo = c.undo;
+        history.redo = c.redo;
+        Tab *t = tabs.items[tab_cur];
+        free(t->saved);
+        t->saved = c.saved;
+        free(c.canvas);
+        tab_title();
+        for (int i = 0; blank && i < tabs.count; i++) {
+                if (tabs.items[i] == blank) tab_close(i, true);
+        }
+        set_status("Reopened %s", tab_name(tab_cur));
 }
 
 /* Running tabs that aren't shown go on running */
@@ -5093,12 +5376,14 @@ file_close(void)
 static void
 file_next_tab(int step)
 {
+        if (!tabs.count) return; /* the last was just closed */
         tab_switch((tab_cur + step + tabs.count) % tabs.count);
 }
 
 #define FILE_ITEM(fn) \
         static void fn##_item(int id, void *arg) { (void) id, (void) arg, fn(); }
 FILE_ITEM(file_new)
+FILE_ITEM(tab_reopen)
 FILE_ITEM(file_open)
 FILE_ITEM(bar_save)
 FILE_ITEM(file_save_as)
@@ -5108,16 +5393,26 @@ FILE_ITEM(file_close)
 
 static Menu file_menu;
 
+static void
+autosave_toggle(int id, void *arg)
+{
+        (void) id, (void) arg;
+        autosave = !autosave;
+        set_status(autosave ? "Autosave on, every %gs" : "Autosave off", cfg.save.autosave_interval);
+}
+
 /* The bar button: the menu, above it */
 static void
 file_menu_open(void)
 {
-        static const MenuItem items[] = {
+        const MenuItem items[] = {
                 { .label = "New tab", .hint = "Ctrl+T", .fn = file_new_item },
+                { .label = "Reopen closed tab", .hint = "Ctrl+Shift+T", .fn = tab_reopen_item },
                 { .label = "Open...", .hint = "Ctrl+O", .fn = file_open_item },
                 { .label = "Save", .hint = "Ctrl+S", .fn = bar_save_item },
                 { .label = "Save as...", .hint = "Ctrl+Shift+S", .fn = file_save_as_item },
                 { .label = "Revert to saved", .fn = bar_load_item },
+                { .label = "Autosave", .hint = autosave ? "on" : "off", .fn = autosave_toggle },
                 { .label = "Close tab", .hint = "Ctrl+W", .fn = file_close_item },
         };
         file_menu.count = 0;
@@ -5173,15 +5468,6 @@ port_for(PortList *l, int sq, int pin)
         }
         Da_append(l, p);
         return &l->items[l->count - 1];
-}
-
-/* Index of the pin of L named NAME, -1 if none is */
-static int
-pin_named(PinList *l, const char *name)
-{
-        for (int i = 0; i < l->count; i++)
-                if (!strcmp(l->items[i].name, name)) return i;
-        return -1;
 }
 
 /* A graph/input or graph/output square for P at X, in the canvas there is */
@@ -5416,15 +5702,16 @@ menu_subgraph(int id, void *arg)
 /* ---- Unsaved changes: asked before they are lost ---- */
 
 /* Closing a tab or the window with unsaved changes asks: Save or Don't
- * save. The x at its top right (or Esc) leaves everything as it was.
+ * save. The x at its top right (or Esc) leaves everything as it was. Enter
+ * presses the button chosen, Save at first; Tab chooses the next one.
  * Saving an untitled one asks where first (Save as). */
 
-static bool quitting; /* the editor closes after this frame */
 
 static struct {
         bool open;
         Tab *tab; /* the one closing, NULL: the window */
         char text[256];
+        int choice; /* the button Enter presses */
 } ask;
 
 enum { ASK_SAVE,
@@ -5463,8 +5750,9 @@ static void
 ask_close_tab(int i)
 {
         tab_switch(i); /* show what it's about */
-        ask.open = true;
-        ask.tab  = tabs.items[i];
+        ask.open   = true;
+        ask.tab    = tabs.items[i];
+        ask.choice = 0; /* Save */
         snprintf(ask.text, sizeof ask.text, "%s has unsaved changes", tab_name(i));
 }
 
@@ -5499,8 +5787,9 @@ quit_request(void)
                 quitting = true;
                 return;
         }
-        ask.open = true;
-        ask.tab  = NULL;
+        ask.open   = true;
+        ask.tab    = NULL;
+        ask.choice = 0; /* Save */
         snprintf(ask.text, sizeof ask.text, "Unsaved changes in %s", names);
 }
 
@@ -5573,15 +5862,19 @@ ask_dismiss_rect(void)
         return (Rectangle) { r.x + r.width - side, r.y, side, side };
 }
 
-/* Enter saves, Esc is the x */
+/* Enter presses the button chosen, Tab (Shift+Tab back) chooses another,
+ * Esc is the x */
 static bool
 update_ask(void)
 {
         if (!ask.open) return false;
         Vector2 mouse = GetMousePosition();
-        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                ask_answer(ASK_SAVE);
-        } else if (IsKeyPressed(KEY_ESCAPE)) {
+        bool shift    = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        if (key_pressed(KEY_TAB)) {
+                ask.choice = (ask.choice + (shift ? ASK_BUTTONS - 1 : 1)) % ASK_BUTTONS;
+        } else if (key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER)) {
+                ask_answer(ask.choice);
+        } else if (key_pressed(KEY_ESCAPE)) {
                 ask_answer(ASK_DISMISS);
         } else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 if (CheckCollisionPointRec(mouse, ask_dismiss_rect())) ask_answer(ASK_DISMISS);
@@ -5608,14 +5901,42 @@ draw_ask(void)
         for (int b = 0; b < ASK_BUTTONS; b++) {
                 Rectangle br = ask_button_rect(b);
                 bool hover   = CheckCollisionPointRec(GetMousePosition(), br);
-                DrawRectangleRec(br, hover || b == ASK_SAVE ? cfg.colors.menu_hover : cfg.colors.bar);
+                DrawRectangleRec(br, hover || b == ask.choice ? cfg.colors.menu_hover : cfg.colors.bar);
                 DrawRectangleLinesEx(br, 1.0f, cfg.colors.menu_border);
+                /* The one Enter presses */
+                if (b == ask.choice) DrawRectangleLinesEx(br, 2.0f, cfg.colors.selection);
                 draw_text(ask_labels[b], br.x + (br.width - measure_text(ask_labels[b], fs)) / 2, br.y + pad, fs,
                           cfg.colors.menu_text);
         }
         Rectangle x = ask_dismiss_rect();
         if (CheckCollisionPointRec(GetMousePosition(), x)) DrawRectangleRec(x, cfg.colors.menu_hover);
         draw_text(TAB_CLOSE, x.x + (x.width - measure_text(TAB_CLOSE, fs)) / 2, x.y + pad, fs, cfg.colors.name);
+}
+
+/* ---- Autosave ---- */
+
+/* While it's on (File > Autosave, or save.autosave in the config), every
+ * save.autosave_interval seconds the tabs with changes are saved. Untitled
+ * ones aren't: they don't have a file yet. */
+
+static void
+autosave_tick(void)
+{
+        static double last;
+        char names[200] = "";
+        int n           = 0;
+
+        if (!autosave || GetTime() - last < cfg.save.autosave_interval) return;
+        /* Not in the middle of something: it's tried again next frame */
+        if (drag.kind != DRAG_NONE || editing_text() || ask.open) return;
+        last = GetTime();
+        for (int i = 0; i < tabs.count; i++) {
+                const char *path = i == tab_cur ? canvas_path : tabs.items[i]->path;
+                if (!path || !tab_dirty(i) || !tab_save(i)) continue;
+                size_t used = strlen(names);
+                snprintf(names + used, sizeof names - used, "%s%s", n++ ? ", " : "", tab_name(i));
+        }
+        if (n) set_status("Autosaved %s", names);
 }
 
 /* ---- One editor: ./lineit --tab FILE opens FILE in the one running ---- */
@@ -5802,6 +6123,7 @@ session_write(const char *path)
 
         fprintf(f, "-- lineit session, see --restore\nsession = {\n");
         fprintf(f, "        active = %d,\n", tab_cur + 1);
+        fprintf(f, "        autosave = %s,\n", autosave ? "true" : "false");
         fprintf(f, "        output_open = %s,\n", output.open ? "true" : "false");
         fprintf(f, "        window = { x = %d, y = %d, width = %d, height = %d },\n",
                 (int) win.x, (int) win.y, GetScreenWidth(), GetScreenHeight());
@@ -5955,6 +6277,7 @@ session_restore(const char *path)
         }
         if (Conf_get_bool(conf, &b, "session.output_open") == CONF_OK) output.open = b;
         output.unseen = 0;
+        if (Conf_get_bool(conf, &b, "session.autosave") == CONF_OK) autosave = b;
 
         int ntabs = 0;
         Conf_get_len(conf, &ntabs, "session.tabs");
@@ -6049,29 +6372,29 @@ update_shortcuts(void)
         if (editing_text()) return;
 
         if (!ctrl) {
-                if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) each_selected(square_delete);
-                if (IsKeyPressed(KEY_ESCAPE)) select_all(false);
+                if (key_pressed(KEY_DELETE) || key_pressed(KEY_BACKSPACE)) each_selected(square_delete);
+                if (key_pressed(KEY_ESCAPE)) select_all(false);
                 return;
         }
 
-        if (IsKeyPressed(KEY_S) && !shift) bar_save();
-        if (IsKeyPressed(KEY_S) && shift) file_save_as();
-        if (IsKeyPressed(KEY_O)) file_open();
-        if (IsKeyPressed(KEY_T)) file_new();
-        if (IsKeyPressed(KEY_G)) subgraph_ask();
-        if (IsKeyPressed(KEY_W)) file_close();
-        if (IsKeyPressed(KEY_TAB) || IsKeyPressed(KEY_PAGE_DOWN) || IsKeyPressed(KEY_PAGE_UP))
-                file_next_tab(shift || IsKeyPressed(KEY_PAGE_UP) ? -1 : 1);
-        if (IsKeyPressed(KEY_Z) && !shift) history_step(true);
-        if (IsKeyPressed(KEY_Y) || (IsKeyPressed(KEY_Z) && shift)) history_step(false);
-        if (IsKeyPressed(KEY_A)) select_all(true);
-        if (IsKeyPressed(KEY_C)) selection_copy();
-        if (IsKeyPressed(KEY_X)) {
+        if (key_pressed(KEY_S) && !shift) bar_save();
+        if (key_pressed(KEY_S) && shift) file_save_as();
+        if (key_pressed(KEY_O)) file_open();
+        if (key_pressed(KEY_T)) shift ? tab_reopen() : file_new();
+        if (key_pressed(KEY_G)) subgraph_ask();
+        if (key_pressed(KEY_W)) file_close();
+        if (key_pressed(KEY_TAB) || key_pressed(KEY_PAGE_DOWN) || key_pressed(KEY_PAGE_UP))
+                file_next_tab(shift || key_pressed(KEY_PAGE_UP) ? -1 : 1);
+        if (key_pressed(KEY_Z) && !shift) history_step(true);
+        if (key_pressed(KEY_Y) || (key_pressed(KEY_Z) && shift)) history_step(false);
+        if (key_pressed(KEY_A)) select_all(true);
+        if (key_pressed(KEY_C)) selection_copy();
+        if (key_pressed(KEY_X)) {
                 selection_copy();
                 each_selected(square_delete);
         }
-        if (IsKeyPressed(KEY_V)) selection_paste(mouse_world());
-        if (IsKeyPressed(KEY_D)) selection_duplicate();
+        if (key_pressed(KEY_V)) selection_paste(mouse_world());
+        if (key_pressed(KEY_D)) selection_duplicate();
 }
 
 static float
@@ -6235,9 +6558,26 @@ draw_bar(void)
 
         DrawRectangle(0, y, w, h, cfg.colors.bar);
         DrawLine(0, y, w, y, cfg.colors.bar_border);
-        draw_text(TextFormat("x: %.0f  y: %.0f  zoom: %.2f  squares: %d  links: %d  modules: %d  FPS: %d",
-                             world.x, world.y, camera.zoom, squares.count, links.count, modules.count, GetFPS()),
-                  10, y + (h - fs) / 2, fs, cfg.colors.bar_text);
+
+        /* Each in a slot as wide as the widest it usually is, so the ones
+         * after don't move as numbers change (whatever the font). Own
+         * buffers: TextFormat only keeps a few at once. */
+        static const char *widest[] = { "x: -00000", "y: -00000", "zoom: 0.00", "squares: 000",
+                                        "links: 000", "modules: 000", "FPS: 000" };
+        char stats[countof(widest)][48];
+        /* Rounded as integers: %.0f would show -0.3 as "-0" */
+        snprintf(stats[0], sizeof stats[0], "x: %ld", lroundf(world.x));
+        snprintf(stats[1], sizeof stats[1], "y: %ld", lroundf(world.y));
+        snprintf(stats[2], sizeof stats[2], "zoom: %.2f", camera.zoom);
+        snprintf(stats[3], sizeof stats[3], "squares: %d", squares.count);
+        snprintf(stats[4], sizeof stats[4], "links: %d", links.count);
+        snprintf(stats[5], sizeof stats[5], "modules: %d", modules.count);
+        snprintf(stats[6], sizeof stats[6], "FPS: %d", GetFPS());
+        float sx = 10, gap = measure_text("  ", fs);
+        for (int i = 0; i < countof(widest); i++) {
+                draw_text(stats[i], sx, y + (h - fs) / 2, fs, cfg.colors.bar_text);
+                sx += fmaxf(measure_text(stats[i], fs), measure_text(widest[i], fs)) + gap;
+        }
 
         Rectangle b = { GetScreenWidth(), 0, 0, 0 };
         for (int i = 0; i < countof(bar_buttons); i++) {
@@ -6301,6 +6641,7 @@ main(int argc, char **argv)
         config_path  = f_config;
         config_mtime = file_mtime(config_path);
         load_config(config_path);
+        autosave = cfg.save.autosave;
         exe_watch();
         if (f_restore) session_window(f_restore);
         init_raylib();
@@ -6317,6 +6658,7 @@ main(int argc, char **argv)
         }
 
         while (!handed_over && !quitting) {
+                keys_poll();
                 if (WindowShouldClose() && !ask.open) quit_request();
                 tab_socket_poll();
                 update_camera();
@@ -6327,6 +6669,7 @@ main(int argc, char **argv)
                 }
                 run_frame();
                 history_check();
+                autosave_tick();
                 hot_reload();
 
                 BeginDrawing();
@@ -6345,6 +6688,7 @@ main(int argc, char **argv)
         }
 
         tab_socket_close();
+        closed_tabs_free();
         /* Their squares may have something to close */
         for (int i = tabs.count - 1; i >= 0; i--) {
                 if (i != tab_cur) tab_close(i, true);

@@ -3,14 +3,14 @@
 -- subgraph with a local "total") count on their own, and this canvas sees
 -- neither total; its own n is left alone. ::g is global.
 squares = {
-        { id = 0, module = "entry", x = 0, y = 0 },
+        { id = 0, module = "flow/entry", x = 0, y = 0 },
         { id = 1, module = "var/set", x = 150, y = 0, params = { { name = "name", value = "total" }, }, inputs = { { name = "value", type = "int", value = "100" }, } },
         { id = 2, module = "var/set", x = 300, y = 0, params = { { name = "name", value = "g" }, { name = "global", value = "true" }, }, inputs = { { name = "value", type = "int", value = "7" }, } },
-        { id = 3, module = "loop", x = 450, y = 0, inputs = { { name = "from", type = "int", value = "0" }, { name = "to", type = "int", value = "5" }, } },
+        { id = 3, module = "flow/loop", x = 450, y = 0, inputs = { { name = "from", type = "int", value = "0" }, { name = "to", type = "int", value = "5" }, } },
         { id = 4, module = "math/accumulate", x = 600, y = 0 },
         { id = 5, module = "math/accumulate", x = 750, y = 0, inputs = { { name = "value", type = "int", value = "10" }, } },
-        { id = 6, module = "display", x = 600, y = 200 },
-        { id = 7, module = "display", x = 750, y = 200 },
+        { id = 6, module = "io/display", x = 600, y = 200 },
+        { id = 7, module = "io/display", x = 750, y = 200 },
         { id = 8, module = "var/get", x = 0, y = 300, params = { { name = "name", value = "total" }, } },
         { id = 9, module = "var/get", x = 150, y = 300, params = { { name = "name", value = "g" }, { name = "global", value = "true" }, } },
         { id = 10, module = "var/get", x = 300, y = 300, params = { { name = "name", value = "g" }, } },

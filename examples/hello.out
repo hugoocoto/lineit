@@ -1,4 +1,4 @@
 Hello, world!
 -- 2 squares, 1 links
-0 entry: 
-1 print: Hello, world!
+0 flow/entry: 
+1 io/print: Hello, world!

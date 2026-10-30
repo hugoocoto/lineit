@@ -27,15 +27,15 @@
 317811
 514229
 -- 12 squares, 11 links
-49 entry: 
+49 flow/entry: 
 50 list/clear: fib [30]
 51 list/push: fib [30]
 52 list/push: fib [30]
-53 loop: 29
+53 flow/loop: 29
 54 list/get: fib [30]
 55 list/get: fib [30]
 56 math/add: 514229
 57 list/push: fib [30]
-58 print: 514229
+58 io/print: 514229
 59 list/len: fib [30]
-60 display: 30
+60 io/display: 30

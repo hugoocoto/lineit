@@ -101,8 +101,8 @@ save(const char *name, const char *description)
 static void
 hello(void)
 {
-        Square *e = sq("entry", 0, 0);
-        Square *p = in(sq("print", 1, 0), 1, "Hello, world!");
+        Square *e = sq("flow/entry", 0, 0);
+        Square *p = in(sq("io/print", 1, 0), 1, "Hello, world!");
         w(e, 0, p, 0);
         save("hello", "Prints \"Hello, world!\" when you press Start.\n"
                       "entry ticks once on Start. print writes its value to stdout and shows\n"
@@ -112,8 +112,8 @@ hello(void)
 static void
 fizzbuzz(void)
 {
-        Square *e  = sq("entry", 0, 0);
-        Square *lp = in(in(sq("loop", 1, 0), 1, "1"), 2, "101");
+        Square *e  = sq("flow/entry", 0, 0);
+        Square *lp = in(in(sq("flow/loop", 1, 0), 1, "1"), 2, "101");
         w(e, 0, lp, 0);
 
         /* index % N == 0, for N = 15, 3, 5 */
@@ -124,8 +124,8 @@ fizzbuzz(void)
                 float x     = 2.3f + k * 1.5f;
                 Square *mod = in(sq("math/mod", x - 0.4f, 1.6), 1, ns[k]);
                 Square *eq  = in(sq("compare/equal", x + 0.2f, 2.6), 1, "0");
-                Square *ie  = sq("ifelse", x, 0);
-                Square *pr  = in(sq("print", x + 0.6f, -1.1), 1, words[k]);
+                Square *ie  = sq("flow/ifelse", x, 0);
+                Square *pr  = in(sq("io/print", x + 0.6f, -1.1), 1, words[k]);
                 w(lp, 1, mod, 0);
                 w(mod, 0, eq, 0);
                 w(eq, 0, ie, 1);
@@ -133,7 +133,7 @@ fizzbuzz(void)
                 w(ie, 0, pr, 0);
                 prev = ie;
         }
-        Square *pn = sq("print", 6.9, 0.6);
+        Square *pn = sq("io/print", 6.9, 0.6);
         w(prev, 1, pn, 0), w(lp, 1, pn, 1);
         save("fizzbuzz", "FizzBuzz from 1 to 100: multiples of 15 print FizzBuzz, of 3 Fizz,\n"
                          "of 5 Buzz, and the rest the number. The output goes to stdout.\n"
@@ -147,11 +147,11 @@ static void
 clock_example(void)
 {
         /* The check below the clock, so the wire back to reset can be seen */
-        Square *e   = sq("entry", 0, 0);
-        Square *clk = sq("clock", 1, 0);
-        Square *d   = sq("display", 2.3, -0.7);
+        Square *e   = sq("flow/entry", 0, 0);
+        Square *clk = sq("flow/clock", 1, 0);
+        Square *d   = sq("io/display", 2.3, -0.7);
         Square *cmp = in(in(sq("compare/compare", 2.1, 1.3), 0, ">="), 2, "10");
-        Square *ie  = sq("ifelse", 3.2, 0.9);
+        Square *ie  = sq("flow/ifelse", 3.2, 0.9);
         w(e, 0, clk, 0);
         w(clk, 0, ie, 0), w(clk, 1, cmp, 1), w(cmp, 0, ie, 1);
         w(ie, 0, clk, 0);
@@ -166,14 +166,14 @@ clock_example(void)
 static void
 sum_squares(void)
 {
-        Square *e    = sq("entry", 0, 0);
+        Square *e    = sq("flow/entry", 0, 0);
         Square *init = in(param(sq("var/set", 1, 0), "sum"), 1, "0");
-        Square *lp   = sq("loop", 2.1, 0);
+        Square *lp   = sq("flow/loop", 2.1, 0);
         Square *mul  = sq("math/mul", 3.2, 1.3);
         Square *get  = param(sq("var/get", 3.2, 2.4), "sum");
         Square *add  = sq("math/add", 4.3, 1.7);
         Square *set  = param(sq("var/set", 5.3, 0), "sum");
-        Square *pr   = sq("print", 5.3, 2.6);
+        Square *pr   = sq("io/print", 5.3, 2.6);
         w(e, 0, init, 0);
         w(init, 0, lp, 0);
         w(lp, 1, mul, 0), w(lp, 1, mul, 1);
@@ -190,13 +190,13 @@ static void
 collatz(void)
 {
         /* Ticks along the top row, values below what uses them */
-        Square *e      = sq("entry", 0, 0);
+        Square *e      = sq("flow/entry", 0, 0);
         Square *set_n  = in(param(sq("var/set", 1, 0), "n"), 1, "27");
         Square *set_s  = in(param(sq("var/set", 2, 0), "steps"), 1, "0");
-        Square *wh     = sq("while", 3.1, 0);
+        Square *wh     = sq("flow/while", 3.1, 0);
         Square *ne     = in(in(sq("compare/compare", 2.5, 1.4), 0, "!="), 2, "1");
         Square *get_n  = param(sq("var/get", 1.3, 2.4), "n");
-        Square *ie     = sq("ifelse", 4.5, 0);
+        Square *ie     = sq("flow/ifelse", 4.5, 0);
         Square *mod    = in(sq("math/mod", 3.3, 2.5), 1, "2");
         Square *eq     = in(sq("compare/equal", 4.3, 1.5), 1, "0");
         Square *half   = in(sq("math/div", 5.2, -1.5), 1, "2");
@@ -207,8 +207,8 @@ collatz(void)
         Square *get_s  = param(sq("var/get", 6.6, 2.5), "steps");
         Square *inc    = in(sq("math/add", 7.3, 1.5), 1, "1");
         Square *set_s2 = param(sq("var/set", 7.6, 0), "steps");
-        Square *pr_n   = sq("print", 8.8, 0);
-        Square *pr_s   = sq("print", 4.3, -1.6);
+        Square *pr_n   = sq("io/print", 8.8, 0);
+        Square *pr_s   = sq("io/print", 4.3, -1.6);
         w(e, 0, set_n, 0);
         w(set_n, 0, set_s, 0);
         w(set_s, 0, wh, 0);
@@ -233,18 +233,18 @@ collatz(void)
 static void
 fibonacci(void)
 {
-        Square *e     = sq("entry", 0, 0);
+        Square *e     = sq("flow/entry", 0, 0);
         Square *clear = param(sq("list/clear", 1, 0), "fib");
         Square *push0 = in(param(sq("list/push", 2, 0), "fib"), 1, "0");
         Square *push1 = in(param(sq("list/push", 3, 0), "fib"), 1, "1");
-        Square *lp    = in(in(sq("loop", 4.1, 0), 1, "2"), 2, "30");
+        Square *lp    = in(in(sq("flow/loop", 4.1, 0), 1, "2"), 2, "30");
         Square *last  = in(param(sq("list/get", 4.1, 1.6), "fib"), 0, "-1");
         Square *prev  = in(param(sq("list/get", 4.1, 2.6), "fib"), 0, "-2");
         Square *add   = sq("math/add", 5.2, 2.1);
         Square *push  = param(sq("list/push", 6.2, 0), "fib");
-        Square *pr    = sq("print", 7.2, 0);
+        Square *pr    = sq("io/print", 7.2, 0);
         Square *len   = param(sq("list/len", 6.4, 1.6), "fib");
-        Square *d     = sq("display", 7.4, 1.6);
+        Square *d     = sq("io/display", 7.4, 1.6);
         w(e, 0, clear, 0);
         w(clear, 0, push0, 0);
         w(push0, 0, push1, 0);

@@ -1,22 +1,22 @@
 -- 21 squares, 2 links
-0 convert/int: 42
-1 convert/int: 2
-2 convert/int: -3
-3 convert/int: 1
-4 convert/int: can't
-5 convert/int: can't
-6 convert/float: 2.5
-7 convert/float: 7
-8 convert/float: 1000
-9 convert/float: can't
-10 convert/bool: true
-11 convert/bool: false
-12 convert/bool: false
-13 convert/bool: true
-14 convert/bool: can't
-15 convert/string: 0.25
-16 convert/string: false
-17 convert/string: 
-18 convert/int: 12
+0 convert: 42
+1 convert: 2
+2 convert: -3
+3 convert: 1
+4 convert: can't
+5 convert: can't
+6 convert: 2.5
+7 convert: 7
+8 convert: 1000
+9 convert: can't
+10 convert: true
+11 convert: false
+12 convert: false
+13 convert: true
+14 convert: can't
+15 convert: 0.25
+16 convert: false
+17 convert: 
+18 convert: 12
 19 math/add: 13
-20 display: 13
+20 io/display: 13

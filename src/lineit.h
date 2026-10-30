@@ -64,7 +64,7 @@
    several platforms in one file, make a package (.li) with tools/lineit-pack.
    It goes in the modules dir like a .so.
 
-   Minimal example, modules/print.c:
+   Minimal example, modules/io/print.c:
 
      #include "lineit.h"
      #include <stdio.h>

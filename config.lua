@@ -45,6 +45,8 @@ modules = {
 
 save = {
         path = "canvas.lua", -- Save/Load (Ctrl+S/Ctrl+O) use this file, `lineit -f file` overrides it
+        autosave = false,          -- save tabs with changes on their own (File > Autosave toggles it)
+        autosave_interval = 30,    -- seconds between autosaves
 }
 
 output = {
