@@ -41,6 +41,7 @@ font = {
 modules = {
         path = "build/modules", -- every .so here (and in subfolders) is loaded, `make` builds them from modules/
         source = "modules",     -- Make subgraph (Ctrl+G) writes the new .lua here, and links it into path
+        cache = "build/cache",  -- packages (.li) not built for this machine are built here, from their src/
 }
 
 save = {
@@ -53,7 +54,15 @@ output = {
         height = 200,           -- of the panel, toggled with Output in the bar
         font_size = 16,
         lines = 2000,           -- kept, older ones are dropped
-        clear_on_start = false, -- empty it when Start is pressed
+        clear_on_run = false, -- empty it when Run is pressed
+}
+
+compile = {
+        output = "build/bin",   -- Compile (in the bar) makes the program NAME here (NAME: the canvas file's), its C in NAME.build/
+        runtime = "build/rt",   -- what programs are built with, `make` builds it
+        cc = "cc",
+        cflags = "-O2",
+        objcopy = "objcopy",    -- gives each square of a package its own copy of it (llvm-objcopy works too)
 }
 
 menu = {

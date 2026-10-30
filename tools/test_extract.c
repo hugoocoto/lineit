@@ -19,7 +19,7 @@ fake_time(void)
         return now;
 }
 
-/* What it prints in 2 seconds after Start */
+/* What it prints in 2 seconds after Run */
 static char *
 run(void)
 {
@@ -27,7 +27,7 @@ run(void)
         size_t len;
         output_clear();
         running = false;
-        bar_start_stop();
+        bar_run_stop();
         for (int i = 0; i < 120; i++) {
                 now = i / 60.0;
                 run_frame();

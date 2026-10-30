@@ -31,7 +31,7 @@ DEPS += $(shell pkg-config --libs fontconfig)
 DEPS += -ldl
 DEPS += $(shell pkg-config --libs zlib)
 
-all: $(OUT) $(MODULES) $(GRAPHS)
+all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
 # -rdynamic exports the li_* functions (src/lineit.h) to the modules
 $(OUT): $(SRC) src/lineit.h
@@ -44,6 +44,19 @@ build/modules/%.lua: modules/%.lua
 build/modules/%.so: modules/%.c src/lineit.h $(MODULES_H)
 	@mkdir -p $(dir $@)
 	$(CC) -I./src -fPIC -shared $< -o $@
+
+# What the programs Compile makes are built with (see Compile in
+# src/main.c): build/rt/liblineit-rt.a, and the headers they and their
+# modules include in build/rt/include.
+RT = build/rt/liblineit-rt.a
+RT_H = src/lineit.h src/value.h src/rt/rt.h thirdparty/bt.h/bt.h thirdparty/cum.h/cum.h
+
+$(RT): src/value.c src/rt/rt.c $(RT_H)
+	@mkdir -p build/rt/include
+	cp $(RT_H) build/rt/include/
+	$(CC) -O2 -Ibuild/rt/include -c src/value.c -o build/rt/value.o
+	$(CC) -O2 -Ibuild/rt/include -c src/rt/rt.c -o build/rt/rt.o
+	$(AR) rcs $@ build/rt/value.o build/rt/rt.o
 
 # examples/*.lua, see tools/gen_examples.c. It includes src/main.c, so it
 # links every other source file but that one.
@@ -60,7 +73,7 @@ $(GEN_EXAMPLES): tools/gen_examples.c $(SRC) src/lineit.h
 # tests/package.lua.
 PACKAGES = build/modules/string/reverse.li
 
-build/modules/string/reverse.li: $(wildcard examples/package/*) tools/lineit-pack src/lineit.h
+build/modules/string/reverse.li: $(wildcard examples/package/* examples/package/src/*) tools/lineit-pack src/lineit.h
 	tools/lineit-pack -o $@ examples/package/Makefile
 
 # Runs every canvas in examples/ and tests/ and compares it with its .out,
@@ -69,16 +82,18 @@ RUN_TESTS = build/run_tests
 TEST_EXTRACT = build/test_extract
 TESTS = $(wildcard examples/*.lua tests/*.lua)
 
-test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES)
+test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
 	./$(RUN_TESTS) $(TESTS)
+	./$(RUN_TESTS) -c $(TESTS)
 	./$(TEST_EXTRACT)
 
 # The same, with the editor built with AddressSanitizer and UBSan: any
 # memory error, leak or undefined behavior fails it
 ASAN_FLAGS = -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 
-test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(PACKAGES)
+test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
 	./build/run_tests_asan $(TESTS)
+	./build/run_tests_asan -c $(TESTS)
 	./build/test_extract_asan
 
 build/%_asan: tools/%.c $(SRC) src/lineit.h

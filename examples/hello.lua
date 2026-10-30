@@ -1,10 +1,10 @@
 -- hello
--- Prints "Hello, world!" when you press Start.
--- flow/entry ticks once on Start. io/print writes its value to stdout
+-- Prints "Hello, world!" when you press Run.
+-- flow/entry ticks once on Run. io/print writes its value to stdout
 -- and shows it: the text is typed in its value field (click it to
 -- change it).
 --
--- Open it with: ./lineit -f examples/hello.lua, then press Start.
+-- Open it with: ./lineit -f examples/hello.lua, then press Run.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION
 
 camera = { x = 114.050781, y = 12, offset_x = 640, offset_y = 344, zoom = 1 }

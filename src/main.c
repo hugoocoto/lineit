@@ -16,6 +16,7 @@
 #include <fontconfig/fontconfig.h>
 #include <libgen.h>
 #include <limits.h>
+#include <math.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -30,8 +31,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define BT_IMPLEMENTATION
-#include "bt.h"
+#include "value.h"
 
 #ifndef VERSION
 #define VERSION "unknown"
@@ -117,6 +117,7 @@ static struct {
         struct {
                 const char *path;
                 const char *source; /* where Make subgraph writes them */
+                const char *cache;  /* packages built here, see package_build */
         } modules;
         struct {
                 const char *path; /* --file overrides it */
@@ -127,8 +128,15 @@ static struct {
                 int height; /* of the panel, pixels */
                 int font_size;
                 int lines; /* kept, older ones are dropped */
-                bool clear_on_start;
+                bool clear_on_run;
         } output;
+        struct {
+                const char *output;  /* where programs go */
+                const char *runtime; /* liblineit-rt.a and its headers, see src/rt */
+                const char *cc;
+                const char *cflags;
+                const char *objcopy; /* copies the object of a package per square */
+        } compile;
         struct {
                 Color bg;
                 Color grid;
@@ -175,9 +183,10 @@ static struct {
         .bar     = { .height = 32, .font_size = 20 },
         .menu    = { .font_size = 20, .padding = 8 },
         .font    = { .name = "Iosevka NFM", .spacing = 0 },
-        .modules = { .path = "build/modules", .source = "modules" },
+        .modules = { .path = "build/modules", .source = "modules", .cache = "build/cache" },
         .save    = { .path = "canvas.lua", .autosave = false, .autosave_interval = 30 },
-        .output  = { .height = 200, .font_size = 16, .lines = 2000, .clear_on_start = false },
+        .output  = { .height = 200, .font_size = 16, .lines = 2000, .clear_on_run = false },
+        .compile = { .output = "build/bin", .runtime = "build/rt", .cc = "cc", .cflags = "-O2", .objcopy = "objcopy" },
         .colors  = {
         .bg            = { 24, 24, 27, 255 },
         .grid          = { 39, 39, 42, 255 },
@@ -317,6 +326,7 @@ load_config(const char *path)
 
         conf_str(conf, &cfg.modules.path, "modules.path");
         conf_str(conf, &cfg.modules.source, "modules.source");
+        conf_str(conf, &cfg.modules.cache, "modules.cache");
         conf_str(conf, &cfg.save.path, "save.path");
         conf_bool(conf, &cfg.save.autosave, "save.autosave");
         conf_float(conf, &cfg.save.autosave_interval, "save.autosave_interval");
@@ -324,7 +334,13 @@ load_config(const char *path)
         conf_int(conf, &cfg.output.height, "output.height");
         conf_int(conf, &cfg.output.font_size, "output.font_size");
         conf_int(conf, &cfg.output.lines, "output.lines");
-        conf_bool(conf, &cfg.output.clear_on_start, "output.clear_on_start");
+        conf_bool(conf, &cfg.output.clear_on_run, "output.clear_on_run");
+
+        conf_str(conf, &cfg.compile.output, "compile.output");
+        conf_str(conf, &cfg.compile.runtime, "compile.runtime");
+        conf_str(conf, &cfg.compile.cc, "compile.cc");
+        conf_str(conf, &cfg.compile.cflags, "compile.cflags");
+        conf_str(conf, &cfg.compile.objcopy, "compile.objcopy");
 
         conf_color(conf, &cfg.colors.bg, "colors.bg");
         conf_color(conf, &cfg.colors.grid, "colors.grid");
@@ -408,6 +424,7 @@ typedef struct ModuleFns {
         void (*load)(Li_Node *n, const char *state);
         void (*draw)(Li_Node *n);
         void (*start)(Li_Node *n);
+        const char *(*emit)(Li_Node *n); /* only used by Compile */
 } ModuleFns;
 
 /* A square on the canvas, an instance of a module. Modules see it as an
@@ -430,6 +447,7 @@ struct Li_Node {
         void *data;       /* module state, see li_set_data */
         char text[64];    /* drawn inside, see li_text */
         bool evaluating;  /* guards module_eval against cycles */
+        int ir;           /* its node in the program, see Program */
         struct Graph *graph; /* a subgraph: its own canvas, see Subgraphs */
         struct Li_Node *owner; /* subgraph/input and subgraph/output in one: the subgraph */
         int port;              /* and which of its inputs or outputs they are */
@@ -497,6 +515,10 @@ static Module *last_module;  /* the last one placed, first in the canvas menu */
 static bool running;         /* module_frame is only called while running */
 static bool autosave;        /* cfg.save.autosave at start, toggled in the File menu (see Autosave) */
 static const ModuleFns graph_fns;
+static const ModuleFns port_in_fns, port_out_fns;
+static long long squares_version = 1; /* bumped when a square is made or freed, see Program */
+static void program_lower(void);
+static void program_each(bool start);
 static void square_open_tab(int id, void *arg);
 static void menu_subgraph(int id, void *arg);
 static void type_edit(int id, void *arg);
@@ -1038,36 +1060,7 @@ li_output(Li_Node *n, const char *name, Li_Type type)
         return pin_add(&n->outputs, name, type);
 }
 
-/* How deep in a tick chain we are, 0 outside of one */
-static int tick_depth;
-
-Li_Value
-li_get(Li_Node *n, int input)
-{
-        PinInfo *in = pin_info(n, PART_INPUT, input);
-        if (!in) return (Li_Value) { .type = LI_NONE };
-        if (in->kind == PIN_OPTIONS) return in->value;
-
-        /* Unplugged: what's typed in the square, if it has a field */
-        int l = link_to(n->id, input);
-        if (l < 0) return in->kind == PIN_VALUE ? in->value : (Li_Value) { .type = LI_NONE };
-
-        Link k      = links.items[l];
-        Square *src = square_get(k.from);
-        if (!src || !link_valid(k)) return (Li_Value) { .type = LI_NONE };
-
-        /* Data read while ticking glows too (not what's drawn every frame) */
-        if (tick_depth > 0) links.items[l].flash = GetTime();
-
-        /* Pure squares compute their outputs when someone reads them */
-        if (src->fn.eval && !src->evaluating) {
-                src->evaluating = true;
-                src->fn.eval(src);
-                src->evaluating = false;
-        }
-        PinInfo *out = pin_info(src, PART_OUTPUT, k.from_pin);
-        return out ? out->value : (Li_Value) { .type = LI_NONE };
-}
+/* li_get and li_tick follow the wires of the program, see Program */
 
 void
 li_output_type(Li_Node *n, int output, Li_Type type)
@@ -1081,34 +1074,6 @@ li_set(Li_Node *n, int output, Li_Value value)
 {
         PinInfo *out = pin_info(n, PART_OUTPUT, output);
         if (out) out->value = value;
-}
-
-/* Tick chains are plain recursion, this stops loops in the graph */
-#define TICK_DEPTH_MAX 256
-
-void
-li_tick(Li_Node *n, int output)
-{
-        static bool warned;
-        double now = GetTime();
-
-        if (output >= 0 && output < (int) countof(n->fired)) n->fired[output] = now;
-        if (tick_depth >= TICK_DEPTH_MAX) {
-                if (!warned) fprintf(stderr, "tick: more than %d squares deep, is there a loop?\n", TICK_DEPTH_MAX);
-                warned = true;
-                return;
-        }
-
-        tick_depth++;
-        for (int i = 0; i < links.count; i++) {
-                Link k = links.items[i];
-                if (k.from != n->id || k.from_pin != output || !link_valid(k)) continue;
-                Square *dst          = square_get(k.to);
-                links.items[i].flash = now;
-                if (dst) dst->flash = now;
-                if (dst && dst->fn.tick) dst->fn.tick(dst, k.to_pin);
-        }
-        tick_depth--;
 }
 
 void *
@@ -1196,12 +1161,6 @@ typedef struct TypeDef {
 
 static Da(TypeDef *) types;
 
-typedef struct Record {
-        Li_Type type;
-        int count;
-        Li_Value fields[];
-} Record;
-
 static TypeDef *
 type_def(Li_Type t)
 {
@@ -1209,10 +1168,18 @@ type_def(Li_Type t)
         return i >= 0 && i < types.count ? types.items[i] : NULL;
 }
 
-static bool
+/* For value.c */
+bool
 type_is_record(Li_Type t)
 {
         return type_def(t) != NULL;
+}
+
+const char *
+type_field_name(Li_Type t, int field)
+{
+        TypeDef *d = type_def(t);
+        return d && field >= 0 && field < d->fields.count ? d->fields.items[field].name : "?";
 }
 
 /* For people: "int", "point" */
@@ -1251,417 +1218,8 @@ type_color(Li_Type t)
         return d ? d->color : cfg.colors.types[LI_ANY];
 }
 
-/* A copy of V that owns what it points to (strings, records), for whoever
- * keeps it longer than the module that made it: free it with value_drop */
-static Li_Value
-value_dup(Li_Value v)
-{
-        if (v.type == LI_STRING) return li_string(strdup(v.s ? v.s : ""));
-        if (type_is_record(v.type) && v.p) {
-                Record *r = v.p;
-                Record *c = malloc(sizeof *c + r->count * sizeof *c->fields);
-                c->type   = r->type;
-                c->count  = r->count;
-                for (int i = 0; i < r->count; i++)
-                        c->fields[i] = value_dup(r->fields[i]);
-                v.p = c;
-        }
-        return v;
-}
-
-static void
-value_drop(Li_Value v)
-{
-        if (v.type == LI_STRING) free((char *) v.s);
-        if (type_is_record(v.type) && v.p) {
-                Record *r = v.p;
-                for (int i = 0; i < r->count; i++)
-                        value_drop(r->fields[i]);
-                free(r);
-        }
-}
-
-static bool
-value_equal(Li_Value a, Li_Value b)
-{
-        if (a.type != b.type) return false;
-        switch (a.type) {
-        case LI_BOOL: return a.b == b.b;
-        case LI_INT: return a.i == b.i;
-        case LI_FLOAT: return a.f == b.f;
-        case LI_STRING: return !strcmp(a.s ? a.s : "", b.s ? b.s : "");
-        case LI_PTR: return a.p == b.p;
-        default: break;
-        }
-        if (!type_is_record(a.type)) return true;
-        Record *r = a.p, *s = b.p;
-        if (!r || !s) return r == s;
-        if (r->count != s->count) return false;
-        for (int i = 0; i < r->count; i++)
-                if (!value_equal(r->fields[i], s->fields[i])) return false;
-        return true;
-}
-
-/* {x: 1, y: 2} */
-static int
-record_format(Record *r, char *buf, int size)
-{
-        TypeDef *d = type_def(r->type);
-        int n      = snprintf(buf, size, "{");
-        for (int i = 0; i < r->count && n < size; i++) {
-                const char *name = d && i < d->fields.count ? d->fields.items[i].name : "?";
-                n += snprintf(buf + n, size - n, "%s%s: ", i ? ", " : "", name);
-                if (n < size) n += li_format(r->fields[i], buf + n, size - n);
-        }
-        if (n < size) n += snprintf(buf + n, size - n, "}");
-        return n;
-}
-
-/* Variables, by name. Modules can't share globals (each square has its own
- * copy), so they live here. Like in C, they are local to the canvas they
- * are in: a subgraph square has its own (see Subgraphs), the canvas of a
- * tab its own. Globals (li_global_*) are shared by all of them in the tab. */
-typedef struct Var {
-        char *name;
-        Li_Value value; /* a copy it owns (value_dup) */
-} Var;
-
-typedef Da(Var) VarList;
-static VarList vars;    /* of the canvas running: the tab's, or a subgraph's */
-static VarList globals; /* of the tab */
-
-static Var *
-var_find(VarList *l, const char *name)
-{
-        Da_foreach(v, *l)
-        {
-                if (strcmp(v->name, name) == 0) return v;
-        }
-        return NULL;
-}
-
-static void
-var_set(VarList *l, const char *name, Li_Value value)
-{
-        Var *v = var_find(l, name ? name : "");
-        if (!v) {
-                Da_append(l, (Var) { .name = strdup(name ? name : "") });
-                v = &l->items[l->count - 1];
-        }
-
-        /* Copied: the module's strings and records may not live long */
-        Li_Value old = v->value;
-        v->value     = value_dup(value);
-        value_drop(old);
-}
-
-static Li_Value
-var_get(VarList *l, const char *name)
-{
-        Var *v = var_find(l, name ? name : "");
-        return v ? v->value : (Li_Value) { .type = LI_NONE };
-}
-
-void
-li_var_set(const char *name, Li_Value value)
-{
-        var_set(&vars, name, value);
-}
-
-Li_Value
-li_var_get(const char *name)
-{
-        return var_get(&vars, name);
-}
-
-void
-li_global_set(const char *name, Li_Value value)
-{
-        var_set(&globals, name, value);
-}
-
-Li_Value
-li_global_get(const char *name)
-{
-        return var_get(&globals, name);
-}
-
-static void
-var_list_clear(VarList *l)
-{
-        Da_foreach(v, *l)
-        {
-                free(v->name);
-                value_drop(v->value);
-        }
-        Da_destroy(l);
-}
-
-/* The variables of the canvas running, and the globals of the tab */
-static void
-vars_clear(void)
-{
-        var_list_clear(&vars);
-        var_list_clear(&globals);
-}
-
-/* ---- Lists (Da) and trees (bt.h), shared by every square, by name ---- */
-
-/* A value that owns its string */
-typedef struct Stored {
-        Li_Value value; /* a copy it owns (value_dup) */
-} Stored;
-
-static void
-stored_set(Stored *st, Li_Value value)
-{
-        Li_Value old = st->value;
-        st->value    = value_dup(value);
-        value_drop(old);
-}
-
-static void
-stored_free(Stored *st)
-{
-        value_drop(st->value);
-        *st = (Stored) { 0 };
-}
-
-typedef struct List {
-        Da(Stored) items;
-        Stored popped; /* what li_list_pop returned, alive until the next pop */
-} List;
-
-/* String keys to Stored *, in order */
-typedef struct Tree {
-        BT map;
-        long count;
-} Tree;
-
-/* Roots on the heap, not here: nodes point to their parent, and tabs move
- * these pointers around (see Tabs) */
-static BT *lists; /* name -> List * */
-static BT *trees; /* name -> Tree * */
-
-/* *ROOT, made if it isn't yet */
-static BT *
-bt_root(BT **root)
-{
-        if (!*root) *root = calloc(1, sizeof **root);
-        return *root;
-}
-
-static List *
-list_find(const char *name, bool create)
-{
-        List *l = bt_get(bt_root(&lists), name ? name : "");
-        if (!l && create) {
-                l = calloc(1, sizeof *l);
-                bt_add(bt_root(&lists), name ? name : "", l);
-        }
-        return l;
-}
-
-/* Negative indices count from the end. -1 if out of range. */
-static long
-list_index(List *l, long i)
-{
-        if (!l) return -1;
-        if (i < 0) i += l->items.count;
-        return i >= 0 && i < l->items.count ? i : -1;
-}
-
-long
-li_list_len(const char *list)
-{
-        List *l = list_find(list, false);
-        return l ? l->items.count : 0;
-}
-
-void
-li_list_push(const char *list, Li_Value value)
-{
-        List *l = list_find(list, true);
-        Da_append(&l->items, (Stored) { 0 });
-        stored_set(&l->items.items[l->items.count - 1], value);
-}
-
-Li_Value
-li_list_pop(const char *list)
-{
-        List *l = list_find(list, false);
-        if (!l || !l->items.count) return (Li_Value) { .type = LI_NONE };
-
-        /* The popped item keeps its string until the next pop */
-        stored_free(&l->popped);
-        l->popped = l->items.items[--l->items.count];
-        return l->popped.value;
-}
-
-Li_Value
-li_list_get(const char *list, long index)
-{
-        List *l = list_find(list, false);
-        long i  = list_index(l, index);
-        return i < 0 ? (Li_Value) { .type = LI_NONE } : l->items.items[i].value;
-}
-
-bool
-li_list_set(const char *list, long index, Li_Value value)
-{
-        List *l = list_find(list, false);
-        long i  = list_index(l, index);
-        if (i < 0) return false;
-        stored_set(&l->items.items[i], value);
-        return true;
-}
-
-bool
-li_list_remove(const char *list, long index)
-{
-        List *l = list_find(list, false);
-        long i  = list_index(l, index);
-        if (i < 0) return false;
-        stored_free(&l->items.items[i]);
-        Da_remove(&l->items, i);
-        return true;
-}
-
-void
-li_list_clear(const char *list)
-{
-        List *l = list_find(list, false);
-        if (!l) return;
-        Da_foreach(st, l->items)
-        {
-                stored_free(st);
-        }
-        l->items.count = 0;
-}
-
-static Tree *
-tree_find(const char *name, bool create)
-{
-        Tree *t = bt_get(bt_root(&trees), name ? name : "");
-        if (!t && create) {
-                t = calloc(1, sizeof *t);
-                bt_add(bt_root(&trees), name ? name : "", t);
-        }
-        return t;
-}
-
-void
-li_tree_set(const char *tree, const char *key, Li_Value value)
-{
-        Tree *t    = tree_find(tree, true);
-        Stored *st = bt_get(&t->map, key ? key : "");
-        if (!st) {
-                st = calloc(1, sizeof *st);
-                bt_add(&t->map, key ? key : "", st);
-                t->count++;
-        }
-        stored_set(st, value);
-}
-
-Li_Value
-li_tree_get(const char *tree, const char *key)
-{
-        Tree *t    = tree_find(tree, false);
-        Stored *st = t ? bt_get(&t->map, key ? key : "") : NULL;
-        return st ? st->value : (Li_Value) { .type = LI_NONE };
-}
-
-bool
-li_tree_has(const char *tree, const char *key)
-{
-        Tree *t = tree_find(tree, false);
-        return t && bt_get(&t->map, key ? key : "");
-}
-
-void
-li_tree_del(const char *tree, const char *key)
-{
-        Tree *t    = tree_find(tree, false);
-        Stored *st = t ? bt_get(&t->map, key ? key : "") : NULL;
-        if (!st) return;
-        stored_free(st);
-        free(st);
-        bt_del(&t->map, key ? key : "");
-        t->count--;
-}
-
-long
-li_tree_len(const char *tree)
-{
-        Tree *t = tree_find(tree, false);
-        return t ? t->count : 0;
-}
-
-void
-li_tree_keys(const char *tree, const char *list)
-{
-        Tree *t = tree_find(tree, false);
-        BT *it;
-
-        li_list_clear(list);
-        if (!t) return;
-        for_bt_each(it, &t->map)
-        {
-                li_list_push(list, li_string(it->key));
-        }
-}
-
-static void
-containers_clear(void)
-{
-        BT *it, *e;
-
-        for_bt_each(it, bt_root(&lists))
-        {
-                List *l = it->value;
-                Da_foreach(st, l->items)
-                {
-                        stored_free(st);
-                }
-                Da_destroy(&l->items);
-                stored_free(&l->popped);
-                free(l);
-        }
-        bt_destroy(lists);
-        free(lists);
-        lists = NULL;
-
-        for_bt_each(it, bt_root(&trees))
-        {
-                Tree *t = it->value;
-                for_bt_each(e, &t->map)
-                {
-                        stored_free(e->value);
-                        free(e->value);
-                }
-                bt_destroy(&t->map);
-                free(t);
-        }
-        bt_destroy(trees);
-        free(trees);
-        trees = NULL;
-}
-
-int
-li_format(Li_Value v, char *buf, int size)
-{
-        switch (v.type) {
-        case LI_BOOL: return snprintf(buf, size, "%s", v.b ? "true" : "false");
-        case LI_INT: return snprintf(buf, size, "%ld", v.i);
-        case LI_FLOAT: return snprintf(buf, size, "%g", v.f);
-        case LI_STRING: return snprintf(buf, size, "%s", v.s ? v.s : "");
-        case LI_PTR: return snprintf(buf, size, "%p", v.p);
-        case LI_TICK: return snprintf(buf, size, "tick");
-        default:
-                if (type_is_record(v.type)) return v.p ? record_format(v.p, buf, size) : snprintf(buf, size, "-");
-                return snprintf(buf, size, "-");
-        }
-}
+/* Values (records, variables, lists, trees and li_format) are in value.c,
+ * shared with the programs Compile makes */
 
 /* ---- Typed values: params and input fields ---- */
 
@@ -1980,6 +1538,7 @@ module_open(const char *path, ModuleFns *fn)
         fn->load    = (void (*)(Li_Node *, const char *)) dlsym(handle, "module_load");
         fn->draw    = (void (*)(Li_Node *)) dlsym(handle, "module_draw");
         fn->start   = (void (*)(Li_Node *)) dlsym(handle, "module_start");
+        fn->emit    = (const char *(*) (Li_Node *) ) dlsym(handle, "module_emit");
         if (!fn->init) {
                 fprintf(stderr, "modules: %s has no module_init\n", path);
                 dlclose(handle);
@@ -2058,6 +1617,8 @@ square_new_id(Module *m, Vector2 center, int id)
         Square *s = calloc(1, sizeof *s);
         s->id     = id >= 0 ? id : next_id++;
         s->module = m;
+        s->ir     = -1;
+        squares_version++;
         if (s->id >= next_id) next_id = s->id + 1;
         if (!square_open(s, m)) {
                 free(s);
@@ -2110,6 +1671,7 @@ square_free(Square *s)
         Da_destroy(&s->params);
         if (s->handle) dlclose(s->handle);
         free(s);
+        squares_version++;
 }
 
 static void
@@ -2323,11 +1885,16 @@ now_ns(void)
  *                  platforms: platform -> library inside, like
  *                  ["linux-x86_64"] = "lib/linux-x86_64.so"
  *   lib/...        the libraries
- *   LICENSE, src/  for people, not read here
+ *   src/           its C
+ *   Makefile       builds it from src/, in the package: lineit-so (the
+ *                  library), lineit-o (one object, for Compile, see
+ *                  package_object) and lineit-libs (prints what that
+ *                  object needs to link: -lcurl...)
+ *   LICENSE        for people, not read here
  *
  * The library for this platform is taken out to tmp_dir once, and squares
  * copy it from there like any other .so. A package without this platform
- * is skipped. */
+ * is built from its src/ with its Makefile, once (see package_build). */
 
 #if defined(__linux__)
 #define LI_OS "linux"
@@ -2359,24 +1926,50 @@ le32(const unsigned char *p)
         return p[0] | p[1] << 8 | (unsigned long) p[2] << 16 | (unsigned long) p[3] << 24;
 }
 
+/* Where the central directory of the zip ZIP (SIZE bytes) starts, in *AT,
+ * and how many members it has. False if it isn't a zip. */
+static bool
+zip_directory(const unsigned char *zip, size_t size, size_t *at, unsigned *count)
+{
+        /* The end record is last, maybe after a comment of up to 64K */
+        for (size_t i = size >= 22 ? size - 22 : 0; size >= 22; i--) {
+                if (le32(zip + i) == 0x06054b50) {
+                        *at    = le32(zip + i + 16);
+                        *count = le16(zip + i + 10);
+                        return true;
+                }
+                if (i == 0 || size - i > 22 + 0xffff) break;
+        }
+        return false;
+}
+
+typedef Da(char *) NameList;
+
+/* The names of the members of ZIP, added to NAMES (free them) */
+static void
+zip_names(const unsigned char *zip, size_t size, NameList *names)
+{
+        size_t at;
+        unsigned n;
+        if (!zip_directory(zip, size, &at, &n)) return;
+        for (unsigned e = 0; e < n; e++) {
+                if (at + 46 > size || le32(zip + at) != 0x02014b50) return;
+                unsigned nlen = le16(zip + at + 28);
+                if (at + 46 + nlen > size) return;
+                Da_append(names, strndup((const char *) zip + at + 46, nlen));
+                at += 46 + nlen + le16(zip + at + 30) + le16(zip + at + 32);
+        }
+}
+
 /* Member NAME of the zip ZIP (SIZE bytes), in a new buffer of *LEN bytes.
  * NULL if it isn't there or is broken. Stored and deflated members, no
  * zip64: modules are small. */
 static unsigned char *
 zip_member(const unsigned char *zip, size_t size, const char *name, size_t *len)
 {
-        size_t eocd = 0;
-        bool found  = false;
-
-        /* The end record is last, maybe after a comment of up to 64K */
-        for (size_t i = size >= 22 ? size - 22 : 0; size >= 22 && !found; i--) {
-                if (le32(zip + i) == 0x06054b50) eocd = i, found = true;
-                if (i == 0 || size - i > 22 + 0xffff) break;
-        }
-        if (!found) return NULL;
-
-        size_t at  = le32(zip + eocd + 16);
-        unsigned n = le16(zip + eocd + 10);
+        size_t at;
+        unsigned n;
+        if (!zip_directory(zip, size, &at, &n)) return NULL;
         for (unsigned e = 0; e < n; e++) {
                 if (at + 46 > size || le32(zip + at) != 0x02014b50) return NULL;
                 unsigned method  = le16(zip + at + 10);
@@ -2413,8 +2006,221 @@ zip_member(const unsigned char *zip, size_t size, const char *name, size_t *len)
         return NULL;
 }
 
-/* Take the library for this platform out of the package at PATH. Returns
- * where it went (to free and remove), or NULL with the reason in WHY. */
+/* Writes the LEN bytes of DATA to PATH if they aren't there already, so
+ * make only builds again what changed */
+static bool
+write_if_changed(const char *path, const void *data, size_t len)
+{
+        int size            = 0;
+        unsigned char *old  = FileExists(path) ? LoadFileData(path, &size) : NULL;
+        bool same           = old && (size_t) size == len && !memcmp(old, data, len);
+        if (old) UnloadFileData(old);
+        if (same) return true;
+        FILE *f = fopen(path, "wb");
+        if (!f) return false;
+        bool ok = fwrite(data, 1, len, f) == len;
+        return fclose(f) == 0 && ok;
+}
+
+/* DIR and the folders above it, made if they aren't there */
+static bool
+mkdir_p(const char *dir)
+{
+        char buf[PATH_MAX];
+        snprintf(buf, sizeof buf, "%s", dir);
+        for (char *p = buf + 1; *p; p++) {
+                if (*p != '/') continue;
+                *p = '\0';
+                if (mkdir(buf, 0755) && errno != EEXIST) return false;
+                *p = '/';
+        }
+        return !mkdir(buf, 0755) || errno == EEXIST;
+}
+
+/* Whether NAME, a path in a zip, stays in the folder it's taken out to */
+static bool
+zip_name_safe(const char *name)
+{
+        if (*name == '/' || strchr(name, '\\')) return false;
+        for (const char *p = name; (p = strstr(p, "..")); p += 2)
+                if ((p == name || p[-1] == '/') && (p[2] == '/' || !p[2])) return false;
+        return true;
+}
+
+/* For the shell: 'it', quoted */
+static void
+shell_quote(char *buf, int size, const char *s)
+{
+        int n = snprintf(buf, size, "'");
+        for (; *s && n < size - 5; s++)
+                n += *s == '\'' ? snprintf(buf + n, size - n, "'\\''") : snprintf(buf + n, size - n, "%c", *s);
+        snprintf(buf + n, size - n, "'");
+}
+
+/* Runs CMD with the shell, what it says to the output panel. Whether it
+ * went well. */
+static bool
+run_to_output(const char *cmd)
+{
+        char line[1024];
+        FILE *p = popen(cmd, "r");
+        if (!p) return false;
+        while (fgets(line, sizeof line, p)) {
+                line[strcspn(line, "\n")] = '\0';
+                output_add(line, true);
+        }
+        return pclose(p) == 0;
+}
+
+/* What CMD prints to stdout, in BUF, one line. False if it fails. */
+static bool
+run_to_buf(const char *cmd, char *buf, int size)
+{
+        FILE *p = popen(cmd, "r");
+        int n   = 0, c;
+        if (!p) return false;
+        while ((c = fgetc(p)) != EOF)
+                if (n < size - 1) buf[n++] = c == '\n' ? ' ' : c;
+        buf[n] = '\0';
+        return pclose(p) == 0;
+}
+
+/* Takes the package ZIP out to DIR, but lib/ (built libraries). False with
+ * the reason in WHY if it can't, or if it has no Makefile to build it. */
+static bool
+package_extract(const unsigned char *zip, size_t zsize, const char *dir, char *why, int why_size)
+{
+        NameList names = { 0 };
+        char path[PATH_MAX * 2];
+        bool ok = false, makefile = false;
+
+        zip_names(zip, zsize, &names);
+        Da_foreach(name, names)
+        {
+                const char *n = *name;
+                size_t len    = strlen(n);
+                if (!strncmp(n, "lib/", 4) || n[len - 1] == '/') continue;
+                if (!zip_name_safe(n)) {
+                        snprintf(why, why_size, "%s goes out of its folder", n);
+                        goto done;
+                }
+                size_t mlen;
+                unsigned char *data = zip_member(zip, zsize, n, &mlen);
+                if (!data) {
+                        snprintf(why, why_size, "%s is broken", n);
+                        goto done;
+                }
+                snprintf(path, sizeof path, "%s/%s", dir, n);
+                char *slash = strrchr(path, '/');
+                *slash      = '\0';
+                bool saved  = mkdir_p(path);
+                *slash      = '/';
+                saved       = saved && write_if_changed(path, data, mlen);
+                free(data);
+                if (!saved) {
+                        snprintf(why, why_size, "can't write %s", path);
+                        goto done;
+                }
+                makefile = makefile || !strcmp(n, "Makefile");
+        }
+        ok = makefile;
+        if (!ok) snprintf(why, why_size, "it has no Makefile, make it again with tools/lineit-pack");
+done:
+        Da_foreach(name, names)
+        {
+                free(*name);
+        }
+        Da_destroy(&names);
+        return ok;
+}
+
+/* Runs rule RULE of the Makefile of the package taken out to DIR, as
+ * tools/lineit-pack --howto says, with OUT, what it says to the output */
+static bool
+package_make(const char *dir, const char *rule, const char *out)
+{
+        char qdir[PATH_MAX * 4 + 8], qout[PATH_MAX * 4 + 8], qinc[PATH_MAX * 4 + 8], qcc[1024], qflags[1024];
+        char include[PATH_MAX], cmd[PATH_MAX * 16];
+
+        /* lineit.h, with the runtime of Compile: `make` puts it there */
+        snprintf(include, sizeof include, "%s/include", cfg.compile.runtime);
+        if (!realpath(include, include)) snprintf(include, sizeof include, "%s/include", cfg.compile.runtime);
+        shell_quote(qdir, sizeof qdir, dir);
+        shell_quote(qout, sizeof qout, out);
+        shell_quote(qinc, sizeof qinc, include);
+        shell_quote(qcc, sizeof qcc, cfg.compile.cc);
+        shell_quote(qflags, sizeof qflags, cfg.compile.cflags);
+        remove(out);
+        /* In the package: its Makefile can use paths relative to it. The cd
+         * is the shell's, the editor stays where it is. */
+        snprintf(cmd, sizeof cmd, "cd %s && make -s %s OUT=%s LINEIT_INCLUDE=%s CC=%s CFLAGS=%s 2>&1", qdir, rule, qout, qinc,
+                 qcc, qflags);
+        return run_to_output(cmd) && FileExists(out);
+}
+
+/* The manifest.lua of the package ZIP, open in CONF (close it). False with
+ * the reason in WHY if it has none. */
+static bool
+package_manifest(const unsigned char *zip, size_t size, Conf *conf, char *why, int why_size)
+{
+        static int n;
+        char tmp[PATH_MAX];
+        size_t len;
+        unsigned char *member = zip_member(zip, size, "manifest.lua", &len);
+
+        if (!member) {
+                snprintf(why, why_size, "not a package: no manifest.lua");
+                return false;
+        }
+        /* conf.h only reads files */
+        snprintf(tmp, sizeof tmp, "%s/pkg-%d-manifest.lua", tmp_dir, n++);
+        bool ok = SaveFileData(tmp, member, len) && Conf_open(conf, tmp) == CONF_OK;
+        free(member);
+        remove(tmp);
+        if (!ok) snprintf(why, why_size, "broken manifest.lua");
+        return ok;
+}
+
+/* The package at PATH (ZIP, SIZE bytes) has no library for this platform:
+ * build it from its src/, with its Makefile (lineit-so), to modules.cache.
+ * Built once: the cache is by the package's CRC, so a new one builds again.
+ * Returns a copy of it in tmp_dir (to free and remove), or NULL with the
+ * reason in WHY. */
+static char *
+package_build(const char *path, const unsigned char *zip, size_t size, char *why, int why_size)
+{
+        static int n;
+        char cache[PATH_MAX], base[PATH_MAX * 2], dir[PATH_MAX * 2 + 8], so[PATH_MAX * 2 + 8], tmp[PATH_MAX];
+        unsigned long crc = crc32(0, zip, size);
+
+        /* Absolute: make runs in the package */
+        if (!mkdir_p(cfg.modules.cache) || !realpath(cfg.modules.cache, cache)) {
+                snprintf(why, why_size, "not built for " LI_PLATFORM ", and can't make %s (modules.cache)", cfg.modules.cache);
+                return NULL;
+        }
+        snprintf(base, sizeof base, "%s/%s-%08lx", cache, GetFileNameWithoutExt(path), crc);
+        snprintf(dir, sizeof dir, "%s.build", base);
+        snprintf(so, sizeof so, "%s.so", base);
+        if (!FileExists(so)) {
+                fprintf(stderr, "modules: %s is not built for " LI_PLATFORM ", building it in %s\n", path, dir);
+                output_add(TextFormat("%s is not built for " LI_PLATFORM ", building it", path), true);
+                if (!package_extract(zip, size, dir, why, why_size)) return NULL;
+                if (!package_make(dir, "lineit-so", so)) {
+                        snprintf(why, why_size, "not built for " LI_PLATFORM ", and make lineit-so failed in %s", dir);
+                        return NULL;
+                }
+        }
+        snprintf(tmp, sizeof tmp, "%s/pkg-built-%d.so", tmp_dir, n++);
+        if (!copy_file(so, tmp)) {
+                snprintf(why, why_size, "can't copy %s", so);
+                return NULL;
+        }
+        return strdup(tmp);
+}
+
+/* Take the library for this platform out of the package at PATH (or build
+ * it, see package_build). Returns where it went (to free and remove), or
+ * NULL with the reason in WHY. */
 static char *
 package_lib(const char *path, char *why, int why_size)
 {
@@ -2433,20 +2239,7 @@ package_lib(const char *path, char *why, int why_size)
                 snprintf(why, why_size, "can't read it");
                 goto done;
         }
-        if (!(member = zip_member(zip, size, "manifest.lua", &len))) {
-                snprintf(why, why_size, "not a package: no manifest.lua");
-                goto done;
-        }
-        /* conf.h only reads files */
-        snprintf(tmp, sizeof tmp, "%s/pkg-%d-manifest.lua", tmp_dir, n);
-        bool saved = SaveFileData(tmp, member, len);
-        free(member), member = NULL;
-        if (!saved || Conf_open(&conf, tmp) != CONF_OK) {
-                remove(tmp);
-                snprintf(why, why_size, "broken manifest.lua");
-                goto done;
-        }
-        remove(tmp);
+        if (!package_manifest(zip, size, &conf, why, why_size)) goto done;
         Conf_get_int(conf, &api, "api");
         if (Conf_get_str(conf, &str, "platforms.%s", LI_PLATFORM) == CONF_OK) snprintf(member_name, sizeof member_name, "%s", str);
         Conf_close(conf);
@@ -2456,7 +2249,7 @@ package_lib(const char *path, char *why, int why_size)
                 goto done;
         }
         if (!*member_name) {
-                snprintf(why, why_size, "not built for " LI_PLATFORM);
+                lib = package_build(path, zip, size, why, why_size);
                 goto done;
         }
         if (!(member = zip_member(zip, size, member_name, &len))) {
@@ -3040,10 +2833,8 @@ unload_modules(void)
 static void
 run_frame(void)
 {
-        for (int i = 0; running && i < squares.count; i++) {
-                Square *s = squares.items[i];
-                if (s->fn.frame) s->fn.frame(s);
-        }
+        program_lower();
+        if (running) program_each(false);
         for (int i = 0; i < squares.count; i++) {
                 Square *s = squares.items[i];
                 if (s->fn.draw) s->fn.draw(s);
@@ -4523,19 +4314,19 @@ canvas_read_text(const char *text, ReadMode mode)
  * param, in the order they are from top to bottom (left to right on the
  * same row).
  *
- * The inner squares are not in `squares` and `links`: while a call goes into
- * a subgraph, graph_swap puts its lists there, and the next graph_swap puts
- * them back. So everything works the same inside, li_get and li_tick
- * included. Calls that go back out (a subgraph/input reading an input of its
- * subgraph, a subgraph/output ticking one of its outputs) swap too, which
- * brings back the lists outside for that while. Calls nest, so the swaps
- * always come in pairs.
+ * The inner squares are not in `squares` and `links`, they are in its
+ * Graph. To read or change them as if they were the canvas (loading it,
+ * Make subgraph), graph_swap puts its lists there, and the next graph_swap
+ * puts them back.
  *
- * Its variables, lists and trees are swapped the same way: they are its
- * locals, like a C function's, and the ones outside can't be seen from
- * inside (nor the other way around). Each square of the subgraph has its
- * own, and keeps them between ticks. Data goes in and out through its
- * pins, or through globals (li_global_*). */
+ * Running, a subgraph square does nothing itself: the program (see
+ * Program) has its inner squares inlined, with the wires through its ports
+ * already followed, like a C compiler inlines a function. Its variables,
+ * lists and trees are its locals, like a C function's: scope_enter puts
+ * them in the globals while one of its squares runs, so the ones outside
+ * can't be seen from inside (nor the other way around). Each square of the
+ * subgraph has its own, and keeps them between ticks. Data goes in and out
+ * through its pins, or through globals (li_global_*). */
 
 typedef struct Graph {
         SquareList squares; /* while swapped in: the ones outside */
@@ -4546,23 +4337,47 @@ typedef struct Graph {
         Da(Square *) outputs;
 } Graph;
 
+/* Trade the locals of G with the ones in the globals */
+static void
+locals_swap(Graph *g)
+{
+        VarList v = vars;
+        BT *ls = lists, *ts = trees;
+        vars     = g->vars;
+        lists    = g->lists;
+        trees    = g->trees;
+        g->vars  = v;
+        g->lists = ls;
+        g->trees = ts;
+}
+
 static void
 graph_swap(Graph *g)
 {
         SquareList s = squares;
         LinkList l   = links;
-        VarList v    = vars;
-        BT *ls = lists, *ts = trees;
-        squares    = g->squares;
-        links      = g->links;
-        vars       = g->vars;
-        lists      = g->lists;
-        trees      = g->trees;
-        g->squares = s;
-        g->links   = l;
-        g->vars    = v;
-        g->lists   = ls;
-        g->trees   = ts;
+        squares      = g->squares;
+        links        = g->links;
+        g->squares   = s;
+        g->links     = l;
+        locals_swap(g);
+}
+
+/* Whose locals are in the globals: NULL for the canvas's, or a subgraph's
+ * while one of its squares runs */
+static Graph *scope;
+
+/* Put the locals of G (NULL: the canvas's) in the globals. Returns whose
+ * were there, to give back to it when done. */
+static Graph *
+scope_enter(Graph *g)
+{
+        Graph *was = scope;
+        if (g == scope) return was;
+        if (scope) locals_swap(scope);
+        if (g) locals_swap(g);
+        scope = g;
+        return was;
 }
 
 /* Port squares: pick a type, and an input or output of that type */
@@ -4617,30 +4432,11 @@ port_out_draw(Li_Node *n)
         li_text(n, "%s", port_name(n));
 }
 
-/* The input of the subgraph. Outside of one there is nothing to read. */
-static void
-port_in_eval(Li_Node *n)
-{
-        Li_Value v = { .type = LI_NONE };
-        if (n->owner) {
-                graph_swap(n->owner->graph);
-                v = li_get(n->owner, n->port);
-                graph_swap(n->owner->graph);
-        }
-        li_set(n, 0, v);
-}
-
-static void
-port_out_tick(Li_Node *n, int input)
-{
-        if (input != PORT_OUT_VALUE || !n->owner) return;
-        graph_swap(n->owner->graph);
-        li_tick(n->owner, n->port);
-        graph_swap(n->owner->graph);
-}
-
-static const ModuleFns port_in_fns  = { .init = port_in_init, .eval = port_in_eval, .draw = port_in_draw };
-static const ModuleFns port_out_fns = { .init = port_out_init, .tick = port_out_tick, .draw = port_out_draw };
+/* Nothing to run: the program follows the wires through them (see
+ * Program). Outside of a subgraph there is nothing to read from them, and
+ * ticks to them go nowhere. */
+static const ModuleFns port_in_fns  = { .init = port_in_init, .draw = port_in_draw };
+static const ModuleFns port_out_fns = { .init = port_out_init, .draw = port_out_draw };
 
 static int
 port_cmp(const void *a, const void *b)
@@ -4719,45 +4515,21 @@ graph_init(Li_Node *n)
         }
 }
 
+/* The squares inside update what they show too. Ticks, reads and frames
+ * don't come here: the program has them inlined. */
 static void
-graph_tick(Li_Node *n, int input)
+graph_draw(Li_Node *n)
 {
         Graph *g = n->graph;
-        if (input >= g->inputs.count) return;
-        graph_swap(g);
-        li_tick(g->inputs.items[input], 0);
-        graph_swap(g);
-}
-
-static void
-graph_eval(Li_Node *n)
-{
-        Graph *g = n->graph;
-        for (int k = 0; k < g->outputs.count; k++) {
-                Square *p = g->outputs.items[k];
-                if (port_type(p) == LI_TICK) continue;
-                graph_swap(g);
-                Li_Value v = li_get(p, PORT_OUT_VALUE);
-                graph_swap(g);
-                li_set(n, k, v);
+        Da_foreach(sp, g->squares)
+        {
+                Square *s = *sp;
+                if (!s->fn.draw) continue;
+                Graph *was = scope_enter(g);
+                s->fn.draw(s);
+                scope_enter(was);
         }
 }
-
-/* The squares inside get the same calls as the ones outside */
-#define GRAPH_EACH(name, cb)                                          \
-        static void name(Li_Node *n)                                  \
-        {                                                             \
-                graph_swap(n->graph);                                 \
-                for (int i = 0; i < squares.count; i++) {             \
-                        Square *s = squares.items[i];                 \
-                        if (s->fn.cb) s->fn.cb(s);                    \
-                }                                                     \
-                graph_swap(n->graph);                                 \
-        }
-GRAPH_EACH(graph_frame, frame)
-GRAPH_EACH(graph_start, start)
-GRAPH_EACH(graph_draw, draw)
-#undef GRAPH_EACH
 
 static void
 graph_destroy(Li_Node *n)
@@ -4781,10 +4553,6 @@ graph_destroy(Li_Node *n)
 
 static const ModuleFns graph_fns = {
         .init    = graph_init,
-        .tick    = graph_tick,
-        .eval    = graph_eval,
-        .frame   = graph_frame,
-        .start   = graph_start,
         .draw    = graph_draw,
         .destroy = graph_destroy,
 };
@@ -4807,6 +4575,1060 @@ graph_builtins(void)
                 m->seen    = true;
                 Da_append(&modules, m);
         }
+}
+
+/* ---- Program: the canvas, lowered ---- */
+
+/* Run and Compile don't use the canvas as it is: they lower it first to a
+ * program, a flat list of the squares that run with their wires already
+ * followed. It's to the canvas what a resolved AST is to the text of a
+ * language:
+ *
+ *   - Subgraphs are inlined: their inner squares are in the list, and the
+ *     wires through their ports (subgraph/input and subgraph/output) go
+ *     straight to the squares on the other side. Each square knows its
+ *     scope, whose locals it uses.
+ *   - Each input knows where its value comes from: an output of another
+ *     square, a value typed in a square (its own, or the one of the
+ *     subgraph square that has it inside), or nothing (unplugged, or wired
+ *     to an incompatible type).
+ *   - Each tick output knows the inputs it ticks, in the order of its wires.
+ *
+ * Run walks it (li_get, li_tick, run_frame), Compile writes it as C (see
+ * Compile). It's lowered again every frame, so editing while running works.
+ * Squares don't move in memory, but they can go away: a program is only
+ * used while squares_version is the one it was lowered for. */
+
+typedef enum SourceKind {
+        SRC_NONE,
+        SRC_OUTPUT, /* an output of a node */
+        SRC_TYPED,  /* what's typed in an input */
+} SourceKind;
+
+/* Where an input gets its value */
+typedef struct Source {
+        SourceKind kind;
+        int node, pin;  /* SRC_OUTPUT: output PIN of node NODE */
+        Square *square; /* SRC_TYPED: input PIN of SQUARE */
+        int wires;      /* the wires it goes through: COUNT from WIRES in prog.wires */
+        int wire_count;
+} Source;
+
+/* An input that a tick output ticks */
+typedef struct Target {
+        int node, pin; /* input PIN of node NODE */
+        int wires, wire_count;
+} Target;
+
+/* What glows when something goes through: a wire, and the square it goes
+ * into (NULL for data, only ticks light squares) */
+typedef struct Wire {
+        LinkList *list;
+        int link;
+        Square *to;
+} Wire;
+
+typedef struct Node {
+        Square *square;
+        Graph *scope; /* whose locals it uses, NULL for the canvas's (see Subgraphs) */
+        int inputs;   /* its first in prog.sources, one per input */
+        int outputs;  /* its first in prog.outs, one per output */
+        int level;    /* the canvas it's in, while lowering */
+} Node;
+
+/* The targets of an output: COUNT from FIRST in prog.targets, none for data */
+typedef struct Out {
+        int first, count;
+} Out;
+
+typedef struct Program {
+        Da(Node) nodes; /* in the order they get module_start and module_frame */
+        Da(Source) sources;
+        Da(Out) outs;
+        Da(Target) targets;
+        Da(Wire) wires;
+        long long version; /* squares_version it was lowered for */
+} Program;
+
+static Program prog; /* of the tab shown: tab_swap trades it */
+
+static void
+program_free(Program *p)
+{
+        Da_destroy(&p->nodes);
+        Da_destroy(&p->sources);
+        Da_destroy(&p->outs);
+        Da_destroy(&p->targets);
+        Da_destroy(&p->wires);
+        *p = (Program) { 0 };
+}
+
+/* S in the program, NULL if it isn't in it (a subgraph or a port square, or
+ * squares changed since it was lowered) */
+static Node *
+prog_node(Square *s)
+{
+        if (prog.version != squares_version || s->ir < 0 || s->ir >= prog.nodes.count) return NULL;
+        Node *x = &prog.nodes.items[s->ir];
+        return x->square == s ? x : NULL;
+}
+
+/* A canvas being lowered: the tab's, or the one inside a subgraph square */
+typedef struct Level {
+        SquareList *squares;
+        LinkList *links;
+        Graph *graph;  /* NULL for the tab's */
+        Square *owner; /* the subgraph square */
+        int up;        /* the level it is in, -1 for the tab's */
+} Level;
+
+static Da(Level) levels;
+static Da(Wire) path; /* wires followed so far, while lowering */
+
+/* Following ports deeper than this is a wire from a subgraph to itself */
+#define LOWER_DEPTH 64
+
+static bool
+is_port(Square *s)
+{
+        return s->module->builtin == &port_in_fns || s->module->builtin == &port_out_fns;
+}
+
+static Square *
+level_square(Level *l, int id)
+{
+        Da_foreach(sp, *l->squares)
+        {
+                if ((*sp)->id == id) return *sp;
+        }
+        return NULL;
+}
+
+static int
+level_of(Square *owner)
+{
+        for (int i = 0; i < levels.count; i++)
+                if (levels.items[i].owner == owner) return i;
+        return -1;
+}
+
+/* Every square of level LV that runs is a node, with the ones inside its
+ * subgraphs where they are */
+static void
+lower_squares(int lv)
+{
+        SquareList *list = levels.items[lv].squares;
+        Graph *graph     = levels.items[lv].graph;
+        Da_foreach(sp, *list)
+        {
+                Square *s = *sp;
+                s->ir     = -1;
+                if (s->graph) {
+                        Da_append(&levels, ((Level) { &s->graph->squares, &s->graph->links, s->graph, s, lv }));
+                        lower_squares(levels.count - 1);
+                } else if (!is_port(s)) {
+                        s->ir = prog.nodes.count;
+                        Da_append(&prog.nodes, ((Node) { .square = s, .scope = graph, .level = lv }));
+                }
+        }
+}
+
+static void
+path_push(LinkList *list, int link, Square *to)
+{
+        Da_append(&path, ((Wire) { list, link, to }));
+}
+
+/* Where input INPUT of S, in level LV, gets its value. Follows wires
+ * through ports, with them in `path`. */
+static Source
+lower_source(int lv, Square *s, int input, int depth)
+{
+        Level *l     = &levels.items[lv];
+        PinInfo *in  = pin_info(s, PART_INPUT, input);
+        Source none  = { .kind = SRC_NONE };
+        int k        = -1;
+
+        if (!in || in->kind == PIN_OPTIONS || depth > LOWER_DEPTH) return none;
+        for (int i = l->links->count - 1; i >= 0 && k < 0; i--) {
+                Link *e = &l->links->items[i];
+                if (e->to == s->id && e->to_pin == input) k = i;
+        }
+        if (k < 0) return in->kind == PIN_VALUE ? (Source) { .kind = SRC_TYPED, .square = s, .pin = input } : none;
+
+        Link e       = l->links->items[k];
+        Square *from = level_square(l, e.from);
+        PinInfo *out = from ? pin_info(from, PART_OUTPUT, e.from_pin) : NULL;
+        if (!out || !types_compatible(out->type, in->type)) return none;
+
+        path_push(l->links, k, NULL);
+        if (from->graph) {
+                Graph *g = from->graph;
+                if (e.from_pin >= g->outputs.count) return none;
+                return lower_source(level_of(from), g->outputs.items[e.from_pin], PORT_OUT_VALUE, depth + 1);
+        }
+        if (from->module->builtin == &port_in_fns)
+                return l->owner ? lower_source(l->up, l->owner, from->port, depth + 1) : none;
+        return (Source) { .kind = SRC_OUTPUT, .node = from->ir, .pin = e.from_pin };
+}
+
+/* The inputs that tick output OUTPUT of S, in level LV, ticks, through
+ * ports, added to prog.targets */
+static void
+lower_targets(int lv, Square *s, int output, int depth)
+{
+        Level *l     = &levels.items[lv];
+        PinInfo *out = pin_info(s, PART_OUTPUT, output);
+        if (!out || depth > LOWER_DEPTH) return;
+
+        for (int k = 0; k < l->links->count; k++) {
+                Link e = l->links->items[k];
+                if (e.from != s->id || e.from_pin != output) continue;
+                Square *to  = level_square(l, e.to);
+                PinInfo *in = to ? pin_info(to, PART_INPUT, e.to_pin) : NULL;
+                if (!in || !types_compatible(out->type, in->type)) continue;
+
+                int mark = path.count;
+                path_push(l->links, k, to);
+                if (to->graph) {
+                        if (e.to_pin < to->graph->inputs.count)
+                                lower_targets(level_of(to), to->graph->inputs.items[e.to_pin], 0, depth + 1);
+                } else if (to->module->builtin == &port_out_fns) {
+                        if (e.to_pin == PORT_OUT_VALUE && l->owner) lower_targets(l->up, l->owner, to->port, depth + 1);
+                } else {
+                        Target t = { .node = to->ir, .pin = e.to_pin, .wires = prog.wires.count, .wire_count = path.count };
+                        Da_foreach(w, path)
+                        {
+                                Da_append(&prog.wires, *w);
+                        }
+                        Da_append(&prog.targets, t);
+                }
+                path.count = mark;
+        }
+}
+
+/* The canvas shown, to prog */
+static void
+program_lower(void)
+{
+        prog.nodes.count   = 0;
+        prog.sources.count = 0;
+        prog.outs.count    = 0;
+        prog.targets.count = 0;
+        prog.wires.count   = 0;
+        levels.count       = 0;
+        Da_append(&levels, ((Level) { &squares, &links, NULL, NULL, -1 }));
+        lower_squares(0);
+
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Node *x   = &prog.nodes.items[i];
+                Square *s = x->square;
+
+                x->inputs = prog.sources.count;
+                for (int k = 0; k < s->inputs.count; k++) {
+                        path.count = 0;
+                        Source src = lower_source(x->level, s, k, 0);
+                        src.wires      = prog.wires.count;
+                        src.wire_count = path.count;
+                        Da_foreach(w, path)
+                        {
+                                Da_append(&prog.wires, *w);
+                        }
+                        Da_append(&prog.sources, src);
+                }
+
+                x->outputs = prog.outs.count;
+                for (int k = 0; k < s->outputs.count; k++) {
+                        Out o = { .first = prog.targets.count };
+                        path.count = 0;
+                        if (s->outputs.items[k].type == LI_TICK) lower_targets(x->level, s, k, 0);
+                        o.count = prog.targets.count - o.first;
+                        Da_append(&prog.outs, o);
+                }
+        }
+        prog.version = squares_version;
+}
+
+static void
+wires_glow(int first, int count, double now)
+{
+        for (int i = first; i < first + count; i++) {
+                Wire w = prog.wires.items[i];
+                if (w.link < w.list->count) w.list->items[w.link].flash = now;
+                if (w.to) w.to->flash = now;
+        }
+}
+
+/* How deep in a tick chain we are, 0 outside of one */
+static int tick_depth;
+
+Li_Value
+li_get(Li_Node *n, int input)
+{
+        Li_Value none = { .type = LI_NONE };
+        PinInfo *in   = pin_info(n, PART_INPUT, input);
+        if (!in) return none;
+        if (in->kind == PIN_OPTIONS) return in->value;
+
+        /* Not lowered yet (it's being made or loaded): no wires */
+        Node *x = prog_node(n);
+        if (!x) return in->kind == PIN_VALUE ? in->value : none;
+
+        Source src = prog.sources.items[x->inputs + input];
+        /* Data read while ticking glows too (not what's drawn every frame) */
+        if (tick_depth > 0) wires_glow(src.wires, src.wire_count, GetTime());
+
+        switch (src.kind) {
+        case SRC_TYPED: {
+                PinInfo *p = pin_info(src.square, PART_INPUT, src.pin);
+                return p && p->kind == PIN_VALUE ? p->value : none;
+        }
+        case SRC_OUTPUT: {
+                Node *from   = &prog.nodes.items[src.node];
+                Square *s    = from->square;
+                PinInfo *out = pin_info(s, PART_OUTPUT, src.pin);
+                /* Its type may have changed since it was lowered */
+                if (!out || !types_compatible(out->type, in->type)) return none;
+
+                /* Pure squares compute their outputs when someone reads them */
+                if (s->fn.eval && !s->evaluating) {
+                        Graph *was    = scope_enter(from->scope);
+                        s->evaluating = true;
+                        s->fn.eval(s);
+                        s->evaluating = false;
+                        scope_enter(was);
+                }
+                return pin_info(s, PART_OUTPUT, src.pin)->value;
+        }
+        default: return none;
+        }
+}
+
+/* Tick chains are plain recursion, this stops loops in the graph */
+#define TICK_DEPTH_MAX 256
+
+void
+li_tick(Li_Node *n, int output)
+{
+        static bool warned;
+        double now = GetTime();
+
+        if (output >= 0 && output < (int) countof(n->fired)) n->fired[output] = now;
+        if (tick_depth >= TICK_DEPTH_MAX) {
+                if (!warned) fprintf(stderr, "tick: more than %d squares deep, is there a loop?\n", TICK_DEPTH_MAX);
+                warned = true;
+                return;
+        }
+        Node *x = prog_node(n);
+        if (!x || !pin_info(n, PART_OUTPUT, output)) return;
+
+        Out o = prog.outs.items[x->outputs + output];
+        tick_depth++;
+        for (int i = o.first; i < o.first + o.count; i++) {
+                Target t  = prog.targets.items[i];
+                Node *to  = &prog.nodes.items[t.node];
+                Square *s = to->square;
+                wires_glow(t.wires, t.wire_count, now);
+                if (!s->fn.tick) continue;
+                Graph *was = scope_enter(to->scope);
+                s->fn.tick(s, t.pin);
+                scope_enter(was);
+        }
+        tick_depth--;
+}
+
+/* module_start or module_frame of every node, in order */
+static void
+program_each(bool start)
+{
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Node *x   = &prog.nodes.items[i];
+                Square *s = x->square;
+                void (*fn)(Li_Node *) = start ? s->fn.start : s->fn.frame;
+                if (!fn) continue;
+                Graph *was = scope_enter(x->scope);
+                fn(s);
+                scope_enter(was);
+        }
+}
+
+/* ---- Compile: the program, as C ---- */
+
+/* Compile (in the bar, or lineit --compile FILE) lowers the canvas to a
+ * program, like Run, and writes it as C in compile.output/NAME.build/, NAME
+ * the canvas file's:
+ *
+ *   nI.c      one per node: its module's C (modules.source/NAME.c),
+ *             included with the callbacks renamed (module_tick is
+ *             nI_tick). Each is its own object, so each square has its own
+ *             globals, like its own copy of the .so in the editor.
+ *   nI.o      of packages instead: the package, taken out to packages/,
+ *             builds its src/ as one object with its own Makefile
+ *             (lineit-o, see package_object), and each square gets a copy
+ *             of it, with compile.objcopy, the callbacks renamed and
+ *             everything else made local: its own globals too. What it
+ *             needs to link (lineit-libs) goes to the program's link.
+ *   main.c    the nodes, N[i], and the wires as functions: nI_inK gives
+ *             input K of node I its value (pulling it from the output it
+ *             comes from, or a constant if it's typed), nI_tickK calls the
+ *             module_tick of every input output K ticks. li_get and
+ *             li_tick are calls to them. Then setup (init, params, options
+ *             and state, as they are now), start and frame.
+ *   Makefile  builds compile.output/NAME with compile.cc, with the runtime
+ *             (src/rt, built by `make` to compile.runtime).
+ *
+ * Pure squares whose module has module_emit (see lineit.h), but packages,
+ * are inline
+ * instead: no nI.c, no module_eval. Their C, from module_emit, is in
+ * main.c, as nI_outK, and the inputs that read them call it right away,
+ * so the C compiler sees through them (constants fold, calls go away).
+ * Squares that read each other in a loop are left as calls: inline, the
+ * loop would never end.
+ *
+ * Then it runs make there, with what it says in the output panel. The
+ * program does what Run does, without the editor: li_text shows nothing,
+ * li_print prints to stdout. If no square has module_frame it ends after
+ * start, if not it runs frames (60 a second) until it's killed.
+ *
+ * Modules don't need anything for this, their C is already what runs. But
+ * everything in them but the callbacks has to be static: there's a copy of
+ * them per square in one program. */
+
+/* What Compile knows of each node, by index */
+typedef struct CompileNode {
+        char *src;  /* its module's C file */
+        char *obj;  /* or, for packages, its object, relative to the build dir */
+        char *libs; /* and what it needs to link, lineit-libs */
+        char *emit; /* module_emit, expanded. NULL: not inline */
+} CompileNode;
+
+static Da(CompileNode) compiled;
+
+/* The C callbacks that the program calls */
+static const char *const callback_names[] = { "init", "tick", "eval", "frame", "param", "load", "start" };
+/* And the ones it doesn't, but may be in a module */
+static const char *const callback_others[] = { "draw", "destroy", "save", "emit" };
+
+static bool
+node_is_make(Node *x)
+{
+        return x->square->module->builtin == &type_make_fns;
+}
+
+static bool
+node_is_break(Node *x)
+{
+        return x->square->module->builtin == &type_break_fns;
+}
+
+/* Whether node I is inline, see module_emit */
+static bool
+node_inline(int i)
+{
+        return compiled.items[i].emit != NULL;
+}
+
+/* Whether node I has its own nI.c, with callback NAME in it */
+static bool
+node_has(int i, const char *name)
+{
+        Node *x = &prog.nodes.items[i];
+        if (node_is_make(x) || node_is_break(x) || node_inline(i)) return false;
+        ModuleFns *f = &x->square->fn;
+        void *fns[]  = { f->init, f->tick, f->eval, f->frame, f->param, f->load, f->start };
+        for (int c = 0; c < countof(callback_names); c++)
+                if (!strcmp(callback_names[c], name)) return fns[c] != NULL;
+        return false;
+}
+
+/* Whether input K of S gets a function in main.c: options are in the node,
+ * and ticks carry no value */
+static bool
+input_has_get(Square *s, int k)
+{
+        PinInfo *in = &s->inputs.items[k];
+        return in->kind != PIN_OPTIONS && in->type != LI_TICK;
+}
+
+/* The C function that is module_eval of node I, "NULL" if it has none */
+static const char *
+node_eval(int i, char *buf, int size)
+{
+        Node *x = &prog.nodes.items[i];
+        if (node_is_make(x)) return "rt_make_eval";
+        if (node_is_break(x)) return "rt_break_eval";
+        if (!node_has(i, "eval")) return "NULL";
+        snprintf(buf, size, "n%d_eval", i);
+        return buf;
+}
+
+static void
+c_string(FILE *f, const char *s)
+{
+        fputc('"', f);
+        for (const unsigned char *c = (const unsigned char *) (s ? s : ""); *c; c++) {
+                if (*c == '"' || *c == '\\')
+                        fprintf(f, "\\%c", *c);
+                else if (*c >= 0x20 && *c < 0x7f)
+                        fputc(*c, f);
+                else
+                        fprintf(f, "\\%03o", *c);
+        }
+        fputc('"', f);
+}
+
+/* V as a C expression */
+static void
+c_value(FILE *f, Li_Value v)
+{
+        switch (v.type) {
+        case LI_BOOL: fprintf(f, "li_bool(%s)", v.b ? "true" : "false"); break;
+        case LI_INT:
+                if (v.i == LONG_MIN)
+                        fprintf(f, "li_int(-%ldL - 1)", LONG_MAX);
+                else
+                        fprintf(f, "li_int(%ldL)", v.i);
+                break;
+        case LI_FLOAT:
+                if (isnan(v.f))
+                        fprintf(f, "li_float(__builtin_nan(\"\"))");
+                else if (isinf(v.f))
+                        fprintf(f, "li_float(%s__builtin_inf())", v.f < 0 ? "-" : "");
+                else
+                        fprintf(f, "li_float(%a)", v.f); /* exact */
+                break;
+        case LI_STRING:
+                fprintf(f, "li_string(");
+                c_string(f, v.s);
+                fprintf(f, ")");
+                break;
+        default: fprintf(f, "(Li_Value) { .type = LI_NONE }"); break;
+        }
+}
+
+/* The package M built for Compile: taken out to DIR (but lib/), and its
+ * Makefile's lineit-o run there to make OBJ. What it needs to link
+ * (lineit-libs) in LIBS. False, saying why in the output, if it can't be. */
+static bool
+package_object(Module *m, const char *dir, const char *obj, char *libs, int libs_size)
+{
+        int zsize          = 0;
+        unsigned char *zip = LoadFileData(m->path, &zsize);
+        char why[512]      = "", qdir[PATH_MAX * 4 + 8], cmd[PATH_MAX * 4 + 64];
+        bool ok            = false;
+
+        if (!zip) {
+                snprintf(why, sizeof why, "can't read it");
+                goto done;
+        }
+        if (!package_extract(zip, zsize, dir, why, sizeof why)) goto done;
+        /* Its own build: whatever src/ has, as one object */
+        if (!package_make(dir, "lineit-o", obj)) {
+                snprintf(why, sizeof why, "make lineit-o failed in %s", dir);
+                goto done;
+        }
+        /* stdout only: it's the flags, what make says goes to stderr */
+        shell_quote(qdir, sizeof qdir, dir);
+        snprintf(cmd, sizeof cmd, "cd %s && make -s lineit-libs", qdir);
+        if (!run_to_buf(cmd, libs, libs_size)) {
+                snprintf(why, sizeof why, "make lineit-libs failed in %s", dir);
+                goto done;
+        }
+        ok = true;
+done:
+        if (!ok) output_add(TextFormat("compile: package %s: %s", m->name, why), true);
+        if (zip) UnloadFileData(zip);
+        return ok;
+}
+
+/* TEXT from module_emit of node I, with $_ and $source replaced (see
+ * lineit.h). A new string. */
+static char *
+emit_expand(const char *text, int i, const char *src)
+{
+        char *out;
+        size_t len;
+        FILE *f = open_memstream(&out, &len);
+        for (const char *p = text; *p; p++) {
+                if (p[0] == '$' && p[1] == '_') {
+                        fprintf(f, "n%d", i);
+                } else if (!strncmp(p, "$source", 7)) {
+                        fputs(src, f);
+                        p += 6;
+                } else {
+                        fputc(*p, f);
+                }
+        }
+        fclose(f);
+        return out;
+}
+
+/* Whether node I reads itself through inline nodes. SEEN: the ones
+ * visited from node FROM. */
+static bool
+inline_loop(int from, int i, bool *seen)
+{
+        Node *x = &prog.nodes.items[i];
+        for (int k = 0; k < x->square->inputs.count; k++) {
+                Source src = prog.sources.items[x->inputs + k];
+                if (src.kind != SRC_OUTPUT || !node_inline(src.node)) continue;
+                if (src.node == from) return true;
+                if (seen[src.node]) continue;
+                seen[src.node] = true;
+                if (inline_loop(from, src.node, seen)) return true;
+        }
+        return false;
+}
+
+/* The scope of node X as a number: 0 the canvas's, then one per subgraph
+ * square, in the order they come */
+typedef Da(Graph *) GraphList;
+
+static int
+scope_index(GraphList *scopes, Graph *g)
+{
+        if (!g) return 0;
+        for (int i = 0; i < scopes->count; i++)
+                if (scopes->items[i] == g) return i + 1;
+        Da_append(scopes, g);
+        return scopes->count;
+}
+
+static void
+compile_main(FILE *f, const char *name, const char *from)
+{
+        GraphList scopes = { 0 };
+        char eval[32];
+        bool frames = false, any_inline = false;
+
+        fprintf(f, "/* %s, compiled by lineit from %s. See Compile in src/main.c:\n", name, from);
+        fprintf(f, " * N[I] is node I, its module is in nI.c (or below, as nI_outK, if it's\n");
+        fprintf(f, " * inline), and its wires are nI_inK (where input K gets its value) and\n");
+        fprintf(f, " * nI_tickK (what output K ticks). */\n");
+        fprintf(f, "#include \"rt.h\"\n\n");
+
+        fprintf(f, "/* The modules: in nI.c, and the inline ones below */\n");
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Square *s = prog.nodes.items[i].square;
+                for (int c = 0; c < countof(callback_names); c++) {
+                        const char *cb = callback_names[c];
+                        if (!node_has(i, cb)) continue;
+                        if (!strcmp(cb, "tick") || !strcmp(cb, "param"))
+                                fprintf(f, "void n%d_%s(Li_Node *n, int i);\n", i, cb);
+                        else if (!strcmp(cb, "load"))
+                                fprintf(f, "void n%d_%s(Li_Node *n, const char *state);\n", i, cb);
+                        else
+                                fprintf(f, "void n%d_%s(Li_Node *n);\n", i, cb);
+                }
+                for (int k = 0; node_inline(i) && k < s->outputs.count; k++)
+                        fprintf(f, "static Li_Value n%d_out%d(void) __attribute__((unused)); /* maybe nothing reads it */\n", i, k);
+        }
+        fprintf(f, "\nstatic Li_Node N[%d];\n", prog.nodes.count ? prog.nodes.count : 1);
+
+        /* The wires */
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Node *x   = &prog.nodes.items[i];
+                Square *s = x->square;
+                fprintf(f, "\n/* N[%d]: square %d, %s%s */\n", i, s->id, s->module->name, node_inline(i) ? ", inline" : "");
+
+                for (int k = 0; k < s->inputs.count; k++) {
+                        PinInfo *in = &s->inputs.items[k];
+                        Source src  = prog.sources.items[x->inputs + k];
+                        if (!input_has_get(s, k)) continue;
+                        fprintf(f, "static Li_Value n%d_in%d(void) { return ", i, k);
+                        if (src.kind == SRC_OUTPUT && node_inline(src.node)) {
+                                fprintf(f, "n%d_out%d();", src.node, src.pin);
+                        } else if (src.kind == SRC_OUTPUT) {
+                                fprintf(f, "rt_pull(&N[%d], %s, %d);", src.node, node_eval(src.node, eval, sizeof eval), src.pin);
+                        } else if (src.kind == SRC_TYPED) {
+                                c_value(f, pin_info(src.square, PART_INPUT, src.pin)->value);
+                                fprintf(f, ";");
+                        } else {
+                                fprintf(f, "(Li_Value) { .type = LI_NONE };");
+                        }
+                        fprintf(f, *in->name ? " } /* %s */\n" : " }\n", in->name);
+                }
+                if (node_inline(i)) continue; /* nothing reads them through li_get */
+
+                for (int k = 0; k < s->outputs.count; k++) {
+                        Out o = prog.outs.items[x->outputs + k];
+                        if (!o.count) continue;
+                        fprintf(f, "static void n%d_tick%d(void)", i, k);
+                        fprintf(f, *s->outputs.items[k].name ? " /* %s */\n{\n" : "\n{\n", s->outputs.items[k].name);
+                        for (int t = o.first; t < o.first + o.count; t++) {
+                                Target to = prog.targets.items[t];
+                                if (node_has(to.node, "tick"))
+                                        fprintf(f, "        rt_call_tick(&N[%d], n%d_tick, %d);\n", to.node, to.node, to.pin);
+                        }
+                        fprintf(f, "}\n");
+                }
+                if (s->inputs.count) {
+                        fprintf(f, "static Li_Value (*const n%d_get[])(void) = {", i);
+                        for (int k = 0; k < s->inputs.count; k++) {
+                                if (!input_has_get(s, k))
+                                        fprintf(f, "%sNULL", k ? ", " : " ");
+                                else
+                                        fprintf(f, "%sn%d_in%d", k ? ", " : " ", i, k);
+                        }
+                        fprintf(f, " };\n");
+                }
+                if (s->outputs.count) {
+                        fprintf(f, "static void (*const n%d_ticks[])(void) = {", i);
+                        for (int k = 0; k < s->outputs.count; k++) {
+                                Out o = prog.outs.items[x->outputs + k];
+                                if (o.count)
+                                        fprintf(f, "%sn%d_tick%d", k ? ", " : " ", i, k);
+                                else
+                                        fprintf(f, "%sNULL", k ? ", " : " ");
+                        }
+                        fprintf(f, " };\n");
+                }
+        }
+
+        /* Inline squares, as their modules wrote them */
+        for (int i = 0; i < prog.nodes.count; i++) {
+                if (!node_inline(i)) continue;
+                if (!any_inline) fprintf(f, "\n/* ---- Inline squares, from their module_emit ---- */\n");
+                any_inline = true;
+                fprintf(f, "\n/* N[%d]: square %d, %s */\n%s", i, prog.nodes.items[i].square->id,
+                        prog.nodes.items[i].square->module->name, compiled.items[i].emit);
+        }
+
+        fprintf(f, "\nstatic Li_Node N[%d] = {\n", prog.nodes.count ? prog.nodes.count : 1);
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Node *x   = &prog.nodes.items[i];
+                Square *s = x->square;
+                fprintf(f, "        { .module = ");
+                c_string(f, s->module->name);
+                fprintf(f, ", .square = %d, .scope = %d", s->id, scope_index(&scopes, x->scope));
+                if (node_is_make(x) || node_is_break(x)) fprintf(f, ", .type = %d", (int) s->module->type);
+                if (s->inputs.count && !node_inline(i)) fprintf(f, ", .get = n%d_get, .get_count = %d", i, s->inputs.count);
+                if (s->outputs.count && !node_inline(i)) fprintf(f, ", .tick = n%d_ticks, .tick_count = %d", i, s->outputs.count);
+                fprintf(f, " },\n");
+        }
+        fprintf(f, "};\n\n");
+        fprintf(f, "const int rt_scope_count = %d;\n\n", scopes.count + 1);
+
+        /* Every type, so their ids are the editor's */
+        fprintf(f, "const Rt_Type rt_types[] = {\n");
+        for (int t = 0; t < types.count; t++) {
+                TypeDef *d = types.items[t];
+                fprintf(f, "        { ");
+                c_string(f, d->name);
+                fprintf(f, ", %d, (const char *const[]) {", d->fields.count);
+                for (int k = 0; k < d->fields.count; k++) {
+                        fprintf(f, "%s", k ? ", " : " ");
+                        c_string(f, d->fields.items[k].name);
+                }
+                fprintf(f, "%s} },\n", d->fields.count ? " " : " NULL ");
+        }
+        if (!types.count) fprintf(f, "        { 0 },\n");
+        fprintf(f, "};\nconst int rt_type_count = %d;\n\n", types.count);
+
+        /* As the squares are now: params, options and state */
+        fprintf(f, "static void\nsetup(void)\n{\n");
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Node *x   = &prog.nodes.items[i];
+                Square *s = x->square;
+                if (node_inline(i)) continue;
+                fprintf(f, "        rt_scope(N[%d].scope);\n", i);
+                if (node_is_make(x) || node_is_break(x))
+                        fprintf(f, "        rt_pins(&N[%d], %d, %d);\n", i, s->inputs.count, s->outputs.count);
+                else if (node_has(i, "init"))
+                        fprintf(f, "        n%d_init(&N[%d]);\n", i, i);
+                for (int k = 0; k < s->inputs.count; k++) {
+                        PinInfo *in = &s->inputs.items[k];
+                        if (in->kind == PIN_OPTIONS) fprintf(f, "        rt_option(&N[%d], %d, %ld);\n", i, k, in->value.i);
+                }
+                for (int k = 0; k < s->params.count; k++) {
+                        fprintf(f, "        rt_param(&N[%d], %d, ", i, k);
+                        c_value(f, s->params.items[k].value);
+                        fprintf(f, ");\n");
+                        if (node_has(i, "param")) fprintf(f, "        n%d_param(&N[%d], %d);\n", i, i, k);
+                }
+                const char *state = s->fn.save && node_has(i, "load") ? s->fn.save(s) : NULL;
+                if (state) {
+                        fprintf(f, "        n%d_load(&N[%d], ", i, i);
+                        c_string(f, state);
+                        fprintf(f, ");\n");
+                }
+        }
+        fprintf(f, "        rt_scope(0);\n}\n\n");
+
+        fprintf(f, "static void\nstart(void)\n{\n");
+        for (int i = 0; i < prog.nodes.count; i++)
+                if (node_has(i, "start")) fprintf(f, "        rt_call(&N[%d], n%d_start);\n", i, i);
+        fprintf(f, "}\n\n");
+
+        for (int i = 0; i < prog.nodes.count; i++)
+                frames = frames || node_has(i, "frame");
+        if (frames) {
+                fprintf(f, "static void\nframe(void)\n{\n");
+                for (int i = 0; i < prog.nodes.count; i++)
+                        if (node_has(i, "frame")) fprintf(f, "        rt_call(&N[%d], n%d_frame);\n", i, i);
+                fprintf(f, "}\n\n");
+        }
+
+        fprintf(f, "int\nmain(int argc, char **argv)\n{\n");
+        fprintf(f, "        return rt_main(argc, argv, setup, start, %s);\n}\n", frames ? "frame" : "NULL");
+        Da_destroy(&scopes);
+}
+
+/* NAME as a file name: letters, digits, - _ and . */
+static void
+file_name(char *buf, int size, const char *name)
+{
+        int n = 0;
+        for (; *name && n < size - 1; name++)
+                buf[n++] = isalnum((unsigned char) *name) || strchr("-_.", *name) ? *name : '_';
+        buf[n] = '\0';
+        if (!n || buf[0] == '.') snprintf(buf, size, "program");
+}
+
+static void
+compiled_free(void)
+{
+        Da_foreach(c, compiled)
+        {
+                free(c->src);
+                free(c->obj);
+                free(c->libs);
+                free(c->emit);
+        }
+        compiled.count = 0;
+}
+
+/* Where the C of each node is, and which are inline, to `compiled`. Its
+ * packages are taken out to DIR/packages and built there. False, saying
+ * why in the output, if some module has no C. */
+static bool
+compile_sources(const char *dir)
+{
+        char path[PATH_MAX * 2], src[PATH_MAX];
+        bool ok = true;
+
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Node *x   = &prog.nodes.items[i];
+                Module *m = x->square->module;
+                Da_append(&compiled, (CompileNode) { 0 });
+                if (node_is_make(x) || node_is_break(x)) continue;
+
+                /* The same module as one before: the same C (or none, already said) */
+                int same = -1;
+                for (int j = 0; j < i && same < 0; j++)
+                        if (prog.nodes.items[j].square->module == m) same = j;
+                if (same >= 0) {
+                        CompileNode *before = &compiled.items[same];
+                        compiled.items[i].src = before->src ? strdup(before->src) : NULL;
+                        compiled.items[i].obj = before->obj ? strdup(before->obj) : NULL;
+                        /* Its libraries are already in the link, with the first */
+                } else if (m->lib) {
+                        char obj[PATH_MAX * 2], libs[1024];
+                        snprintf(path, sizeof path, "%s/packages/%s", dir, m->name);
+                        snprintf(obj, sizeof obj, "%s.o", path);
+                        if (package_object(m, path, obj, libs, sizeof libs)) {
+                                compiled.items[i].obj  = strdup(TextFormat("packages/%s.o", m->name));
+                                compiled.items[i].libs = strdup(libs);
+                        }
+                } else {
+                        snprintf(path, sizeof path, "%s/%s.c", cfg.modules.source, m->name);
+                        if (!m->builtin && realpath(path, src))
+                                compiled.items[i].src = strdup(src);
+                        else
+                                output_add(TextFormat("compile: square %d: no C for %s, it should be %s", x->square->id, m->name, path), true);
+                }
+                if (!compiled.items[i].src && !compiled.items[i].obj) {
+                        ok = false;
+                        continue;
+                }
+                if (!compiled.items[i].src) continue; /* a package: not inline */
+
+                /* Inline if it's pure and says how */
+                ModuleFns *fn    = &x->square->fn;
+                const char *text = fn->emit && !fn->tick && !fn->frame && !fn->start ? fn->emit(x->square) : NULL;
+                if (text) compiled.items[i].emit = emit_expand(text, i, compiled.items[i].src);
+        }
+
+        /* Not the ones that read themselves */
+        bool *seen = calloc(prog.nodes.count + 1, sizeof *seen);
+        for (int i = 0; i < prog.nodes.count; i++) {
+                if (!node_inline(i)) continue;
+                memset(seen, 0, prog.nodes.count * sizeof *seen);
+                if (inline_loop(i, i, seen)) {
+                        free(compiled.items[i].emit);
+                        compiled.items[i].emit = NULL;
+                }
+        }
+        free(seen);
+        return ok;
+}
+
+/* Writes FILE of DIR from F, an open_memstream of *TEXT and *LEN (they are
+ * only set when it's closed) */
+static bool
+write_text(const char *dir, const char *file, FILE *f, char **text, size_t *len)
+{
+        char path[PATH_MAX * 2];
+        fclose(f);
+        snprintf(path, sizeof path, "%s/%s", dir, file);
+        bool ok = write_if_changed(path, *text, *len);
+        free(*text);
+        return ok;
+}
+
+/* The canvas shown, compiled to compile.output/NAME, its path in BIN.
+ * What went wrong goes to the output panel. */
+static bool
+compile_canvas(const char *name, char *bin, int size)
+{
+        char dir[PATH_MAX], out[PATH_MAX], rt[PATH_MAX], file[64];
+        char base[128], *text;
+        const char *from = canvas_path ? canvas_path : "a canvas never saved";
+        size_t len;
+        bool ok = true;
+        FILE *f;
+
+        program_lower();
+        file_name(base, sizeof base, name);
+        if (!mkdir_p(cfg.compile.output) || !realpath(cfg.compile.output, out)) {
+                output_add(TextFormat("compile: can't make %s", cfg.compile.output), true);
+                return false;
+        }
+        if (!realpath(cfg.compile.runtime, rt) || !FileExists(TextFormat("%s/liblineit-rt.a", rt))) {
+                output_add(TextFormat("compile: no runtime in %s (compile.runtime), build it with make", cfg.compile.runtime), true);
+                return false;
+        }
+        snprintf(dir, sizeof dir, "%s/%s.build", out, base);
+        snprintf(bin, size, "%s/%s", out, base);
+        if (!mkdir_p(dir)) {
+                output_add(TextFormat("compile: can't make %s", dir), true);
+                return false;
+        }
+        if (!compile_sources(dir)) {
+                compiled_free();
+                return false;
+        }
+
+        /* What an older compile left that isn't used now */
+        for (int i = 0; i < prog.nodes.count + 1024; i++) {
+                bool c = i < prog.nodes.count && compiled.items[i].src && !node_inline(i);
+                bool o = c || (i < prog.nodes.count && compiled.items[i].obj);
+                if (i >= prog.nodes.count && !FileExists(TextFormat("%s/n%d.o", dir, i))) break;
+                if (!c) remove(TextFormat("%s/n%d.c", dir, i));
+                if (!c) remove(TextFormat("%s/n%d.d", dir, i));
+                if (!o) remove(TextFormat("%s/n%d.o", dir, i));
+        }
+
+        /* One file per node that isn't inline, with its module in it */
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Square *s = prog.nodes.items[i].square;
+                if (!compiled.items[i].src || node_inline(i)) continue;
+                f = open_memstream(&text, &len);
+                fprintf(f, "/* N[%d] of %s: square %d, %s. Made by lineit's Compile. */\n", i, base, s->id, s->module->name);
+                for (int c = 0; c < countof(callback_names); c++)
+                        fprintf(f, "#define module_%s n%d_%s\n", callback_names[c], i, callback_names[c]);
+                /* Not called, but they may be there */
+                for (int c = 0; c < countof(callback_others); c++)
+                        fprintf(f, "#define module_%s n%d_%s\n", callback_others[c], i, callback_others[c]);
+                fprintf(f, "#include ");
+                c_string(f, compiled.items[i].src);
+                fprintf(f, "\n");
+                snprintf(file, sizeof file, "n%d.c", i);
+                ok = write_text(dir, file, f, &text, &len) && ok;
+        }
+
+        f = open_memstream(&text, &len);
+        compile_main(f, base, from);
+        ok = write_text(dir, "main.c", f, &text, &len) && ok;
+
+        f = open_memstream(&text, &len);
+        fprintf(f, "# %s, compiled by lineit from %s: make builds it again\n", base, from);
+        fprintf(f, "CC = %s\nCFLAGS = %s\nOBJCOPY = %s\nRT = %s\n\n", cfg.compile.cc, cfg.compile.cflags, cfg.compile.objcopy, rt);
+        fprintf(f, "OBJS = main.o");
+        for (int i = 0; i < prog.nodes.count; i++)
+                if ((compiled.items[i].src && !node_inline(i)) || compiled.items[i].obj) fprintf(f, " n%d.o", i);
+        /* What the packages need, from their lineit-libs */
+        fprintf(f, "\nLIBS =");
+        for (int i = 0; i < prog.nodes.count; i++)
+                if (compiled.items[i].libs && *compiled.items[i].libs) fprintf(f, " %s", compiled.items[i].libs);
+        fprintf(f, "\n\n../%s: $(OBJS) $(RT)/liblineit-rt.a\n", base);
+        fprintf(f, "\t$(CC) $(CFLAGS) $(OBJS) $(RT)/liblineit-rt.a $(LIBS) -lm -o $@\n\n");
+        fprintf(f, "%%.o: %%.c\n\t$(CC) $(CFLAGS) -MMD -I$(RT)/include -c $< -o $@\n");
+
+        /* Packages: a copy of their object per square, only the callbacks
+         * global, renamed */
+        fprintf(f, "\nKEEP =");
+        for (int c = 0; c < countof(callback_names); c++)
+                fprintf(f, " --keep-global-symbol=module_%s", callback_names[c]);
+        for (int c = 0; c < countof(callback_others); c++)
+                fprintf(f, " --keep-global-symbol=module_%s", callback_others[c]);
+        fprintf(f, "\n");
+        for (int i = 0; i < prog.nodes.count; i++) {
+                if (!compiled.items[i].obj) continue;
+                fprintf(f, "\nn%d.o: %s\n\t$(OBJCOPY) $(KEEP) $< $@\n\t$(OBJCOPY)", i, compiled.items[i].obj);
+                for (int c = 0; c < countof(callback_names); c++)
+                        fprintf(f, " --redefine-sym module_%s=n%d_%s", callback_names[c], i, callback_names[c]);
+                for (int c = 0; c < countof(callback_others); c++)
+                        fprintf(f, " --redefine-sym module_%s=n%d_%s", callback_others[c], i, callback_others[c]);
+                fprintf(f, " $@\n");
+        }
+        fprintf(f, "\n-include $(OBJS:.o=.d)\n");
+        ok = write_text(dir, "Makefile", f, &text, &len) && ok;
+        compiled_free();
+        if (!ok) {
+                output_add(TextFormat("compile: can't write in %s", dir), true);
+                return false;
+        }
+
+        /* Build it, with what make and the compiler say in the output */
+        char quoted[PATH_MAX * 4 + 8], cmd[PATH_MAX * 4 + 64];
+        shell_quote(quoted, sizeof quoted, dir);
+        snprintf(cmd, sizeof cmd, "cd %s && make -s -j%ld 2>&1", quoted, sysconf(_SC_NPROCESSORS_ONLN));
+        return run_to_output(cmd);
+}
+
+/* Compile in the bar */
+static void
+bar_compile(void)
+{
+        char bin[PATH_MAX];
+        const char *name = canvas_path ? GetFileNameWithoutExt(canvas_path) : "canvas";
+        if (compile_canvas(name, bin, sizeof bin)) {
+                output_add(TextFormat("Compiled %s", bin), true);
+                set_status("Compiled %s", bin);
+        } else {
+                output.open = true;
+                set_status("Could not compile, see the output");
+        }
+}
+
+/* lineit --compile PATH: Compile without the editor. Prints where the
+ * program went, or what went wrong. */
+static int
+compile_file(const char *config, const char *path)
+{
+        char bin[PATH_MAX];
+        bool ok = false;
+
+        SetTraceLogLevel(LOG_WARNING);
+        cfg_defaults = cfg;
+        load_config(config);
+        /* No window: no fonts, squares are measured as 0, they're not shown */
+        load_modules(cfg.modules.path);
+        canvas_path = path;
+        if (!canvas_read_file(path, READ_LOAD))
+                output_add(TextFormat("compile: can't read %s", path), true);
+        else
+                ok = compile_canvas(GetFileNameWithoutExt(path), bin, sizeof bin);
+        Da_foreach(l, output.lines)
+        {
+                fprintf(stderr, "%s\n", l->text);
+        }
+        if (ok) printf("%s\n", bin);
+        canvas_clear(-1, NULL);
+        unload_modules();
+        canvas_path = NULL;
+        return ok ? 0 : 1;
 }
 
 /* Whether S is of M, or is a subgraph with one of M inside */
@@ -5047,17 +5869,15 @@ bar_load(void)
 }
 
 static void
-bar_start_stop(void)
+bar_run_stop(void)
 {
         running = !running;
         if (!running) return;
-        if (cfg.output.clear_on_start) output_clear();
+        if (cfg.output.clear_on_run) output_clear();
 
         /* Before the first frame runs, so entry squares go first */
-        for (int i = 0; i < squares.count; i++) {
-                Square *s = squares.items[i];
-                if (s->fn.start) s->fn.start(s);
-        }
+        program_lower();
+        program_each(true);
 }
 
 static void
@@ -5075,13 +5895,13 @@ output_label(void)
 }
 
 static const char *
-start_stop_label(void)
+run_stop_label(void)
 {
-        return running ? "Stop" : "Start";
+        return running ? "Stop" : "Run";
 }
 
 static void file_menu_open(void);
-enum { BAR_FILE = 2 };
+enum { BAR_FILE = 3 };
 
 /* Buttons at the right of the bar, from right to left. LABEL is used when
  * GET_LABEL is NULL. WIDEST is the longest label it can show. */
@@ -5091,7 +5911,8 @@ static const struct {
         const char *widest;
         void (*fn)(void);
 } bar_buttons[] = {
-        { .get_label = start_stop_label, .widest = "Start", .fn = bar_start_stop },
+        { .get_label = run_stop_label, .widest = "Stop", .fn = bar_run_stop },
+        { .label = "Compile", .widest = "Compile", .fn = bar_compile },
         { .get_label = output_label, .widest = "Output*", .fn = bar_output },
         [BAR_FILE] = { .label = "File", .widest = "File", .fn = file_menu_open },
 };
@@ -5185,6 +6006,12 @@ config_reload(void)
         str_drop(prev.window.title, cfg.window.title, cfg_defaults.window.title);
         str_drop(prev.font.name, cfg.font.name, cfg_defaults.font.name);
         str_drop(prev.modules.source, cfg.modules.source, cfg_defaults.modules.source);
+        str_drop(prev.modules.cache, cfg.modules.cache, cfg_defaults.modules.cache);
+        str_drop(prev.compile.output, cfg.compile.output, cfg_defaults.compile.output);
+        str_drop(prev.compile.runtime, cfg.compile.runtime, cfg_defaults.compile.runtime);
+        str_drop(prev.compile.cc, cfg.compile.cc, cfg_defaults.compile.cc);
+        str_drop(prev.compile.cflags, cfg.compile.cflags, cfg_defaults.compile.cflags);
+        str_drop(prev.compile.objcopy, cfg.compile.objcopy, cfg_defaults.compile.objcopy);
         set_status("Reloaded %s", config_path);
 }
 
@@ -5206,6 +6033,7 @@ typedef struct Tab {
         VarList vars, globals;
         BT *lists, *trees;
         Typeof(history) history;
+        Program prog;
         bool running;
         const char *path; /* canvas_path: NULL until it's saved somewhere */
 
@@ -5235,6 +6063,7 @@ tab_swap(Tab *t)
         SWAP(lists, t->lists);
         SWAP(trees, t->trees);
         SWAP(history, t->history);
+        SWAP(prog, t->prog);
         SWAP(running, t->running);
         SWAP(canvas_path, t->path);
 }
@@ -5410,6 +6239,7 @@ tab_close(int i, bool force)
         canvas_clear(-1, NULL);
         Da_destroy(&squares);
         Da_destroy(&links);
+        program_free(&prog);
         history_free_list(&history.undo);
         history_free_list(&history.redo);
         Da_destroy(&history.undo);
@@ -5526,10 +6356,8 @@ tabs_run_background(void)
         for (int t = 0; t < tabs.count; t++) {
                 if (t == tab_cur || !tabs.items[t]->running) continue;
                 tab_visit(t);
-                for (int i = 0; i < squares.count; i++) {
-                        Square *s = squares.items[i];
-                        if (s->fn.frame) s->fn.frame(s);
-                }
+                program_lower();
+                program_each(false);
                 tab_visit(t);
         }
 }
@@ -6964,7 +7792,7 @@ session_restore(const char *path)
 
                 b = 0;
                 Conf_get_bool(conf, &b, "session.tabs.%d.running", t);
-                if (b) bar_start_stop();
+                if (b) bar_run_stop();
         }
 
         Conf_close(conf);
@@ -7235,6 +8063,7 @@ main(int argc, char **argv)
         const char *f_file;
         const char *f_restore;
         const char *f_tab;
+        const char *f_compile;
 
         flag_program();
         flag_add(&f_version, "--version");
@@ -7244,6 +8073,8 @@ main(int argc, char **argv)
                  .help = "canvas file to load at start, and to save to (default: save.path in the config)");
         flag_add(&f_tab, "--tab", "-t", .nargs = 1,
                  .help = "open the canvas file in a new tab of the editor running (or start one with it)");
+        flag_add(&f_compile, "--compile", .nargs = 1,
+                 .help = "compile the canvas file to a program (see compile in the config) and quit, no window");
         flag_add(&f_restore, "--restore", .nargs = 1,
                  .help = "session to carry on with (the editor uses it to reload itself when rebuilt)");
         if (flag_parse(&argc, &argv)) {
@@ -7260,6 +8091,8 @@ main(int argc, char **argv)
                 fprintf(stdout, "There is NO WARRANTY, to the extent permitted by law.\n");
                 exit(0);
         }
+
+        if (f_compile) return compile_file(f_config, f_compile);
 
         if (f_tab) {
                 if (tab_socket_send(f_tab)) return 0;
@@ -7331,6 +8164,9 @@ main(int argc, char **argv)
         CloseWindow();
         Da_destroy(&squares);
         Da_destroy(&links);
+        program_free(&prog);
+        Da_destroy(&levels);
+        Da_destroy(&path);
         flag_free();
         return 0;
 }

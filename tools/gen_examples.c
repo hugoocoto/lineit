@@ -88,7 +88,7 @@ save(const char *name, const char *description)
                 fprintf(out, "-- %.*s\n", len, p);
                 p += len + (nl != NULL);
         }
-        fprintf(out, "--\n-- Open it with: ./lineit -f %s, then press Start.\n", path);
+        fprintf(out, "--\n-- Open it with: ./lineit -f %s, then press Run.\n", path);
         char line[4096];
         fgets(line, sizeof line, in); /* skip "-- lineit canvas" */
         while (fgets(line, sizeof line, in))
@@ -104,8 +104,8 @@ hello(void)
         Square *e = sq("flow/entry", 0, 0);
         Square *p = in(sq("io/print", 1, 0), 1, "Hello, world!");
         w(e, 0, p, 0);
-        save("hello", "Prints \"Hello, world!\" when you press Start.\n"
-                      "flow/entry ticks once on Start. io/print writes its value to stdout\n"
+        save("hello", "Prints \"Hello, world!\" when you press Run.\n"
+                      "flow/entry ticks once on Run. io/print writes its value to stdout\n"
                       "and shows it: the text is typed in its value field (click it to\n"
                       "change it).");
 }
@@ -159,7 +159,7 @@ clock_example(void)
         w(ie, 0, clk, 0);
         w(clk, 1, d, 0);
         save("clock", "Counts seconds from 0 to 9 forever.\n"
-                      "flow/entry resets flow/clock on Start so it always starts at 0. On\n"
+                      "flow/entry resets flow/clock on Run so it always starts at 0. On\n"
                       "each tick, flow/ifelse checks count >= 10 (compare/compare, with >=\n"
                       "chosen in its op list) and, if so, resets the clock again.\n"
                       "io/display shows the count. Type another number in the clock's\n"

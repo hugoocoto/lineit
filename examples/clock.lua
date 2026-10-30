@@ -1,12 +1,12 @@
 -- clock
 -- Counts seconds from 0 to 9 forever.
--- flow/entry resets flow/clock on Start so it always starts at 0. On
+-- flow/entry resets flow/clock on Run so it always starts at 0. On
 -- each tick, flow/ifelse checks count >= 10 (compare/compare, with >=
 -- chosen in its op list) and, if so, resets the clock again.
 -- io/display shows the count. Type another number in the clock's
 -- seconds field to change the speed.
 --
--- Open it with: ./lineit -f examples/clock.lua, then press Start.
+-- Open it with: ./lineit -f examples/clock.lua, then press Run.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION
 
 camera = { x = 314.050781, y = 69, offset_x = 640, offset_y = 344, zoom = 1 }

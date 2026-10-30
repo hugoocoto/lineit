@@ -47,14 +47,19 @@ The rule \`lineit-package\` has to fill DIR, an empty folder, with:
                         linux-x86_64.so    linux-arm64.so
                         macos-x86_64.dylib macos-arm64.dylib
                         windows-x86_64.dll windows-arm64.dll
-                      Only the ones it builds: a module with only
-                      lib/linux-*.so is linux only, and lineit skips it
-                      elsewhere ("not built for macos-arm64"). That is the
-                      way to mark a module for some platforms only.
+                      Only the ones it builds. Elsewhere lineit builds it
+                      itself, once, from src/ with the Makefile
+                      (lineit-so), so users there need a C compiler. Ship
+                      the platforms you can, so they don't.
   LICENSE             Required (or LICENSE.txt, LICENSE.md, COPYING).
-  src/                Recommended: the source and the Makefile, so it can be
-                      built again and changed. Anything else can go too
-                      (README...), lineit only reads manifest.lua and lib/.
+  src/                Required: the C of the module.
+  Makefile            Required: it builds the module from src/, in the
+                      package itself, with these rules (see below):
+                        lineit-so   the module as a library
+                        lineit-o    src/ as one relocatable object, for
+                                    lineit's Compile
+                        lineit-libs prints what that object needs to link
+  Anything else can go too (README...).
 
 If manifest.lua has no \`platforms\`, lineit-pack writes it from lib/:
   platforms = { ["linux-x86_64"] = "lib/linux-x86_64.so", ... }
@@ -75,14 +80,45 @@ Building each library:
   Windows   not supported by lineit yet: a .dll can't take li_* from the
             .exe that way.
 
-A minimal Makefile (examples/package has a full one):
+The Makefile in the package
+---------------------------
+
+Its rules run from the root of the package, as it is in the .li, with:
+  OUT             where to write what they build, absolute
+  LINEIT_INCLUDE  folder with lineit.h, for -I
+  CC, CFLAGS      the compiler and flags to build with
+
+  lineit-so  OUT is the module as a library, like the ones in lib/.
+  lineit-o   OUT is all of src/ as one relocatable object: cc -r. Compile
+             (in lineit's bar, or lineit --compile) puts a copy of it in the
+             program for each square of the module, with only the module_*
+             callbacks global, so each square has its own globals, like the
+             copies of the library in the editor.
+  lineit-libs  prints, on stdout, the flags to link what lineit-o made:
+             the libraries it uses (-lcurl -lm...). Nothing if none. They
+             go to the link of the program.
+
+lineit-pack copies the package and runs both on it, to check them. The
+simplest is one Makefile for both, the folder of the module laid out like
+the package (src/, manifest.lua, LICENSE), whose lineit-package builds lib/
+with lineit-so and copies the rest. examples/package is that:
+
+    SRC = \$(wildcard src/*.c)
+    LIBS =    # -lcurl...
+
+    lineit-so:
+            \$(CC) \$(CFLAGS) -fPIC -shared -I\$(LINEIT_INCLUDE) \$(SRC) \$(LIBS) -o \$(OUT)
+
+    lineit-o:
+            \$(CC) \$(CFLAGS) -r -nostdlib -I\$(LINEIT_INCLUDE) \$(SRC) -o \$(OUT)
+
+    lineit-libs:
+            @echo \$(LIBS)
 
     lineit-package:
-            mkdir -p \$(PACKAGE_DIR)/lib \$(PACKAGE_DIR)/src
-            \$(CC) -O2 -fPIC -shared -I\$(LINEIT_INCLUDE) reverse.c \\
-                    -o \$(PACKAGE_DIR)/lib/linux-x86_64.so
-            cp manifest.lua LICENSE \$(PACKAGE_DIR)/
-            cp reverse.c Makefile \$(PACKAGE_DIR)/src/
+            mkdir -p \$(PACKAGE_DIR)/lib
+            \$(MAKE) lineit-so OUT=\$(PACKAGE_DIR)/lib/linux-x86_64.so
+            cp -r manifest.lua LICENSE Makefile src \$(PACKAGE_DIR)/
 EOF
 }
 
@@ -113,8 +149,8 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
 echo "lineit-pack: make lineit-package ($makefile)"
-make --no-print-directory -C "$(dirname "$makefile")" -f "$makefile" lineit-package \
-        PACKAGE_DIR="$stage" LINEIT_INCLUDE="$repo/src" LINEIT_API="$api"
+(cd "$(dirname "$makefile")" && make --no-print-directory -f "$makefile" lineit-package \
+        PACKAGE_DIR="$stage" LINEIT_INCLUDE="$repo/src" LINEIT_API="$api")
 
 fail() {
         echo "lineit-pack: $*" >&2
@@ -126,7 +162,28 @@ fail() {
 license=
 for f in LICENSE LICENSE.txt LICENSE.md COPYING; do [[ -f $stage/$f ]] && license=$f; done
 [[ -n $license ]] || fail "lineit-package made no LICENSE"
-[[ -d $stage/src ]] || echo "lineit-pack: warning: no src/, it can't be built again from the package" >&2
+[[ -d $stage/src ]] || fail "lineit-package made no src/"
+[[ -f $stage/Makefile ]] || fail "lineit-package made no Makefile (at the root of the package)"
+
+# Its Makefile has to build the module from the package itself: on a copy,
+# so what it builds doesn't go in the .li
+check=$(mktemp -d)
+trap 'rm -rf "$stage" "$check"' EXIT
+cp -r "$stage" "$check/pkg"
+for rule in lineit-so lineit-o; do
+        ext=$([[ $rule == lineit-so ]] && echo so || echo o)
+        echo "lineit-pack: checking make $rule, in the package"
+        (cd "$check/pkg" && make --no-print-directory -s "$rule" OUT="$check/module.$ext" \
+                LINEIT_INCLUDE="$repo/src" CC="${CC:-cc}" CFLAGS="-O2") ||
+                fail "make $rule failed in the package"
+        [[ -f $check/module.$ext ]] || fail "make $rule made no OUT"
+        if command -v nm >/dev/null && ! nm --defined-only "$check/module.$ext" 2>/dev/null | grep -qw module_init; then
+                fail "what make $rule made has no module_init"
+        fi
+done
+echo "lineit-pack: checking make lineit-libs, in the package"
+libs_out=$(cd "$check/pkg" && make --no-print-directory -s lineit-libs) || fail "make lineit-libs failed in the package"
+echo "lineit-pack: it links with: ${libs_out:-nothing more}"
 libs=()
 if [[ -d $stage/lib ]]; then
         while IFS= read -r f; do libs+=("$f"); done < <(cd "$stage" && find lib -maxdepth 1 -type f | sort)
@@ -201,7 +258,7 @@ EOF
 # The library for here has to load as a module
 hostlib=$(cd "$stage" && ls lib/"$host".* 2>/dev/null | head -1 || true)
 if [[ -z $hostlib ]]; then
-        echo "lineit-pack: warning: not built for $host, lineit here will skip it" >&2
+        echo "lineit-pack: warning: not built for $host, lineit here will build it from src/ (lineit-so)" >&2
 elif command -v nm >/dev/null && ! nm -D --defined-only "$stage/$hostlib" 2>/dev/null | grep -qw module_init; then
         fail "$hostlib has no module_init"
 fi

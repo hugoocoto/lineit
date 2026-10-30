@@ -25,11 +25,11 @@
         constants...) don't need ticks.
 
      void module_frame(Li_Node *n);
-        Called once per frame while running (Start in the bar). Use it to
+        Called once per frame while running (Run in the bar). Use it to
         start tick chains (a clock).
 
      void module_start(Li_Node *n);
-        Start was pressed in the bar. Called once, before the first
+        Run was pressed in the bar. Called once, before the first
         module_frame. Use it to set things up or start tick chains (entry).
 
      void module_draw(Li_Node *n);
@@ -56,9 +56,31 @@
         module_save returned. Called after module_init and after its params
         are restored (module_param).
 
+     const char *module_emit(Li_Node *n);
+        Only for pure squares (module_eval, no ticks, no state, no
+        variables: inline code runs in no scope of its own). Compile
+        (see below) calls it to put the square inline in the program,
+        instead of calling its module_eval through li_get: return C that
+        defines, for each output K,
+
+            static Li_Value $_outK(void)
+
+        computing it like module_eval, with $_inK() for the value of input
+        K (instead of li_get). $_ is replaced by a name for the square, so
+        name everything you define $_something; $source by the path of the
+        module's C file, to #include it again for its functions (with
+        LI_INLINE defined, so it can leave its callbacks out). It's called
+        in the editor, so it can read params and options and write C just
+        for them. NULL: compiled as usual. See modules/math/arith.h.
+
    Wires go from an output to an input of the same type. LI_ANY matches any
    type except LI_TICK. A data input takes one wire, a tick input can take
    many. Build modules with `make`, see the Makefile.
+
+   Compile (in the bar, or lineit --compile FILE) makes a program of the
+   canvas, with the C of each module in it once per square (or inline, see
+   module_emit), and the li_* functions of src/rt. Keep everything in a
+   module but these callbacks static, or the copies clash.
 
    To give a module to others, with its source, license and builds for
    several platforms in one file, make a package (.li) with tools/lineit-pack.

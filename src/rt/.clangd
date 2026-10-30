@@ -1,0 +1,6 @@
+CompileFlags:
+  Add:
+    - -I..
+    - -I../../thirdparty/cum.h
+    - -I../../thirdparty/bt.h
+    - -std=c11

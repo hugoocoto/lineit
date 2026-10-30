@@ -1,6 +1,6 @@
 /* On tick, picks a new number between min and max (both included) and
  * ticks then. Ints give an int; if any is a float, a float in [min, max).
- * The same seed (a param) always gives the same numbers, from Start. */
+ * The same seed (a param) always gives the same numbers, from Run. */
 #include "lineit.h"
 #include <stdint.h>
 

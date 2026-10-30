@@ -4,9 +4,16 @@ Canvases to open in the editor. Run `make` first, then:
 
     ./lineit -f examples/hello.lua
 
-and press **Start** in the bar. `io/print` writes to the terminal and also shows
+and press **Run** in the bar. `io/print` writes to the terminal and also shows
 its last value on its square. Every file starts with a comment that explains
 how it works.
+
+**Compile** makes a program of the canvas instead, `build/bin/hello` for
+`hello.lua`, that does the same without the editor:
+
+    ./build/bin/hello
+
+Or without the editor: `./lineit --compile examples/hello.lua`.
 
 | File              | Shows                                                                 |
 |-------------------|-----------------------------------------------------------------------|

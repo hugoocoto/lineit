@@ -1,5 +1,5 @@
 /* text = s backwards (bytes). A module made to be packaged: it only needs
- * lineit.h, see the Makefile next to it. Pure: computed when read, no ticks
+ * lineit.h, see the Makefile of the package. Pure: computed when read, no ticks
  * needed. */
 #include "lineit.h"
 #include <stdlib.h>

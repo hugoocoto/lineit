@@ -6,7 +6,7 @@
 -- flow/ifelse, and variables (var/set, var/get). Type another number
 -- than 27 in the first var/set to try it.
 --
--- Open it with: ./lineit -f examples/collatz.lua, then press Start.
+-- Open it with: ./lineit -f examples/collatz.lua, then press Run.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION
 
 camera = { x = 855.050781, y = 108.105469, offset_x = 640, offset_y = 344, zoom = 0.645126045 }

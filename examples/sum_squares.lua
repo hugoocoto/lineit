@@ -4,7 +4,7 @@
 -- 0 to 9 and does sum = sum + index * index (var/get, math/multiply,
 -- math/add, var/set). When the loop is done, io/print shows sum.
 --
--- Open it with: ./lineit -f examples/sum_squares.lua, then press Start.
+-- Open it with: ./lineit -f examples/sum_squares.lua, then press Run.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION
 
 camera = { x = 523.945312, y = 205.605469, offset_x = 640, offset_y = 344, zoom = 0.995346487 }
