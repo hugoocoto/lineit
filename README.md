@@ -124,7 +124,7 @@ GPLv3 or later, see [LICENSE](LICENSE).
 
 - VIM MODE!
 - Modules are weird
-- UI and modules are ugly as fuck
+- UI and modules are ugly as fuck - Themes?
 - Edit config from the GUI
 - Proper setup: make install, ~/.config/lineit, releases...
 - Proper documentation
