@@ -118,7 +118,14 @@ runs, except the window size and the modules and save paths, read at start.
 
 # License
 
-GPLv3 or later, see [LICENSE](LICENSE).
+GPLv3 or later, see [LICENSE](LICENSE). In short: you can use, study,
+change and share lineit for any purpose, commercial too. If you give anyone
+a copy, changed or not, you must also give them its source, under this same
+license and with no extra restrictions. It comes with no warranty.
+
+Your canvases are yours. The programs Compile makes include lineit's runtime
+and modules, so if you give someone a compiled program, it's covered by the
+GPL too.
 
 
 # TODO
