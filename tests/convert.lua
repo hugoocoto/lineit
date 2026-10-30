@@ -1,5 +1,7 @@
 -- convert: the value/convert module, to each type, checked by `make test` (see
 -- tools/run_tests.c)
+lineit_canvas = 1 -- format version, see CANVAS_VERSION
+
 squares = {
         { id = 0, module = "value/convert", x = 0, y = 0, inputs = { { name = "value", type = "string", value = "42" }, { name = "to", value = "int" }, } },
         { id = 1, module = "value/convert", x = 0, y = 100, inputs = { { name = "value", type = "string", value = " 2.9 " }, { name = "to", value = "int" }, } },

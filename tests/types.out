@@ -1,0 +1,20 @@
+-- 19 squares, 18 links
+0 types/make_point: {x: 1.5, y: 2}
+1 io/display: {x: 1.5, y: 2}
+2 types/break_point: 
+3 math/add: 3.5
+4 io/display: 3.5
+5 types/make_point: {x: 4, y: 6}
+6 types/make_segment: {from: {x: 1.5, y: 2}, to: {x: 4, y: 6}}
+7 io/display: {from: {x: 1.5, y: 2}, to: {x: 4, y: 6}}
+8 types/break_segment: 
+9 types/break_point: 
+10 io/display: 6
+11 flow/entry: 
+12 var/set: p = {x: 1.5, y: 2}
+13 list/push: segments [1]
+14 var/get: p = {x: 1.5, y: 2}
+15 io/display: {x: 1.5, y: 2}
+16 list/get: segments [1]
+17 types/break_segment: 
+18 io/display: {x: 4, y: 6}

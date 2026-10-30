@@ -1,4 +1,6 @@
 -- strings: every string/ module, checked by `make test` (see tools/run_tests.c)
+lineit_canvas = 1 -- format version, see CANVAS_VERSION
+
 squares = {
         { id = 0, module = "string/concat", x = 0, y = 0, inputs = { { name = "a", type = "string", value = "n = " }, { name = "b", type = "int", value = "5" }, } },
         { id = 1, module = "string/concat", x = 0, y = 100 },

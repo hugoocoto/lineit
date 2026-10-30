@@ -1,9 +1,9 @@
 -- fibonacci
 -- The first 30 Fibonacci numbers, in a list.
--- entry clears the list fib and pushes 0 and 1. Then loop 2..29
--- pushes fib[-1] + fib[-2] (list/get with negative indices count
--- from the end) and prints the new last one. display shows the
--- length of the list.
+-- flow/entry clears the list fib (list/clear) and pushes 0 and 1
+-- (list/push). Then flow/loop 2..29 pushes fib[-1] + fib[-2]
+-- (list/get with negative indices counts from the end) and prints the
+-- new last one with io/print. io/display shows list/length.
 --
 -- Open it with: ./lineit -f examples/fibonacci.lua, then press Start.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION

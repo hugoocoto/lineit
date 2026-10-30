@@ -1,4 +1,6 @@
 -- math: every math/ module, checked by `make test` (see tools/run_tests.c)
+lineit_canvas = 1 -- format version, see CANVAS_VERSION
+
 squares = {
         { id = 0, module = "math/add", x = 0, y = 0, inputs = { { name = "a", type = "int", value = "2" }, { name = "b", type = "int", value = "3" }, } },
         { id = 1, module = "math/subtract", x = 0, y = 100, inputs = { { name = "a", type = "int", value = "2" }, { name = "b", type = "float", value = "0.5" }, } },

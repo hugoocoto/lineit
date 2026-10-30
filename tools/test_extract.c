@@ -49,7 +49,7 @@ pins(char *buf, int size, PinList *l)
         Da_foreach(p, *l)
         {
                 size_t used = strlen(buf);
-                snprintf(buf + used, size - used, "%s%s:%s", used ? " " : "", p->name, type_names[p->type]);
+                snprintf(buf + used, size - used, "%s%s:%s", used ? " " : "", p->name, type_name(p->type));
         }
 }
 

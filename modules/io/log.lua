@@ -2,6 +2,8 @@
 -- On tick, prints "label: value" (string/format + print), then ticks then.
 -- Open it with ./lineit -f modules/log.lua to change it; `make` copies it to
 -- build/modules and the squares using it pick the change up.
+lineit_canvas = 1 -- format version, see CANVAS_VERSION
+
 camera = { x = 300, y = 100, offset_x = 640, offset_y = 344, zoom = 1 }
 
 squares = {

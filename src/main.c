@@ -449,6 +449,7 @@ struct Module {
         char *path;        /* the .so, or the .lua of a subgraph. NULL for built-in modules */
         const ModuleFns *builtin; /* callbacks in the editor itself instead of a .so */
         char *lib;                /* a package (.li): its .so for here, taken out (see Packages) */
+        Li_Type type;             /* make_ and break_ of a custom type: which (see Types) */
         char *name;        /* path inside the modules dir, no extension: "math/add" */
         const char *label; /* last part of the name: "add" */
         long long mtime;   /* of the .so loaded, ns, to see when it's rebuilt */
@@ -498,6 +499,7 @@ static bool autosave;        /* cfg.save.autosave at start, toggled in the File 
 static const ModuleFns graph_fns;
 static void square_open_tab(int id, void *arg);
 static void menu_subgraph(int id, void *arg);
+static void type_edit(int id, void *arg);
 static void tabs_run_background(void);
 static bool prompt_is_open(void);
 
@@ -1173,14 +1175,155 @@ li_get_param(Li_Node *n, int param)
         return n->params.items[param].value;
 }
 
+/* ---- Custom types: records ---- */
+
+/* Types made in the editor: a name and typed fields, like a C struct (see
+ * Types, by the modules, for where they come from). Their ids come after
+ * the built-in ones: LI_TYPE_COUNT + their index in `types`, which doesn't
+ * change while lineit runs. A value of one has .p pointing to a Record. */
+
+typedef struct Field {
+        char *name;
+        char *type; /* by name: types can use types defined after them */
+} Field;
+
+typedef struct TypeDef {
+        char *name;        /* "geo/point" */
+        const char *label; /* "point" */
+        Da(Field) fields;
+        Color color;
+} TypeDef;
+
+static Da(TypeDef *) types;
+
+typedef struct Record {
+        Li_Type type;
+        int count;
+        Li_Value fields[];
+} Record;
+
+static TypeDef *
+type_def(Li_Type t)
+{
+        int i = (int) t - LI_TYPE_COUNT;
+        return i >= 0 && i < types.count ? types.items[i] : NULL;
+}
+
+static bool
+type_is_record(Li_Type t)
+{
+        return type_def(t) != NULL;
+}
+
+/* For people: "int", "point" */
+static const char *
+type_name(Li_Type t)
+{
+        if ((int) t >= 0 && t < LI_TYPE_COUNT) return type_names[t];
+        TypeDef *d = type_def(t);
+        return d ? d->label : "?";
+}
+
+/* NAME as a type: a built-in one, or a custom one by its name ("geo/point")
+ * or, if only one has it, its last part ("point"). -1 if there's none. */
+static int
+type_from_name(const char *name)
+{
+        int found = -1;
+        for (int t = 0; t < LI_TYPE_COUNT; t++)
+                if (!strcmp(type_names[t], name)) return t;
+        for (int i = 0; i < types.count; i++)
+                if (!strcmp(types.items[i]->name, name)) return LI_TYPE_COUNT + i;
+        for (int i = 0; i < types.count; i++) {
+                if (strcmp(types.items[i]->label, name)) continue;
+                if (found >= 0) return -1; /* two: say which */
+                found = LI_TYPE_COUNT + i;
+        }
+        return found;
+}
+
+/* Of pins and wires */
+static Color
+type_color(Li_Type t)
+{
+        if ((int) t >= 0 && t < LI_TYPE_COUNT) return cfg.colors.types[t];
+        TypeDef *d = type_def(t);
+        return d ? d->color : cfg.colors.types[LI_ANY];
+}
+
+/* A copy of V that owns what it points to (strings, records), for whoever
+ * keeps it longer than the module that made it: free it with value_drop */
+static Li_Value
+value_dup(Li_Value v)
+{
+        if (v.type == LI_STRING) return li_string(strdup(v.s ? v.s : ""));
+        if (type_is_record(v.type) && v.p) {
+                Record *r = v.p;
+                Record *c = malloc(sizeof *c + r->count * sizeof *c->fields);
+                c->type   = r->type;
+                c->count  = r->count;
+                for (int i = 0; i < r->count; i++)
+                        c->fields[i] = value_dup(r->fields[i]);
+                v.p = c;
+        }
+        return v;
+}
+
+static void
+value_drop(Li_Value v)
+{
+        if (v.type == LI_STRING) free((char *) v.s);
+        if (type_is_record(v.type) && v.p) {
+                Record *r = v.p;
+                for (int i = 0; i < r->count; i++)
+                        value_drop(r->fields[i]);
+                free(r);
+        }
+}
+
+static bool
+value_equal(Li_Value a, Li_Value b)
+{
+        if (a.type != b.type) return false;
+        switch (a.type) {
+        case LI_BOOL: return a.b == b.b;
+        case LI_INT: return a.i == b.i;
+        case LI_FLOAT: return a.f == b.f;
+        case LI_STRING: return !strcmp(a.s ? a.s : "", b.s ? b.s : "");
+        case LI_PTR: return a.p == b.p;
+        default: break;
+        }
+        if (!type_is_record(a.type)) return true;
+        Record *r = a.p, *s = b.p;
+        if (!r || !s) return r == s;
+        if (r->count != s->count) return false;
+        for (int i = 0; i < r->count; i++)
+                if (!value_equal(r->fields[i], s->fields[i])) return false;
+        return true;
+}
+
+/* {x: 1, y: 2} */
+static int
+record_format(Record *r, char *buf, int size)
+{
+        TypeDef *d = type_def(r->type);
+        int n      = snprintf(buf, size, "{");
+        for (int i = 0; i < r->count && n < size; i++) {
+                const char *name = d && i < d->fields.count ? d->fields.items[i].name : "?";
+                n += snprintf(buf + n, size - n, "%s%s: ", i ? ", " : "", name);
+                if (n < size) n += li_format(r->fields[i], buf + n, size - n);
+        }
+        if (n < size) n += snprintf(buf + n, size - n, "}");
+        return n;
+}
+
 /* Variables, by name. Modules can't share globals (each square has its own
  * copy), so they live here. Like in C, they are local to the canvas they
  * are in: a subgraph square has its own (see Subgraphs), the canvas of a
  * tab its own. Globals (li_global_*) are shared by all of them in the tab. */
 typedef struct Var {
         char *name;
-        Li_Value value; /* for LI_STRING, .s is str */
-        char *str;
+        Li_Value value; /* a copy it owns (value_dup) */
 } Var;
 
 typedef Da(Var) VarList;
@@ -1206,12 +1349,10 @@ var_set(VarList *l, const char *name, Li_Value value)
                 v = &l->items[l->count - 1];
         }
 
-        /* Strings are copied: the module's one may not live long */
-        char *old = v->str;
-        v->str    = value.type == LI_STRING ? strdup(value.s ? value.s : "") : NULL;
-        v->value  = value;
-        if (v->str) v->value.s = v->str;
-        free(old);
+        /* Copied: the module's strings and records may not live long */
+        Li_Value old = v->value;
+        v->value     = value_dup(value);
+        value_drop(old);
 }
 
 static Li_Value
@@ -1251,7 +1392,7 @@ var_list_clear(VarList *l)
         Da_foreach(v, *l)
         {
                 free(v->name);
-                free(v->str);
+                value_drop(v->value);
         }
         Da_destroy(l);
 }
@@ -1268,24 +1409,21 @@ vars_clear(void)
 
 /* A value that owns its string */
 typedef struct Stored {
-        Li_Value value; /* for LI_STRING, .s is str */
-        char *str;
+        Li_Value value; /* a copy it owns (value_dup) */
 } Stored;
 
 static void
 stored_set(Stored *st, Li_Value value)
 {
-        char *old = st->str;
-        st->str   = value.type == LI_STRING ? strdup(value.s ? value.s : "") : NULL;
-        st->value = value;
-        if (st->str) st->value.s = st->str;
-        free(old);
+        Li_Value old = st->value;
+        st->value    = value_dup(value);
+        value_drop(old);
 }
 
 static void
 stored_free(Stored *st)
 {
-        free(st->str);
+        value_drop(st->value);
         *st = (Stored) { 0 };
 }
 
@@ -1519,7 +1657,9 @@ li_format(Li_Value v, char *buf, int size)
         case LI_STRING: return snprintf(buf, size, "%s", v.s ? v.s : "");
         case LI_PTR: return snprintf(buf, size, "%p", v.p);
         case LI_TICK: return snprintf(buf, size, "tick");
-        default: return snprintf(buf, size, "-");
+        default:
+                if (type_is_record(v.type)) return v.p ? record_format(v.p, buf, size) : snprintf(buf, size, "-");
+                return snprintf(buf, size, "-");
         }
 }
 
@@ -2101,6 +2241,7 @@ square_menu_build(Square *s)
         if (s->params.count) Da_append(&square_menu, (MenuItem) { .label = "Configure", .fn = square_configure });
         if (s->module->builtin == &graph_fns) Da_append(&square_menu, (MenuItem) { .label = "Open in a new tab", .fn = square_open_tab });
         Da_append(&square_menu, (MenuItem) { .label = "Make subgraph...", .hint = "Ctrl+G", .fn = menu_subgraph });
+        if (type_def(s->module->type)) Da_append(&square_menu, (MenuItem) { .label = "Edit type...", .fn = type_edit });
         for (int i = 0; i < countof(square_items); i++)
                 Da_append(&square_menu, square_items[i]);
 }
@@ -2382,6 +2523,7 @@ module_menu_build(void)
 static void set_status(const char *fmt, ...);
 static Module *module_find(const char *name);
 static void module_reload_squares(Module *m);
+
 static const ModuleFns graph_fns;
 static void graph_builtins(void);
 static bool canvas_check(const char *path, char *why, int size);
@@ -2393,6 +2535,354 @@ static const char *modules_dir;
 /* A .so is only used once it has been left alone this long: make may be
  * writing it */
 #define MODULE_SETTLE_NS 300000000LL
+
+/* ---- Types: the files that make them ---- */
+
+/* A custom type (see Custom types) is a NAME.type.lua under the modules
+ * dir, made with File > New type, Edit type... on its squares, or by hand:
+ *
+ *   lineit_type = 1
+ *   fields = {
+ *           { name = "x", type = "float" },
+ *           { name = "y", type = "float" },
+ *   }
+ *   color = { 251, 146, 60 } -- of its wires, optional
+ *
+ * modules/geo/point.type.lua is the type geo/point, with two modules next
+ * to it: geo/make_point (its fields in, a point out) and geo/break_point (a
+ * point in, its fields out). Fields are bool, int, float, string, any, or
+ * another custom type, by its name. */
+
+/* The format of the type files type_write writes (lineit_type in them), and
+ * the newest one type_read reads */
+#define TYPE_VERSION 1
+
+static bool
+is_type_file(const char *path)
+{
+        size_t n = strlen(path);
+        return n > 9 && !strcmp(path + n - 9, ".type.lua");
+}
+
+/* What a field can be: data, not ticks nor pointers */
+static bool
+field_type_ok(int t)
+{
+        return t == LI_BOOL || t == LI_INT || t == LI_FLOAT || t == LI_STRING || t == LI_ANY || type_is_record(t);
+}
+
+static Li_Type
+field_type(Field *f)
+{
+        int t = type_from_name(f->type);
+        return t >= 0 ? (Li_Type) t : LI_ANY;
+}
+
+/* What a field starts as, typed in the make square */
+static Li_Value
+field_default(Li_Type t)
+{
+        switch (t) {
+        case LI_BOOL: return li_bool(false);
+        case LI_INT: return li_int(0);
+        case LI_FLOAT: return li_float(0);
+        case LI_STRING: return li_string("");
+        default: return (Li_Value) { .type = LI_NONE };
+        }
+}
+
+/* make_NAME: its fields in, typed in the square or wired, a record out. The
+ * record is the square's; it's made again only when a field changes, so
+ * what was read from it lives until then. */
+static void
+type_make_init(Li_Node *n)
+{
+        TypeDef *d = type_def(n->module->type);
+        for (int i = 0; d && i < d->fields.count; i++) {
+                Field *f  = &d->fields.items[i];
+                Li_Type t = field_type(f);
+                if (type_is_record(t))
+                        li_input(n, f->name, t);
+                else
+                        li_input_value(n, f->name, t, field_default(t));
+        }
+        li_output(n, d ? d->label : "value", n->module->type);
+}
+
+static void
+type_make_eval(Li_Node *n)
+{
+        Li_Type t  = n->module->type;
+        TypeDef *d = type_def(t);
+        if (!d) return;
+        Record *r = malloc(sizeof *r + d->fields.count * sizeof *r->fields);
+        r->type   = t;
+        r->count  = d->fields.count;
+        for (int i = 0; i < r->count; i++)
+                r->fields[i] = value_dup(li_get(n, i));
+
+        /* The same as before: keep that one, what was read from it lives */
+        Li_Value now = { .type = t, .p = r };
+        Li_Value old = { .type = t, .p = n->data };
+        if (n->data && value_equal(old, now)) {
+                value_drop(now);
+        } else {
+                n->data = r;
+                value_drop(old);
+        }
+        Li_Value v = { .type = t, .p = n->data };
+        char buf[64];
+        li_set(n, 0, v);
+        li_format(v, buf, sizeof buf);
+        li_text(n, "%s", buf);
+}
+
+static void
+type_make_destroy(Li_Node *n)
+{
+        value_drop((Li_Value) { .type = n->module->type, .p = n->data });
+        n->data = NULL;
+}
+
+/* break_NAME: a record in, its fields out. They are the record's: they live
+ * while it does. */
+static void
+type_break_init(Li_Node *n)
+{
+        TypeDef *d = type_def(n->module->type);
+        li_input(n, d ? d->label : "value", n->module->type);
+        for (int i = 0; d && i < d->fields.count; i++)
+                li_output(n, d->fields.items[i].name, field_type(&d->fields.items[i]));
+}
+
+static void
+type_break_eval(Li_Node *n)
+{
+        TypeDef *d = type_def(n->module->type);
+        Li_Value v = li_get(n, 0);
+        Record *r  = v.type == n->module->type ? v.p : NULL;
+        for (int i = 0; d && i < d->fields.count; i++)
+                li_set(n, i, r && i < r->count ? r->fields[i] : (Li_Value) { .type = LI_NONE });
+}
+
+static const ModuleFns type_make_fns  = { .init = type_make_init, .eval = type_make_eval, .draw = type_make_eval, .destroy = type_make_destroy };
+static const ModuleFns type_break_fns = { .init = type_break_init, .eval = type_break_eval };
+
+/* A color from NAME, for types that don't pick one */
+static Color
+type_color_for(const char *name)
+{
+        unsigned h = 2166136261u;
+        for (const char *c = name; *c; c++)
+                h = (h ^ (unsigned char) *c) * 16777619u;
+        return ColorFromHSV(h % 360, 0.55f, 0.95f);
+}
+
+static int
+type_index(TypeDef *d)
+{
+        for (int i = 0; i < types.count; i++)
+                if (types.items[i] == d) return i;
+        return -1;
+}
+
+static void
+fields_free(void *list)
+{
+        Da(Field) *l = list;
+        Da_foreach(f, *l)
+        {
+                free(f->name);
+                free(f->type);
+        }
+        Da_destroy(l);
+}
+
+/* Is NAME a field type, KNOWN being the names of the types there are
+ * (the ones of this scan too, which may not be read yet)? */
+static bool
+field_type_known(const char *name, char **known, int nknown)
+{
+        int t = type_from_name(name);
+        if (t >= 0) return field_type_ok(t);
+        for (int i = 0; i < nknown; i++) {
+                const char *label = strrchr(known[i], '/') ? strrchr(known[i], '/') + 1 : known[i];
+                if (!strcmp(known[i], name) || !strcmp(label, name)) return true;
+        }
+        return false;
+}
+
+/* The fields and color of the type file PATH, into D. False, with why in
+ * WHY, if it isn't a type. */
+static bool
+type_read(const char *path, TypeDef *d, char **known, int nknown, char *why, int size)
+{
+        Conf conf;
+        int n = 0, version = 0;
+        if (Conf_open(&conf, path) != CONF_OK) {
+                snprintf(why, size, "it isn't valid Lua");
+                return false;
+        }
+        bool ok = Conf_get_int(conf, &version, "lineit_type") == CONF_OK;
+        if (!ok) snprintf(why, size, "it has no lineit_type version");
+        if (ok && version > TYPE_VERSION) {
+                snprintf(why, size, "made by a newer lineit (type version %d, this one reads up to %d)", version, TYPE_VERSION);
+                ok = false;
+        }
+        if (ok && !(ok = Conf_get_len(conf, &n, "fields") == CONF_OK)) snprintf(why, size, "it has no fields table");
+        for (int i = 1; ok && i <= n; i++) {
+                const char *name, *type;
+                char nbuf[64];
+                if (Conf_get_str(conf, &name, "fields.%d.name", i) != CONF_OK || !*name) {
+                        snprintf(why, size, "field %d has no name", i);
+                        ok = false;
+                        break;
+                }
+                snprintf(nbuf, sizeof nbuf, "%s", name);
+                if (Conf_get_str(conf, &type, "fields.%d.type", i) != CONF_OK) type = "any";
+                if (!field_type_known(type, known, nknown)) {
+                        snprintf(why, size, "field %s: no type %s", nbuf, type);
+                        ok = false;
+                        break;
+                }
+                Da_append(&d->fields, (Field) { strdup(nbuf), strdup(type) });
+        }
+        d->color = type_color_for(path);
+        double c[4] = { 0, 0, 0, 255 };
+        int nc      = 0;
+        if (ok && Conf_get_len(conf, &nc, "color") == CONF_OK && nc >= 3) {
+                for (int i = 0; i < nc && i < 4; i++)
+                        Conf_get_num(conf, &c[i], "color.%d", i + 1);
+                d->color = (Color) { c[0], c[1], c[2], c[3] };
+        }
+        Conf_close(conf);
+        if (!ok) fields_free(&d->fields);
+        return ok;
+}
+
+/* "geo/point" -> "geo/make_point" (WHAT "make" or "break") */
+static void
+type_module_name(const char *type, const char *what, char *buf, int size)
+{
+        const char *slash = strrchr(type, '/');
+        if (slash)
+                snprintf(buf, size, "%.*s/%s_%s", (int) (slash - type), type, what, slash + 1);
+        else
+                snprintf(buf, size, "%s_%s", what, type);
+}
+
+static Module *
+type_module(TypeDef *d, Li_Type t, const char *what, const char *path, const ModuleFns *fns, bool *added)
+{
+        char name[PATH_MAX];
+        type_module_name(d->name, what, name, sizeof name);
+        Module *m = module_find(name);
+        if (m) return m;
+        m          = calloc(1, sizeof *m);
+        m->name    = strdup(name);
+        m->label   = strrchr(m->name, '/') ? strrchr(m->name, '/') + 1 : m->name;
+        m->path    = strdup(path);
+        m->builtin = fns;
+        m->type    = t;
+        Da_append(&modules, m);
+        *added = true;
+        return m;
+}
+
+/* Every .type.lua under modules_dir: new ones get their modules, changed
+ * ones are read again and their squares made again. Like modules_scan,
+ * which calls it. */
+static void
+types_scan(bool reload, bool *menu_changed)
+{
+        long long now      = now_ns();
+        FilePathList files = LoadDirectoryFilesEx(modules_dir, ".lua", true);
+        Da(char *) known   = { 0 };
+
+        for (unsigned i = 0; i < files.count; i++) {
+                if (!is_type_file(files.paths[i])) continue;
+                const char *rel = files.paths[i] + strlen(modules_dir);
+                while (*rel == '/')
+                        rel++;
+                Da_append(&known, strndup(rel, strlen(rel) - 9));
+        }
+
+        for (unsigned i = 0, k = 0; i < files.count; i++) {
+                const char *path = files.paths[i];
+                if (!is_type_file(path)) continue;
+                const char *name = known.items[k++];
+                long long mtime  = file_mtime(path);
+                TypeDef *d       = NULL;
+                char make_name[PATH_MAX], break_name[PATH_MAX], why[256];
+                for (int t = 0; t < types.count; t++)
+                        if (!strcmp(types.items[t]->name, name)) d = types.items[t];
+                type_module_name(name, "make", make_name, sizeof make_name);
+                type_module_name(name, "break", break_name, sizeof break_name);
+                Module *make = module_find(make_name), *brk = module_find(break_name);
+
+                /* Known and unchanged, or still being written */
+                if (d && make && brk && (mtime == make->mtime || (reload && now - mtime < MODULE_SETTLE_NS))) {
+                        make->seen = brk->seen = true;
+                        if (make->gone || brk->gone) *menu_changed = true;
+                        make->gone = brk->gone = false;
+                        continue;
+                }
+                if (reload && now - mtime < MODULE_SETTLE_NS) continue;
+
+                TypeDef read = { 0 };
+                if (!type_read(path, &read, known.items, known.count, why, sizeof why)) {
+                        fprintf(stderr, "types: %s skipped: %s\n", path, why);
+                        if (reload) set_status("Type %s: %s", name, why);
+                        if (make) make->mtime = mtime, make->seen = true;
+                        if (brk) brk->mtime = mtime, brk->seen = true;
+                        continue;
+                }
+                bool existed = d != NULL;
+                if (!d) {
+                        d        = calloc(1, sizeof *d);
+                        d->name  = strdup(name);
+                        d->label = strrchr(d->name, '/') ? strrchr(d->name, '/') + 1 : d->name;
+                        Da_append(&types, d);
+                }
+                fields_free(&d->fields);
+                d->fields = read.fields;
+                d->color  = read.color;
+
+                Li_Type t = LI_TYPE_COUNT + type_index(d);
+                make      = type_module(d, t, "make", path, &type_make_fns, menu_changed);
+                brk       = type_module(d, t, "break", path, &type_break_fns, menu_changed);
+                make->mtime = brk->mtime = mtime;
+                make->seen = brk->seen = true;
+                if (make->gone || brk->gone) *menu_changed = true;
+                make->gone = brk->gone = false;
+                if (existed) {
+                        module_reload_squares(make);
+                        module_reload_squares(brk);
+                        set_status("Reloaded type %s", name);
+                } else if (reload) {
+                        set_status("Added type %s", name);
+                }
+        }
+        Da_foreach(n, known)
+        {
+                free(*n);
+        }
+        Da_destroy(&known);
+        UnloadDirectoryFiles(files);
+}
+
+static void
+types_free(void)
+{
+        Da_foreach(dp, types)
+        {
+                fields_free(&(*dp)->fields);
+                free((*dp)->name);
+                free(*dp);
+        }
+        Da_destroy(&types);
+}
+
 
 /* Look at every .so under modules_dir. The first time, load them all. Later
  * (RELOAD), add new ones, swap rebuilt ones in their squares, and take
@@ -2413,9 +2903,11 @@ modules_scan(bool reload)
         {
                 (*mp)->seen = !(*mp)->path; /* built-in, not in modules_dir */
         }
+        types_scan(reload, &menu_changed); /* first: modules may use them */
         FilePathList files = LoadDirectoryFilesEx(modules_dir, ".so;.lua;.li", true);
         for (unsigned i = 0; i < files.count; i++) {
                 const char *path = files.paths[i];
+                if (is_type_file(path)) continue; /* types_scan's */
                 long long mtime  = file_mtime(path);
                 bool settled     = !reload || now - mtime > MODULE_SETTLE_NS;
 
@@ -2528,6 +3020,7 @@ unload_modules(void)
         Da_destroy(&square_menu);
         Da_destroy(&options_menu);
         Da_destroy(&search_menu);
+        types_free();
         Da_foreach(mp, modules)
         {
                 if ((*mp)->lib) remove((*mp)->lib);
@@ -3216,7 +3709,7 @@ draw_wire_error(Vector2 a, Vector2 b, Li_Type out, Li_Type in)
         wire_controls(a, b, &c1, &c2);
         Vector2 mid = GetSplinePointBezierCubic(a, c1, c2, b, 0.5f);
 
-        const char *msg = TextFormat("%s -> %s", type_names[out], type_names[in]);
+        const char *msg = TextFormat("%s -> %s", type_name(out), type_name(in));
         float fs        = cfg.canvas.pin_font_size;
         float pad       = 4;
         float tw        = measure_canvas_text(msg, fs);
@@ -3232,7 +3725,7 @@ static void
 draw_pin(Vector2 p, Li_Type type, bool connected, const Color *tint)
 {
         float r = cfg.canvas.pin_radius;
-        Color c = tint ? *tint : cfg.colors.types[type];
+        Color c = tint ? *tint : type_color(type);
 
         DrawCircleV(p, r, cfg.colors.square_border);
         if (connected)
@@ -3372,7 +3865,7 @@ draw_canvas(void)
                 Square *a = square_get(l->from);
                 Square *b = square_get(l->to);
                 if (!a || !b) continue;
-                Color c     = cfg.colors.types[pin_info(a, PART_OUTPUT, l->from_pin)->type];
+                Color c     = type_color(pin_info(a, PART_OUTPUT, l->from_pin)->type);
                 float g     = glow(l->flash);
                 float thick = cfg.canvas.wire_thickness * (1 + g + (i == hovered ? 0.6f : 0));
                 draw_wire_ex(pin_pos(a, PART_OUTPUT, l->from_pin), pin_pos(b, PART_INPUT, l->to_pin),
@@ -3402,7 +3895,7 @@ draw_canvas(void)
         }
 
         if (drag.kind == DRAG_WIRE) {
-                Color c = cfg.colors.types[pin_info(drag.square, PART_OUTPUT, drag.pin)->type];
+                Color c = type_color(pin_info(drag.square, PART_OUTPUT, drag.pin)->type);
                 draw_wire(pin_pos(drag.square, PART_OUTPUT, drag.pin), world, c);
         }
 
@@ -3672,7 +4165,7 @@ canvas_write(FILE *f, int flags)
                                 fprintf(f, " { name = ");
                                 lua_quote(f, in->name);
                                 /* The type too: "2" typed in an any input may be a string */
-                                if (in->kind == PIN_VALUE) fprintf(f, ", type = \"%s\"", type_names[in->value.type]);
+                                if (in->kind == PIN_VALUE) fprintf(f, ", type = \"%s\"", type_name(in->value.type));
                                 fprintf(f, ", value = ");
                                 lua_quote(f, buf);
                                 fprintf(f, " },");
@@ -3743,47 +4236,6 @@ pin_named(PinList *l, const char *name)
         return -1;
 }
 
-/* Modules renamed, old name first: canvases saved with the old ones still
- * load. Ones that only moved folder, keeping their last part ("print" is
- * "io/print"), don't need to be here: module_find_moved finds them. */
-static const char *module_renames[][2] = {
-        { "math/sub", "math/subtract" },       { "math/mul", "math/multiply" },
-        { "math/div", "math/divide" },         { "math/mod", "math/modulo" },
-        { "math/pow", "math/power" },          { "math/abs", "math/absolute" },
-        { "string/len", "string/length" },     { "string/substr", "string/substring" },
-        { "list/len", "list/length" },         { "tree/len", "map/length" },
-        { "tree/del", "map/delete" },          { "tree/get", "map/get" },
-        { "tree/set", "map/set" },             { "tree/has", "map/has" },
-        { "tree/keys", "map/keys" },           { "graph/input", "subgraph/input" },
-        { "graph/output", "subgraph/output" }, { "const", "value/constant" },
-        { "var/const", "value/constant" },     { "value/const", "value/constant" },
-};
-
-static Module *
-module_find_renamed(const char *name)
-{
-        for (int i = 0; i < countof(module_renames); i++)
-                if (!strcmp(module_renames[i][0], name)) return module_find(module_renames[i][1]);
-        return NULL;
-}
-
-/* A module that moved to another folder ("print" is "io/print" now,
- * "var/const" is "value/const"): the only one with the last part of NAME
- * as its last part. NULL if there's none, or more than one. */
-static Module *
-module_find_moved(const char *name)
-{
-        Module *found = NULL;
-        const char *label = strrchr(name, '/') ? strrchr(name, '/') + 1 : name;
-        Da_foreach(mp, modules)
-        {
-                if (strcmp((*mp)->label, label) != 0) continue;
-                if (found) return NULL;
-                found = *mp;
-        }
-        return found;
-}
-
 typedef enum ReadMode {
         READ_LOAD,    /* replace the canvas, camera included */
         READ_RESTORE, /* make the canvas match (undo): squares that are still there keep their state */
@@ -3838,14 +4290,7 @@ canvas_read(Conf conf, ReadMode mode)
 
                 /* Strings from Conf die on the next call, use them right away */
                 if (Conf_get_str(conf, &str, "squares.%d.module", i) != CONF_OK) continue;
-                /* convert/int and the others are value/convert now, with "to" */
-                char convert_to[16] = "";
-                if (!strncmp(str, "convert/", 8) && !module_find(str) && module_find("value/convert")) {
-                        snprintf(convert_to, sizeof convert_to, "%s", str + 8);
-                        str = "value/convert";
-                }
-                if (!(m = module_find(str)) && !(m = module_find_renamed(str))) m = module_find_moved(str);
-                if (!m) {
+                if (!(m = module_find(str))) {
                         fprintf(stderr, "load: module %s not found, square skipped\n", str);
                         continue;
                 }
@@ -3886,9 +4331,7 @@ canvas_read(Conf conf, ReadMode mode)
                         if (Conf_get_str(conf, &str, "squares.%d.params.%d.name", i, j) != CONF_OK) continue;
                         snprintf(name, sizeof name, "%s", str);
                         if (Conf_get_str(conf, &str, "squares.%d.params.%d.value", i, j) != CONF_OK) continue;
-                        /* The map modules' param was "tree" */
-                        if ((k = param_find(sq, name)) < 0 && !strcmp(name, "tree")) k = param_find(sq, "map");
-                        if (k < 0) continue;
+                        if ((k = param_find(sq, name)) < 0) continue;
                         char now[256];
                         param_text(&sq->params.items[k], now, sizeof now, true);
                         if (strcmp(now, str) != 0 && !param_set_text(sq, k, str))
@@ -3914,11 +4357,6 @@ canvas_read(Conf conf, ReadMode mode)
                                 pin_store(&sq->inputs.items[k], (Li_Value) { .type = LI_NONE });
                         else if (!input_set_text(sq, k, str, type))
                                 fprintf(stderr, "load: invalid value for %s input %s, using default\n", m->name, name);
-                }
-
-                if (*convert_to) {
-                        int k = pin_named(&sq->inputs, "to");
-                        if (k >= 0) input_set_text(sq, k, convert_to, LI_NONE);
                 }
 
                 /* After the params, so state can override what module_param set */
@@ -3994,8 +4432,11 @@ canvas_conf_ok(Conf conf, char *why, int size)
                 snprintf(why, size, "not a lineit canvas, it has no squares table");
                 return false;
         }
-        /* Canvases saved before there was a version have none: they're 1 */
-        if (Conf_get_int(conf, &version, "lineit_canvas") == CONF_OK && version > CANVAS_VERSION) {
+        if (Conf_get_int(conf, &version, "lineit_canvas") != CONF_OK) {
+                snprintf(why, size, "not a lineit canvas, it has no lineit_canvas version");
+                return false;
+        }
+        if (version > CANVAS_VERSION) {
                 snprintf(why, size, "made by a newer lineit (canvas version %d, this one reads up to %d)", version, CANVAS_VERSION);
                 return false;
         }
@@ -5231,6 +5672,8 @@ static struct {
         TextInput input;
         void (*done)(const char *text);
         char matches[1024]; /* what Tab found, shown below */
+        const char *hint;   /* shown below while nothing else is, NULL: the default */
+        bool no_complete;   /* Tab doesn't complete paths: it isn't one */
 } prompt;
 
 static void
@@ -5240,6 +5683,8 @@ prompt_open(const char *label, const char *text, void (*done)(const char *))
         prompt.label      = label;
         prompt.done       = done;
         prompt.matches[0] = '\0';
+        prompt.hint       = NULL;
+        prompt.no_complete = false;
         text_input_set(&prompt.input, text);
         menu.depth = 0;
 }
@@ -5308,7 +5753,7 @@ update_prompt(void)
         if (!prompt.open) return false;
         TextResult tr = text_input_update(&prompt.input, &changed);
         if (changed) prompt.matches[0] = '\0';
-        if (tr == TEXT_NEXT) prompt_complete();
+        if (tr == TEXT_NEXT && !prompt.no_complete) prompt_complete();
         if (tr == TEXT_CANCEL) prompt.open = false;
         if (tr == TEXT_DONE && prompt.input.len) {
                 prompt.open = false;
@@ -5344,7 +5789,9 @@ draw_prompt(void)
         draw_text(tx, r.x + lw + 2 * pad - fmaxf(0, tw - room), r.y + pad, fs, cfg.colors.square_text);
         EndScissorMode();
 
-        const char *hint = *prompt.matches ? prompt.matches : "Tab completes, Enter accepts, Esc cancels";
+        const char *hint = *prompt.matches ? prompt.matches :
+                           prompt.hint     ? prompt.hint :
+                                             "Tab completes, Enter accepts, Esc cancels";
         Rectangle h      = { r.x, r.y + r.height, r.width, menu_item_height() };
         DrawRectangleRec(h, cfg.colors.menu);
         DrawRectangleLinesEx(h, 1.0f, cfg.colors.menu_border);
@@ -5413,7 +5860,9 @@ file_next_tab(int step)
 
 #define FILE_ITEM(fn) \
         static void fn##_item(int id, void *arg) { (void) id, (void) arg, fn(); }
+static void type_new_ask(void);
 FILE_ITEM(file_new)
+FILE_ITEM(type_new_ask)
 FILE_ITEM(tab_reopen)
 FILE_ITEM(file_open)
 FILE_ITEM(bar_save)
@@ -5443,6 +5892,7 @@ file_menu_open(void)
                 { .label = "Save", .hint = "Ctrl+S", .fn = bar_save_item },
                 { .label = "Save as...", .hint = "Ctrl+Shift+S", .fn = file_save_as_item },
                 { .label = "Revert to saved", .fn = bar_load_item },
+                { .label = "New type...", .fn = type_new_ask_item },
                 { .label = "Autosave", .hint = autosave ? "on" : "off", .fn = autosave_toggle },
                 { .label = "Close tab", .hint = "Ctrl+W", .fn = file_close_item },
         };
@@ -5728,6 +6178,176 @@ menu_subgraph(int id, void *arg)
 {
         (void) id, (void) arg;
         subgraph_ask();
+}
+
+/* ---- New type, Edit type ---- */
+
+/* Both ask for the fields in one line, "x:float y:float" (a field without
+ * a type is any), and write the .type.lua (see Types): a new one under
+ * modules.source, linked into the modules dir like subgraphs, or the one
+ * the type came from. Its squares pick it up right away. */
+
+#define TYPE_FIELDS_HINT "fields as name:type, types: bool int float string any, or a custom type"
+
+/* "x:float y:float" into OUT. False, with why in WHY, if it isn't fields.
+ * SELF is the type being made: it can't be in itself. */
+static bool
+fields_parse(const char *text, const char *self, void *out, char *why, int size)
+{
+        Da(Field) *l = out;
+        char buf[512];
+        snprintf(buf, sizeof buf, "%s", text);
+        for (char *save, *tok = strtok_r(buf, " ,\t", &save); tok; tok = strtok_r(NULL, " ,\t", &save)) {
+                char *colon      = strchr(tok, ':');
+                const char *type = colon ? colon + 1 : "any";
+                if (colon) *colon = '\0';
+                bool name_ok = *tok != '\0';
+                for (char *c = tok; *c; c++)
+                        name_ok = name_ok && (isalnum((unsigned char) *c) || *c == '_');
+                bool dup = false;
+                Da_foreach(f, *l)
+                {
+                        dup = dup || !strcmp(f->name, tok);
+                }
+                if (!name_ok || dup) {
+                        snprintf(why, size, dup ? "two fields named %s" : "bad field name \"%s\" (letters, digits and _)", tok);
+                        fields_free(l);
+                        return false;
+                }
+                if (!strcmp(type, self) || !field_type_known(type, NULL, 0)) {
+                        snprintf(why, size, "field %s: no type %s", tok, type);
+                        fields_free(l);
+                        return false;
+                }
+                Da_append(l, (Field) { strdup(tok), strdup(type) });
+        }
+        if (!l->count) {
+                snprintf(why, size, "a type needs fields");
+                return false;
+        }
+        return true;
+}
+
+static bool
+type_write(const char *path, const char *name, void *fields, Color color)
+{
+        Da(Field) *l = fields;
+        FILE *f      = fopen(path, "w");
+        if (!f) return false;
+        fprintf(f, "-- %s: a lineit type (see Types in src/main.c). Change it with Edit type...\n", name);
+        fprintf(f, "-- on one of its make or break squares, or here.\nlineit_type = %d\nfields = {\n", TYPE_VERSION);
+        Da_foreach(fl, *l)
+        {
+                fprintf(f, "        { name = ");
+                lua_quote(f, fl->name);
+                fprintf(f, ", type = ");
+                lua_quote(f, fl->type);
+                fprintf(f, " },\n");
+        }
+        fprintf(f, "}\ncolor = { %d, %d, %d }\n", color.r, color.g, color.b);
+        return fclose(f) == 0;
+}
+
+/* "geo/point x:float y:float" */
+static void
+type_new_done(const char *text)
+{
+        char name[256], path[PATH_MAX], link[PATH_MAX], abs[PATH_MAX], why[256];
+        Da(Field) fields = { 0 };
+        int len          = (int) strcspn(text, " \t");
+        snprintf(name, sizeof name, "%.*s", len, text);
+
+        bool ok = *name && name[0] != '/' && !strstr(name, "..");
+        for (char *c = name; *c; c++)
+                ok = ok && (isalnum((unsigned char) *c) || *c == '_' || *c == '/' || *c == '-');
+        if (!ok) {
+                set_status("Bad type name \"%s\": like geo/point", name);
+                return;
+        }
+        if (type_from_name(name) >= 0) {
+                set_status("There is a type %s already", name);
+                return;
+        }
+        if (!fields_parse(text + len, name, &fields, why, sizeof why)) {
+                set_status("Type %s: %s", name, why);
+                return;
+        }
+        snprintf(path, sizeof path, "%s/%s.type.lua", cfg.modules.source, name);
+        mkdir_parents(path);
+        if (FileExists(path) || !type_write(path, name, &fields, type_color_for(path))) {
+                set_status(FileExists(path) ? "%s already exists" : "Could not write %s", path);
+                fields_free(&fields);
+                return;
+        }
+        fields_free(&fields);
+        /* Into the modules dir, where it's looked for. A link, like make does. */
+        if (strcmp(cfg.modules.source, modules_dir) != 0) {
+                snprintf(link, sizeof link, "%s/%s.type.lua", modules_dir, name);
+                mkdir_parents(link);
+                if (!realpath(path, abs) || symlink(abs, link) != 0) {
+                        set_status("Wrote %s, but could not link it to %s", path, link);
+                        return;
+                }
+        }
+        modules_scan(false); /* now, not when it settles */
+        char make[PATH_MAX], brk[PATH_MAX];
+        type_module_name(name, "make", make, sizeof make);
+        type_module_name(name, "break", brk, sizeof brk);
+        set_status(module_find(make) ? "Made type %s: %s and %s are in the menu" : "Wrote %s, but it doesn't load",
+                   name, make, brk);
+}
+
+static void
+type_new_ask(void)
+{
+        prompt_open("New type", "", type_new_done);
+        prompt.no_complete = true;
+        prompt.hint        = "name and fields, like geo/point x:float y:float";
+}
+
+/* Edit type...: the type of the square it was opened on */
+static Li_Type type_editing;
+
+static void
+type_edit_done(const char *text)
+{
+        TypeDef *d = type_def(type_editing);
+        char why[256], make[PATH_MAX];
+        Da(Field) fields = { 0 };
+        if (!d) return;
+        type_module_name(d->name, "make", make, sizeof make);
+        Module *m = module_find(make);
+        if (!m || !fields_parse(text, d->name, &fields, why, sizeof why)) {
+                if (m) set_status("Type %s: %s", d->name, why);
+                return;
+        }
+        /* Through the link: to the file it was made from */
+        bool ok = type_write(m->path, d->name, &fields, d->color);
+        fields_free(&fields);
+        if (!ok) {
+                set_status("Could not write %s", m->path);
+                return;
+        }
+        modules_scan(false); /* its squares change now */
+}
+
+static void
+type_edit(int id, void *arg)
+{
+        (void) arg;
+        char text[512] = "";
+        Square *s      = square_get(id);
+        TypeDef *d     = s ? type_def(s->module->type) : NULL;
+        if (!d) return;
+        Da_foreach(f, d->fields)
+        {
+                size_t used = strlen(text);
+                snprintf(text + used, sizeof text - used, "%s%s:%s", used ? " " : "", f->name, f->type);
+        }
+        type_editing = s->module->type;
+        prompt_open(TextFormat("Type %s", d->name), text, type_edit_done);
+        prompt.no_complete = true;
+        prompt.hint        = TYPE_FIELDS_HINT;
 }
 
 /* ---- Unsaved changes: asked before they are lost ---- */
@@ -6347,28 +6967,6 @@ session_restore(const char *path)
                 if (b) bar_start_stop();
         }
 
-        /* From an editor without tabs: one canvas, at the top */
-        if (!ntabs) {
-                canvas_read(conf, READ_LOAD);
-                if (Conf_get_str(conf, &str, "session.canvas_path") == CONF_OK) {
-                        free((char *) canvas_path);
-                        canvas_path = strdup(str);
-                }
-                n = 0;
-                Conf_get_len(conf, &n, "session.selected");
-                for (int i = 1; i <= n; i++) {
-                        int id    = -1;
-                        Square *s = Conf_get_int(conf, &id, "session.selected.%d", i) == CONF_OK ? square_get(id) : NULL;
-                        if (s) s->selected = true;
-                }
-                history_reset();
-                session_read_list(conf, "session.undo", &history.undo);
-                session_read_list(conf, "session.redo", &history.redo);
-                b = 0;
-                Conf_get_bool(conf, &b, "session.running");
-                if (b) bar_start_stop();
-        }
-
         Conf_close(conf);
         remove(path);
         tab_switch(active - 1);
@@ -6538,7 +7136,7 @@ output_tooltip(Square *s, int out, char *buf, int size)
                 return;
         }
         li_format(p->value, v, sizeof v);
-        snprintf(buf, size, "%s %s", type_names[p->value.type], v);
+        snprintf(buf, size, "%s %s", type_name(p->value.type), v);
 }
 
 /* What's on the wire or output pin under the mouse */
@@ -6561,8 +7159,8 @@ draw_tooltip(void)
                 Square *b = square_get(links.items[l].to);
                 if (!link_valid(links.items[l]))
                         snprintf(buf, sizeof buf, "%s -> %s: carries nothing",
-                                 type_names[pin_info(a, PART_OUTPUT, links.items[l].from_pin)->type],
-                                 type_names[pin_info(b, PART_INPUT, links.items[l].to_pin)->type]);
+                                 type_name(pin_info(a, PART_OUTPUT, links.items[l].from_pin)->type),
+                                 type_name(pin_info(b, PART_INPUT, links.items[l].to_pin)->type));
                 else
                         output_tooltip(a, links.items[l].from_pin, buf, sizeof buf);
         }

@@ -1,7 +1,8 @@
 -- hello
 -- Prints "Hello, world!" when you press Start.
--- entry ticks once on Start. print writes its value to stdout and shows
--- it: the text is typed in its value field (click it to change it).
+-- flow/entry ticks once on Start. io/print writes its value to stdout
+-- and shows it: the text is typed in its value field (click it to
+-- change it).
 --
 -- Open it with: ./lineit -f examples/hello.lua, then press Start.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION

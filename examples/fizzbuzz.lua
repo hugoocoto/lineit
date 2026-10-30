@@ -1,10 +1,11 @@
 -- fizzbuzz
 -- FizzBuzz from 1 to 100: multiples of 15 print FizzBuzz, of 3 Fizz,
 -- of 5 Buzz, and the rest the number. The output goes to stdout.
--- loop runs index from 1 to 100 (typed in its from and to fields).
--- For each one, three ifelse in a row check index % 15, % 3 and % 5
--- == 0 (math/modulo + compare/equal), and the first true one prints its
--- word. If none is, the last print prints the index.
+-- flow/loop runs index from 1 to 100 (typed in its from and to
+-- fields). For each one, three flow/ifelse in a row check index % 15,
+-- % 3 and % 5 == 0 (math/modulo + compare/equal), and the first true
+-- one prints its word with io/print. If none is, the last io/print
+-- prints the index.
 --
 -- Open it with: ./lineit -f examples/fizzbuzz.lua, then press Start.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION

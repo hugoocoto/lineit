@@ -2,8 +2,9 @@
 -- Collatz sequence of 27: while n != 1, n = n / 2 if it's even, and
 -- n = 3n + 1 if it's odd. Prints every n, and the number of steps
 -- (111) at the end.
--- Shows while with a comparison as its cond, ifelse, and variables.
--- Type another number than 27 in the first var/set to try it.
+-- Shows flow/while with a comparison (compare/compare) as its cond,
+-- flow/ifelse, and variables (var/set, var/get). Type another number
+-- than 27 in the first var/set to try it.
 --
 -- Open it with: ./lineit -f examples/collatz.lua, then press Start.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION

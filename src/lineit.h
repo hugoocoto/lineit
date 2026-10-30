@@ -104,6 +104,11 @@ typedef enum Li_Type {
         LI_STRING, /* .s, owned by the module that set it */
         LI_PTR,    /* .p, anything else, owned by the module that set it */
         LI_TYPE_COUNT,
+        /* Custom types, records made in the editor (File > New type), come
+           after these: LI_TYPE_COUNT and up. Their .p is the record, owned
+           by the square that made it. Modules can pass them on (LI_ANY
+           pins), keep them in variables, lists and maps (they're copied
+           there) and show them with li_format: "{x: 1, y: 2}". */
 } Li_Type;
 
 /* What travels through a wire */

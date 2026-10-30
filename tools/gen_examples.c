@@ -105,8 +105,9 @@ hello(void)
         Square *p = in(sq("io/print", 1, 0), 1, "Hello, world!");
         w(e, 0, p, 0);
         save("hello", "Prints \"Hello, world!\" when you press Start.\n"
-                      "entry ticks once on Start. print writes its value to stdout and shows\n"
-                      "it: the text is typed in its value field (click it to change it).");
+                      "flow/entry ticks once on Start. io/print writes its value to stdout\n"
+                      "and shows it: the text is typed in its value field (click it to\n"
+                      "change it).");
 }
 
 static void
@@ -137,10 +138,11 @@ fizzbuzz(void)
         w(prev, 1, pn, 0), w(lp, 1, pn, 1);
         save("fizzbuzz", "FizzBuzz from 1 to 100: multiples of 15 print FizzBuzz, of 3 Fizz,\n"
                          "of 5 Buzz, and the rest the number. The output goes to stdout.\n"
-                         "loop runs index from 1 to 100 (typed in its from and to fields).\n"
-                         "For each one, three ifelse in a row check index % 15, % 3 and % 5\n"
-                         "== 0 (math/modulo + compare/equal), and the first true one prints its\n"
-                         "word. If none is, the last print prints the index.");
+                         "flow/loop runs index from 1 to 100 (typed in its from and to\n"
+                         "fields). For each one, three flow/ifelse in a row check index % 15,\n"
+                         "% 3 and % 5 == 0 (math/modulo + compare/equal), and the first true\n"
+                         "one prints its word with io/print. If none is, the last io/print\n"
+                         "prints the index.");
 }
 
 static void
@@ -157,10 +159,11 @@ clock_example(void)
         w(ie, 0, clk, 0);
         w(clk, 1, d, 0);
         save("clock", "Counts seconds from 0 to 9 forever.\n"
-                      "entry resets the clock on Start so it always starts at 0. On each\n"
-                      "tick, ifelse checks count >= 10 (compare, with >= chosen in its op\n"
-                      "list) and, if so, resets the clock again. display shows the count.\n"
-                      "Type another number in the clock's seconds field to change the speed.");
+                      "flow/entry resets flow/clock on Start so it always starts at 0. On\n"
+                      "each tick, flow/ifelse checks count >= 10 (compare/compare, with >=\n"
+                      "chosen in its op list) and, if so, resets the clock again.\n"
+                      "io/display shows the count. Type another number in the clock's\n"
+                      "seconds field to change the speed.");
 }
 
 static void
@@ -181,9 +184,9 @@ sum_squares(void)
         w(lp, 0, set, 0), w(add, 0, set, 1);
         w(lp, 2, pr, 0), w(get, 0, pr, 1);
         save("sum_squares", "Sum of the squares of 0..9 (285), with a variable.\n"
-                            "entry sets sum = 0, then loop runs index from 0 to 9 and does\n"
-                            "sum = sum + index * index (var/get, math/multiply, math/add, var/set).\n"
-                            "When the loop is done, print shows sum.");
+                            "flow/entry sets sum = 0 (var/set), then flow/loop runs index from\n"
+                            "0 to 9 and does sum = sum + index * index (var/get, math/multiply,\n"
+                            "math/add, var/set). When the loop is done, io/print shows sum.");
 }
 
 static void
@@ -226,8 +229,9 @@ collatz(void)
         save("collatz", "Collatz sequence of 27: while n != 1, n = n / 2 if it's even, and\n"
                         "n = 3n + 1 if it's odd. Prints every n, and the number of steps\n"
                         "(111) at the end.\n"
-                        "Shows while with a comparison as its cond, ifelse, and variables.\n"
-                        "Type another number than 27 in the first var/set to try it.");
+                        "Shows flow/while with a comparison (compare/compare) as its cond,\n"
+                        "flow/ifelse, and variables (var/set, var/get). Type another number\n"
+                        "than 27 in the first var/set to try it.");
 }
 
 static void
@@ -254,10 +258,10 @@ fibonacci(void)
         w(push, 0, pr, 0), w(last, 0, pr, 1);
         w(len, 0, d, 0);
         save("fibonacci", "The first 30 Fibonacci numbers, in a list.\n"
-                          "entry clears the list fib and pushes 0 and 1. Then loop 2..29\n"
-                          "pushes fib[-1] + fib[-2] (list/get with negative indices count\n"
-                          "from the end) and prints the new last one. display shows the\n"
-                          "length of the list.");
+                          "flow/entry clears the list fib (list/clear) and pushes 0 and 1\n"
+                          "(list/push). Then flow/loop 2..29 pushes fib[-1] + fib[-2]\n"
+                          "(list/get with negative indices counts from the end) and prints the\n"
+                          "new last one with io/print. io/display shows list/length.");
 }
 
 int

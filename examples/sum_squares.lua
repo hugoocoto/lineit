@@ -1,8 +1,8 @@
 -- sum_squares
 -- Sum of the squares of 0..9 (285), with a variable.
--- entry sets sum = 0, then loop runs index from 0 to 9 and does
--- sum = sum + index * index (var/get, math/multiply, math/add, var/set).
--- When the loop is done, print shows sum.
+-- flow/entry sets sum = 0 (var/set), then flow/loop runs index from
+-- 0 to 9 and does sum = sum + index * index (var/get, math/multiply,
+-- math/add, var/set). When the loop is done, io/print shows sum.
 --
 -- Open it with: ./lineit -f examples/sum_squares.lua, then press Start.
 lineit_canvas = 1 -- format version, see CANVAS_VERSION
