@@ -6,7 +6,7 @@
 -- new last one with io/print. io/display shows list/length.
 --
 -- Open it with: ./lineit -f examples/fibonacci.lua, then press Run.
-lineit_canvas = 1 -- format version, see CANVAS_VERSION
+lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
 
 camera = { x = 703.050781, y = 207, offset_x = 640, offset_y = 344, zoom = 0.77115792 }
 

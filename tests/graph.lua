@@ -1,6 +1,6 @@
 -- graph: subgraphs (modules/math/clamp.lua, modules/log.lua), checked by
 -- `make test` (see tools/run_tests.c)
-lineit_canvas = 1 -- format version, see CANVAS_VERSION
+lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
 
 squares = {
         { id = 0, module = "math/clamp", x = 0, y = 0, inputs = { { name = "x", type = "int", value = "15" }, { name = "lo", type = "int", value = "0" }, { name = "hi", type = "int", value = "10" }, } },

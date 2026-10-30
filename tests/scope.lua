@@ -2,7 +2,7 @@
 -- `make test` (see tools/run_tests.c). Two math/accumulate squares (a
 -- subgraph with a local "total") count on their own, and this canvas sees
 -- neither total; its own n is left alone. ::g is global.
-lineit_canvas = 1 -- format version, see CANVAS_VERSION
+lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
 
 squares = {
         { id = 0, module = "flow/entry", x = 0, y = 0 },

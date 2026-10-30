@@ -107,10 +107,15 @@
 
 #include <stdbool.h>
 
-/* Changes when this API changes in a way that breaks modules built for an
- * older one. Packages (.li) say which one they were built for, and lineit
- * skips the ones that don't match. See tools/lineit-pack --howto. */
-#define LI_API_VERSION 1
+/* The version of lineit, MAJOR.MINOR.PATCH. There's only this one: it's
+ * also the version of this API, and of the canvases and type files lineit
+ * writes. Something made with version V (a canvas, a package built against
+ * this lineit.h) works with a lineit of version H if they have the same
+ * major and V's minor isn't newer than H's. So the minor goes up when
+ * something is added (what older ones made still works), the major when
+ * something changes or goes away (it doesn't). The patch is never checked.
+ * See tools/lineit-pack --howto for packages. */
+#define LI_VERSION "0.0.1"
 
 #ifdef __cplusplus
 extern "C" {

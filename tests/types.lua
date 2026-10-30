@@ -1,7 +1,7 @@
 -- types: custom types (modules/types/*.type.lua), checked by `make test`
 -- (see tools/run_tests.c). Make and break, nested types, and records kept
 -- in a variable and in a list.
-lineit_canvas = 1 -- format version, see CANVAS_VERSION
+lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
 
 squares = {
         { id = 0, module = "types/make_point", x = 0, y = 0, inputs = { { name = "x", type = "float", value = "1.5" }, { name = "y", type = "float", value = "2" }, } },

@@ -3,7 +3,7 @@
 -- local variable: each accumulate square has its own, like a C function's
 -- static local, and the canvas around it doesn't see it.
 -- Open it with Open in a new tab (right click on the square) to change it.
-lineit_canvas = 1 -- format version, see CANVAS_VERSION
+lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
 
 camera = { x = 250, y = 100, offset_x = 640, offset_y = 344, zoom = 1 }
 

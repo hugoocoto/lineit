@@ -4,5 +4,5 @@
 name = "reverse"
 version = "1.0.0"
 license = "GPL-3.0-or-later"
-api = 1
+api = "0.0.1"
 description = "text = s backwards"

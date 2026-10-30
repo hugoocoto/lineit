@@ -2,7 +2,7 @@
 -- src/main.c). value = x, but at least lo and at most hi: min(max(x, lo), hi).
 -- Open it with ./lineit -f modules/math/clamp.lua to change it; `make` copies
 -- it to build/modules and the squares using it pick the change up.
-lineit_canvas = 1 -- format version, see CANVAS_VERSION
+lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
 
 camera = { x = 300, y = 100, offset_x = 640, offset_y = 344, zoom = 1 }
 

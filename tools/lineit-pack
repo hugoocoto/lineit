@@ -7,7 +7,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(dirname "$here")
-api=$(sed -n 's/^#define LI_API_VERSION \([0-9]*\).*/\1/p' "$repo/src/lineit.h")
+api=$(sed -n 's/^#define LI_VERSION "\([0-9.]*\)".*/\1/p' "$repo/src/lineit.h")
 
 usage() {
         cat <<EOF
@@ -40,7 +40,10 @@ The rule \`lineit-package\` has to fill DIR, an empty folder, with:
                         name = "reverse"         -- [A-Za-z0-9_-], the file is NAME.li
                         version = "1.0.0"        -- any text
                         license = "MIT"          -- SPDX id, see LICENSE
-                        api = $api                  -- LI_API_VERSION it was built with
+                        api = "$api"            -- LI_VERSION it was built with
+                                                 -- (MAJOR.MINOR.PATCH): lineits
+                                                 -- with the same major and a
+                                                 -- minor at least as new load it
                         description = "..."      -- optional
                         platforms = { ... }      -- optional, see lib/
   lib/PLATFORM.EXT    Required, at least one. The module built for PLATFORM:
@@ -68,7 +71,7 @@ If it has one, every library it names has to be there.
 Variables it gets:
   PACKAGE_DIR     DIR above, absolute
   LINEIT_INCLUDE  folder with lineit.h, for -I
-  LINEIT_API      LI_API_VERSION of that lineit.h, to write in manifest.lua
+  LINEIT_API      LI_VERSION of that lineit.h, to write in manifest.lua
 
 Building each library:
   Linux     cc -fPIC -shared -I\$(LINEIT_INCLUDE) module.c -o lib/linux-x86_64.so
@@ -194,7 +197,7 @@ host="$(uname -s | sed 's/Linux/linux/;s/Darwin/macos/')-$(uname -m | sed 's/aar
 # Check manifest.lua, and add platforms from lib/ if it has none. Prints
 # the name.
 name=$("$lua" - "$stage" "$api" "${libs[@]}" <<'EOF'
-local dir, api = arg[1], tonumber(arg[2])
+local dir, api = arg[1], arg[2]
 local function fail(msg) io.stderr:write("lineit-pack: manifest.lua: " .. msg .. "\n"); os.exit(1) end
 
 local env = {}
@@ -207,7 +210,21 @@ if not ok then fail(err) end
 if type(env.name) ~= "string" or not env.name:match("^[%w_-]+$") then fail("name has to be [A-Za-z0-9_-]") end
 if type(env.version) ~= "string" then fail("no version") end
 if type(env.license) ~= "string" then fail("no license") end
-if env.api ~= api then fail("api is " .. tostring(env.api) .. ", this lineit has " .. api) end
+-- "MAJOR.MINOR.PATCH". Same major, and a minor not newer than this
+-- lineit's: the patch isn't checked.
+local function version(v)
+        if type(v) ~= "string" then return nil end
+        local major, minor = v:match("^(%d+)%.(%d+)%.%d+$")
+        if not major then major, minor = v:match("^(%d+)%.(%d+)$") end
+        if not major then major, minor = v:match("^(%d+)$"), 0 end
+        if not major then return nil end
+        return tonumber(major), tonumber(minor)
+end
+local major, minor = version(env.api)
+local have_major, have_minor = version(api)
+if not major then fail("api has to be a version, \"MAJOR.MINOR.PATCH\", not " .. tostring(env.api)) end
+if major ~= have_major then fail("api is " .. tostring(env.api) .. ", this lineit has " .. api .. ": a different major") end
+if minor > have_minor then fail("api is " .. tostring(env.api) .. ", newer than this lineit's " .. api) end
 
 local ext = { linux = "so", macos = "dylib", windows = "dll" }
 local function platform_ok(p, file)

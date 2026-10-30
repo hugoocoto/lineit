@@ -33,10 +33,6 @@
 
 #include "value.h"
 
-#ifndef VERSION
-#define VERSION "unknown"
-#endif
-
 #define CONFIG_DEFAULT "config.lua"
 
 #define countof(a) ((int) (sizeof(a) / sizeof *(a)))
@@ -378,6 +374,74 @@ load_config(const char *path)
         if (cfg.canvas.pin_spacing <= 0) cfg.canvas.pin_spacing = 24.0f;
         if (cfg.output.lines < 1) cfg.output.lines = 1;
         if (cfg.save.autosave_interval < 1) cfg.save.autosave_interval = 1;
+        return true;
+}
+
+/* ---- Versions ---- */
+
+/* MAJOR.MINOR.PATCH: LI_VERSION (lineit.h), the one version of lineit, its
+ * module API and the files it writes (canvases, types). Something made for
+ * version V can be used by a lineit that has version H if they have the
+ * same major and V's minor isn't newer than H's: a minor only adds things,
+ * a major breaks them. The patch is only for people, never checked.
+ * Integers, not a float: 0.123.0 is always 0.123.0. */
+typedef struct Version {
+        int major, minor, patch;
+} Version;
+
+/* "1.2.3" (or "1.2", "1") in V. False if it isn't one. */
+static bool
+version_parse(const char *s, Version *v)
+{
+        int *parts[] = { &v->major, &v->minor, &v->patch };
+        *v           = (Version) { 0 };
+        for (int i = 0; i < 3; i++) {
+                if (!isdigit((unsigned char) *s)) return false;
+                long n = 0;
+                for (; isdigit((unsigned char) *s); s++) {
+                        n = n * 10 + (*s - '0');
+                        if (n > 1000000) return false;
+                }
+                *parts[i] = (int) n;
+                if (!*s) return true;
+                if (*s++ != '.') return false;
+        }
+        return false;
+}
+
+/* KEY of CONF as a version, a string: "0.0.1". False, with why in WHY, if
+ * it has none. */
+static bool
+conf_version(Conf conf, const char *key, Version *v, char *why, int size)
+{
+        const char *str;
+        if (Conf_get_str(conf, &str, key) != CONF_OK) {
+                snprintf(why, size, "it has no %s version (\"MAJOR.MINOR.PATCH\")", key);
+                return false;
+        }
+        if (version_parse(str, v)) return true;
+        snprintf(why, size, "its %s is \"%s\", not a version (MAJOR.MINOR.PATCH)", key, str);
+        return false;
+}
+
+/* Whether something made for version MADE can be used by this lineit
+ * (LI_VERSION). If not, why in WHY. WHAT is what it is: "canvas", "package"... */
+static bool
+version_ok(Version made, const char *what, char *why, int size)
+{
+        const char *have = LI_VERSION;
+        Version h;
+        version_parse(have, &h);
+        if (made.major != h.major) {
+                snprintf(why, size, "%s made for lineit %d.%d.%d, this is %s: a different major, they don't work together",
+                         what, made.major, made.minor, made.patch, have);
+                return false;
+        }
+        if (made.minor > h.minor) {
+                snprintf(why, size, "%s made for lineit %d.%d.%d, this is %s: update lineit", what, made.major, made.minor,
+                         made.patch, have);
+                return false;
+        }
         return true;
 }
 
@@ -1881,7 +1945,7 @@ now_ns(void)
 /* A .li is a zip with a module built for one or more platforms, its source
  * and its license (tools/lineit-pack makes them, see its --howto):
  *
- *   manifest.lua   name, version, license, api (LI_API_VERSION) and
+ *   manifest.lua   name, version, license, api (LI_VERSION it was built for) and
  *                  platforms: platform -> library inside, like
  *                  ["linux-x86_64"] = "lib/linux-x86_64.so"
  *   lib/...        the libraries
@@ -2233,21 +2297,20 @@ package_lib(const char *path, char *why, int why_size)
         char *lib = NULL;
         const char *str;
         Conf conf;
-        int api = -1;
+        Version api;
+        bool has_api = false;
 
         if (!zip || !tmp_dir_make()) {
                 snprintf(why, why_size, "can't read it");
                 goto done;
         }
         if (!package_manifest(zip, size, &conf, why, why_size)) goto done;
-        Conf_get_int(conf, &api, "api");
+        has_api = conf_version(conf, "api", &api, why, why_size);
         if (Conf_get_str(conf, &str, "platforms.%s", LI_PLATFORM) == CONF_OK) snprintf(member_name, sizeof member_name, "%s", str);
         Conf_close(conf);
 
-        if (api != LI_API_VERSION) {
-                snprintf(why, why_size, "made for module API %d, this lineit has %d", api, LI_API_VERSION);
-                goto done;
-        }
+        if (!has_api) goto done; /* why says it */
+        if (!version_ok(api, "package", why, why_size)) goto done;
         if (!*member_name) {
                 lib = package_build(path, zip, size, why, why_size);
                 goto done;
@@ -2334,7 +2397,7 @@ static const char *modules_dir;
 /* A custom type (see Custom types) is a NAME.type.lua under the modules
  * dir, made with File > New type, Edit type... on its squares, or by hand:
  *
- *   lineit_type = 1
+ *   lineit_type = "0.0.1"
  *   fields = {
  *           { name = "x", type = "float" },
  *           { name = "y", type = "float" },
@@ -2346,9 +2409,9 @@ static const char *modules_dir;
  * point in, its fields out). Fields are bool, int, float, string, any, or
  * another custom type, by its name. */
 
-/* The format of the type files type_write writes (lineit_type in them), and
- * the newest one type_read reads */
-#define TYPE_VERSION 1
+/* Type files say the LI_VERSION that wrote them (lineit_type), and
+ * type_read reads the ones of the same major and an older minor (see
+ * Versions) */
 
 static bool
 is_type_file(const char *path)
@@ -2511,17 +2574,14 @@ static bool
 type_read(const char *path, TypeDef *d, char **known, int nknown, char *why, int size)
 {
         Conf conf;
-        int n = 0, version = 0;
+        int n = 0;
+        Version version;
         if (Conf_open(&conf, path) != CONF_OK) {
                 snprintf(why, size, "it isn't valid Lua");
                 return false;
         }
-        bool ok = Conf_get_int(conf, &version, "lineit_type") == CONF_OK;
-        if (!ok) snprintf(why, size, "it has no lineit_type version");
-        if (ok && version > TYPE_VERSION) {
-                snprintf(why, size, "made by a newer lineit (type version %d, this one reads up to %d)", version, TYPE_VERSION);
-                ok = false;
-        }
+        bool ok = conf_version(conf, "lineit_type", &version, why, size);
+        ok      = ok && version_ok(version, "type file", why, size);
         if (ok && !(ok = Conf_get_len(conf, &n, "fields") == CONF_OK)) snprintf(why, size, "it has no fields table");
         for (int i = 1; ok && i <= n; i++) {
                 const char *name, *type;
@@ -3908,15 +3968,14 @@ enum {
 
 /* The canvas as Lua: camera, squares (draw order) and links. Squares keep
  * their params and typed inputs. */
-/* The format of the canvases canvas_write writes (lineit_canvas in them),
- * and the newest one canvas_read reads. Bump it when a change means older
- * lineits can't read new canvases. */
-#define CANVAS_VERSION 1
+/* Canvases say the LI_VERSION that wrote them (lineit_canvas), and
+ * canvas_read reads the ones of the same major and an older minor (see
+ * Versions) */
 
 static void
 canvas_write(FILE *f, int flags)
 {
-        fprintf(f, "lineit_canvas = %d -- format version, see CANVAS_VERSION\n\n", CANVAS_VERSION);
+        fprintf(f, "lineit_canvas = \"%s\" -- the lineit that wrote it, see LI_VERSION\n\n", LI_VERSION);
         if (flags & WRITE_CAMERA)
                 fprintf(f, "camera = { x = %.9g, y = %.9g, offset_x = %.9g, offset_y = %.9g, zoom = %.9g }\n\n",
                         camera.target.x, camera.target.y, camera.offset.x, camera.offset.y, camera.zoom);
@@ -4217,20 +4276,15 @@ canvas_read(Conf conf, ReadMode mode)
 static bool
 canvas_conf_ok(Conf conf, char *why, int size)
 {
-        int n = 0, links_len = 0, version = 0;
+        int n = 0, links_len = 0;
+        Version version;
         const char *str;
         if (Conf_get_len(conf, &n, "squares") != CONF_OK) {
                 snprintf(why, size, "not a lineit canvas, it has no squares table");
                 return false;
         }
-        if (Conf_get_int(conf, &version, "lineit_canvas") != CONF_OK) {
-                snprintf(why, size, "not a lineit canvas, it has no lineit_canvas version");
-                return false;
-        }
-        if (version > CANVAS_VERSION) {
-                snprintf(why, size, "made by a newer lineit (canvas version %d, this one reads up to %d)", version, CANVAS_VERSION);
-                return false;
-        }
+        if (!conf_version(conf, "lineit_canvas", &version, why, size)) return false;
+        if (!version_ok(version, "canvas", why, size)) return false;
         for (int i = 1; i <= n; i++) {
                 if (Conf_get_str(conf, &str, "squares.%d.module", i) != CONF_OK) {
                         snprintf(why, size, "square %d has no module", i);
@@ -7063,7 +7117,7 @@ type_write(const char *path, const char *name, void *fields, Color color)
         FILE *f      = fopen(path, "w");
         if (!f) return false;
         fprintf(f, "-- %s: a lineit type (see Types in src/main.c). Change it with Edit type...\n", name);
-        fprintf(f, "-- on one of its make or break squares, or here.\nlineit_type = %d\nfields = {\n", TYPE_VERSION);
+        fprintf(f, "-- on one of its make or break squares, or here.\nlineit_type = \"%s\"\nfields = {\n", LI_VERSION);
         Da_foreach(fl, *l)
         {
                 fprintf(f, "        { name = ");
@@ -8083,7 +8137,7 @@ main(int argc, char **argv)
         }
 
         if (f_version) {
-                fprintf(stdout, "%s, version %s\n", basename(argv[0]), VERSION);
+                fprintf(stdout, "%s, version %s\n", basename(argv[0]), LI_VERSION);
                 fprintf(stdout, "Copyright (C) 2026 Hugo Coto Flórez.\n");
                 fprintf(stdout, "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n");
                 fprintf(stdout, "\n");

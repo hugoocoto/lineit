@@ -7,7 +7,7 @@
 -- than 27 in the first var/set to try it.
 --
 -- Open it with: ./lineit -f examples/collatz.lua, then press Run.
-lineit_canvas = 1 -- format version, see CANVAS_VERSION
+lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
 
 camera = { x = 855.050781, y = 108.105469, offset_x = 640, offset_y = 344, zoom = 0.645126045 }
 
