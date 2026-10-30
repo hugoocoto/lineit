@@ -1,22 +1,22 @@
 -- 21 squares, 2 links
-0 convert: 42
-1 convert: 2
-2 convert: -3
-3 convert: 1
-4 convert: can't
-5 convert: can't
-6 convert: 2.5
-7 convert: 7
-8 convert: 1000
-9 convert: can't
-10 convert: true
-11 convert: false
-12 convert: false
-13 convert: true
-14 convert: can't
-15 convert: 0.25
-16 convert: false
-17 convert: 
-18 convert: 12
+0 value/convert: 42
+1 value/convert: 2
+2 value/convert: -3
+3 value/convert: 1
+4 value/convert: can't
+5 value/convert: can't
+6 value/convert: 2.5
+7 value/convert: 7
+8 value/convert: 1000
+9 value/convert: can't
+10 value/convert: true
+11 value/convert: false
+12 value/convert: false
+13 value/convert: true
+14 value/convert: can't
+15 value/convert: 0.25
+16 value/convert: false
+17 value/convert: 
+18 value/convert: 12
 19 math/add: 13
 20 io/display: 13

@@ -118,11 +118,11 @@
 34 compare/compare: false
 35 var/get: n = 1
 36 flow/ifelse: true
-37 math/mod: 0
+37 math/modulo: 0
 38 compare/equal: true
-39 math/div: 1
+39 math/divide: 1
 40 var/set: n = 1
-41 math/mul: 15
+41 math/multiply: 15
 42 math/add: 16
 43 var/set: n = 1
 44 var/get: steps = 111

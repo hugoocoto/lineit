@@ -22,42 +22,42 @@ after: 14
 done
 -- 10 squares, 9 links
 0 math/clamp: 
-    0 graph/input: x
-    1 graph/input: lo
-    2 graph/input: hi
+    0 subgraph/input: x
+    1 subgraph/input: lo
+    2 subgraph/input: hi
     3 math/max: 15
     4 math/min: 10
-    5 graph/output: value
+    5 subgraph/output: value
 1 math/clamp: 
-    0 graph/input: x
-    1 graph/input: lo
-    2 graph/input: hi
+    0 subgraph/input: x
+    1 subgraph/input: lo
+    2 subgraph/input: hi
     3 math/max: 0
     4 math/min: 0
-    5 graph/output: value
+    5 subgraph/output: value
 2 io/display: 10
 3 io/display: 0
 4 flow/entry: 
 5 flow/loop: 14
 6 math/clamp: 
-    0 graph/input: x
-    1 graph/input: lo
-    2 graph/input: hi
+    0 subgraph/input: x
+    1 subgraph/input: lo
+    2 subgraph/input: hi
     3 math/max: 14
     4 math/min: 9
-    5 graph/output: value
+    5 subgraph/output: value
 7 io/log: 
-    0 graph/input: tick
-    1 graph/input: label
-    2 graph/input: value
+    0 subgraph/input: tick
+    1 subgraph/input: label
+    2 subgraph/input: value
     3 string/format: "clamped: 9"
     4 io/print: clamped: 9
-    5 graph/output: then
+    5 subgraph/output: then
 8 io/log: 
-    0 graph/input: tick
-    1 graph/input: label
-    2 graph/input: value
+    0 subgraph/input: tick
+    1 subgraph/input: label
+    2 subgraph/input: value
     3 string/format: "after: 14"
     4 io/print: after: 14
-    5 graph/output: then
+    5 subgraph/output: then
 9 io/print: done

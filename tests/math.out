@@ -10,21 +10,21 @@
 0.565809
 -- 35 squares, 20 links
 0 math/add: 5
-1 math/sub: 1.5
-2 math/mul: overflow
-3 math/div: -3
-4 math/div: / 0
-5 math/mod: 1
+1 math/subtract: 1.5
+2 math/multiply: overflow
+3 math/divide: -3
+4 math/divide: / 0
+5 math/modulo: 1
 6 math/min: -1
 7 math/max: 4.5
-8 math/pow: 1024
-9 math/pow: overflow
-10 math/pow: -9223372036854775808
-11 math/pow: 0.5
-12 math/pow: b < 0
-13 math/abs: 5
-14 math/abs: 0.5
-15 math/abs: overflow
+8 math/power: 1024
+9 math/power: overflow
+10 math/power: -9223372036854775808
+11 math/power: 0.5
+12 math/power: b < 0
+13 math/absolute: 5
+14 math/absolute: 0.5
+15 math/absolute: overflow
 100 io/display: 5
 101 io/display: 1.5
 102 io/display: -

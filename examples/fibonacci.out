@@ -37,5 +37,5 @@
 56 math/add: 514229
 57 list/push: fib [30]
 58 io/print: 514229
-59 list/len: fib [30]
+59 list/length: fib [30]
 60 io/display: 30

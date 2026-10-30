@@ -21,7 +21,7 @@ squares = {
         { id = 56, module = "math/add", x = 928.843689, y = 255.84375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
         { id = 57, module = "list/push", x = 1104.89844, y = -73.1015625, params = { { name = "list", value = "fib" }, }, inputs = { { name = "value", type = "int", value = "0" }, } },
         { id = 58, module = "io/print", x = 1294.89844, y = -73.1015625, inputs = { { name = "value", type = "string", value = "" }, } },
-        { id = 59, module = "list/len", x = 1181, y = 205, params = { { name = "list", value = "fib" }, } },
+        { id = 59, module = "list/length", x = 1181, y = 205, params = { { name = "list", value = "fib" }, } },
         { id = 60, module = "io/display", x = 1371, y = 205 },
 }
 

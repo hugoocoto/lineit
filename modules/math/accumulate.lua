@@ -6,13 +6,13 @@
 camera = { x = 250, y = 100, offset_x = 640, offset_y = 344, zoom = 1 }
 
 squares = {
-        { id = 0, module = "graph/input", x = 0, y = 0, params = { { name = "name", value = "tick" }, }, inputs = { { name = "type", value = "tick" }, } },
-        { id = 1, module = "graph/input", x = 0, y = 100, params = { { name = "name", value = "value" }, }, inputs = { { name = "type", value = "any" }, } },
+        { id = 0, module = "subgraph/input", x = 0, y = 0, params = { { name = "name", value = "tick" }, }, inputs = { { name = "type", value = "tick" }, } },
+        { id = 1, module = "subgraph/input", x = 0, y = 100, params = { { name = "name", value = "value" }, }, inputs = { { name = "type", value = "any" }, } },
         { id = 2, module = "var/get", x = 100, y = 200, params = { { name = "name", value = "total" }, { name = "global", value = "false" }, } },
         { id = 3, module = "math/add", x = 220, y = 150 },
         { id = 4, module = "var/set", x = 340, y = 0, params = { { name = "name", value = "total" }, { name = "global", value = "false" }, } },
-        { id = 5, module = "graph/output", x = 520, y = 0, params = { { name = "name", value = "then" }, }, inputs = { { name = "type", value = "tick" }, } },
-        { id = 6, module = "graph/output", x = 520, y = 100, params = { { name = "name", value = "total" }, }, inputs = { { name = "type", value = "any" }, } },
+        { id = 5, module = "subgraph/output", x = 520, y = 0, params = { { name = "name", value = "then" }, }, inputs = { { name = "type", value = "tick" }, } },
+        { id = 6, module = "subgraph/output", x = 520, y = 100, params = { { name = "name", value = "total" }, }, inputs = { { name = "type", value = "any" }, } },
 }
 
 links = {

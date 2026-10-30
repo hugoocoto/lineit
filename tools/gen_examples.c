@@ -122,7 +122,7 @@ fizzbuzz(void)
         Square *prev        = NULL;
         for (int k = 0; k < 3; k++) {
                 float x     = 2.3f + k * 1.5f;
-                Square *mod = in(sq("math/mod", x - 0.4f, 1.6), 1, ns[k]);
+                Square *mod = in(sq("math/modulo", x - 0.4f, 1.6), 1, ns[k]);
                 Square *eq  = in(sq("compare/equal", x + 0.2f, 2.6), 1, "0");
                 Square *ie  = sq("flow/ifelse", x, 0);
                 Square *pr  = in(sq("io/print", x + 0.6f, -1.1), 1, words[k]);
@@ -139,7 +139,7 @@ fizzbuzz(void)
                          "of 5 Buzz, and the rest the number. The output goes to stdout.\n"
                          "loop runs index from 1 to 100 (typed in its from and to fields).\n"
                          "For each one, three ifelse in a row check index % 15, % 3 and % 5\n"
-                         "== 0 (math/mod + compare/equal), and the first true one prints its\n"
+                         "== 0 (math/modulo + compare/equal), and the first true one prints its\n"
                          "word. If none is, the last print prints the index.");
 }
 
@@ -169,7 +169,7 @@ sum_squares(void)
         Square *e    = sq("flow/entry", 0, 0);
         Square *init = in(param(sq("var/set", 1, 0), "sum"), 1, "0");
         Square *lp   = sq("flow/loop", 2.1, 0);
-        Square *mul  = sq("math/mul", 3.2, 1.3);
+        Square *mul  = sq("math/multiply", 3.2, 1.3);
         Square *get  = param(sq("var/get", 3.2, 2.4), "sum");
         Square *add  = sq("math/add", 4.3, 1.7);
         Square *set  = param(sq("var/set", 5.3, 0), "sum");
@@ -182,7 +182,7 @@ sum_squares(void)
         w(lp, 2, pr, 0), w(get, 0, pr, 1);
         save("sum_squares", "Sum of the squares of 0..9 (285), with a variable.\n"
                             "entry sets sum = 0, then loop runs index from 0 to 9 and does\n"
-                            "sum = sum + index * index (var/get, math/mul, math/add, var/set).\n"
+                            "sum = sum + index * index (var/get, math/multiply, math/add, var/set).\n"
                             "When the loop is done, print shows sum.");
 }
 
@@ -197,11 +197,11 @@ collatz(void)
         Square *ne     = in(in(sq("compare/compare", 2.5, 1.4), 0, "!="), 2, "1");
         Square *get_n  = param(sq("var/get", 1.3, 2.4), "n");
         Square *ie     = sq("flow/ifelse", 4.5, 0);
-        Square *mod    = in(sq("math/mod", 3.3, 2.5), 1, "2");
+        Square *mod    = in(sq("math/modulo", 3.3, 2.5), 1, "2");
         Square *eq     = in(sq("compare/equal", 4.3, 1.5), 1, "0");
-        Square *half   = in(sq("math/div", 5.2, -1.5), 1, "2");
+        Square *half   = in(sq("math/divide", 5.2, -1.5), 1, "2");
         Square *even   = param(sq("var/set", 6.2, -0.8), "n");
-        Square *triple = in(sq("math/mul", 4.6, 2.9), 1, "3");
+        Square *triple = in(sq("math/multiply", 4.6, 2.9), 1, "3");
         Square *plus1  = in(sq("math/add", 5.5, 2.2), 1, "1");
         Square *odd    = param(sq("var/set", 6.2, 0.9), "n");
         Square *get_s  = param(sq("var/get", 6.6, 2.5), "steps");
@@ -243,7 +243,7 @@ fibonacci(void)
         Square *add   = sq("math/add", 5.2, 2.1);
         Square *push  = param(sq("list/push", 6.2, 0), "fib");
         Square *pr    = sq("io/print", 7.2, 0);
-        Square *len   = param(sq("list/len", 6.4, 1.6), "fib");
+        Square *len   = param(sq("list/length", 6.4, 1.6), "fib");
         Square *d     = sq("io/display", 7.4, 1.6);
         w(e, 0, clear, 0);
         w(clear, 0, push0, 0);

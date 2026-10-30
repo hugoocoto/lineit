@@ -431,7 +431,7 @@ struct Li_Node {
         char text[64];    /* drawn inside, see li_text */
         bool evaluating;  /* guards module_eval against cycles */
         struct Graph *graph; /* a subgraph: its own canvas, see Subgraphs */
-        struct Li_Node *owner; /* graph/input and graph/output in one: the subgraph */
+        struct Li_Node *owner; /* subgraph/input and subgraph/output in one: the subgraph */
         int port;              /* and which of its inputs or outputs they are */
 };
 typedef struct Li_Node Square;
@@ -2734,8 +2734,12 @@ search_hit_cmp(const void *a, const void *b)
 static void
 search_menu_build(void)
 {
-        const char *q      = menu_search()->buf;
         Da(SearchHit) hits = { 0 };
+        /* Words as typed match names with _ ("not equal" is not_equal) */
+        char q[sizeof menu_search()->buf];
+        snprintf(q, sizeof q, "%s", menu_search()->buf);
+        for (char *c = q; *c; c++)
+                if (*c == ' ') *c = '_';
 
         Da_foreach(mp, modules)
         {
@@ -3739,16 +3743,41 @@ pin_named(PinList *l, const char *name)
         return -1;
 }
 
-/* A module that was at the top of the modules dir and went into a folder
- * ("print" is "io/print" now): the only one with NAME as its last part. NULL
- * if there's none, or more than one. */
+/* Modules renamed, old name first: canvases saved with the old ones still
+ * load. Ones that only moved folder, keeping their last part ("print" is
+ * "io/print"), don't need to be here: module_find_moved finds them. */
+static const char *module_renames[][2] = {
+        { "math/sub", "math/subtract" },       { "math/mul", "math/multiply" },
+        { "math/div", "math/divide" },         { "math/mod", "math/modulo" },
+        { "math/pow", "math/power" },          { "math/abs", "math/absolute" },
+        { "string/len", "string/length" },     { "string/substr", "string/substring" },
+        { "list/len", "list/length" },         { "tree/len", "map/length" },
+        { "tree/del", "map/delete" },          { "tree/get", "map/get" },
+        { "tree/set", "map/set" },             { "tree/has", "map/has" },
+        { "tree/keys", "map/keys" },           { "graph/input", "subgraph/input" },
+        { "graph/output", "subgraph/output" }, { "const", "value/constant" },
+        { "var/const", "value/constant" },     { "value/const", "value/constant" },
+};
+
+static Module *
+module_find_renamed(const char *name)
+{
+        for (int i = 0; i < countof(module_renames); i++)
+                if (!strcmp(module_renames[i][0], name)) return module_find(module_renames[i][1]);
+        return NULL;
+}
+
+/* A module that moved to another folder ("print" is "io/print" now,
+ * "var/const" is "value/const"): the only one with the last part of NAME
+ * as its last part. NULL if there's none, or more than one. */
 static Module *
 module_find_moved(const char *name)
 {
         Module *found = NULL;
+        const char *label = strrchr(name, '/') ? strrchr(name, '/') + 1 : name;
         Da_foreach(mp, modules)
         {
-                if (strcmp((*mp)->label, name) != 0) continue;
+                if (strcmp((*mp)->label, label) != 0) continue;
                 if (found) return NULL;
                 found = *mp;
         }
@@ -3809,13 +3838,13 @@ canvas_read(Conf conf, ReadMode mode)
 
                 /* Strings from Conf die on the next call, use them right away */
                 if (Conf_get_str(conf, &str, "squares.%d.module", i) != CONF_OK) continue;
-                /* convert/int and the others are convert now, with "to" */
+                /* convert/int and the others are value/convert now, with "to" */
                 char convert_to[16] = "";
-                if (!strncmp(str, "convert/", 8) && !module_find(str) && module_find("convert")) {
+                if (!strncmp(str, "convert/", 8) && !module_find(str) && module_find("value/convert")) {
                         snprintf(convert_to, sizeof convert_to, "%s", str + 8);
-                        str = "convert";
+                        str = "value/convert";
                 }
-                if (!(m = module_find(str)) && !strchr(str, '/')) m = module_find_moved(str);
+                if (!(m = module_find(str)) && !(m = module_find_renamed(str))) m = module_find_moved(str);
                 if (!m) {
                         fprintf(stderr, "load: module %s not found, square skipped\n", str);
                         continue;
@@ -3857,7 +3886,9 @@ canvas_read(Conf conf, ReadMode mode)
                         if (Conf_get_str(conf, &str, "squares.%d.params.%d.name", i, j) != CONF_OK) continue;
                         snprintf(name, sizeof name, "%s", str);
                         if (Conf_get_str(conf, &str, "squares.%d.params.%d.value", i, j) != CONF_OK) continue;
-                        if ((k = param_find(sq, name)) < 0) continue;
+                        /* The map modules' param was "tree" */
+                        if ((k = param_find(sq, name)) < 0 && !strcmp(name, "tree")) k = param_find(sq, "map");
+                        if (k < 0) continue;
                         char now[256];
                         param_text(&sq->params.items[k], now, sizeof now, true);
                         if (strcmp(now, str) != 0 && !param_set_text(sq, k, str))
@@ -4046,16 +4077,16 @@ canvas_read_text(const char *text, ReadMode mode)
 
 /* A module can also be a canvas: a .lua under the modules dir. Each square
  * of it (a subgraph) gets its own copy of that canvas, hidden, with its own
- * squares and wires. Its graph/input squares are the inputs of the
- * subgraph, and its graph/output squares the outputs, named by their name
+ * squares and wires. Its subgraph/input squares are the inputs of the
+ * subgraph, and its subgraph/output squares the outputs, named by their name
  * param, in the order they are from top to bottom (left to right on the
  * same row).
  *
  * The inner squares are not in `squares` and `links`: while a call goes into
  * a subgraph, graph_swap puts its lists there, and the next graph_swap puts
  * them back. So everything works the same inside, li_get and li_tick
- * included. Calls that go back out (a graph/input reading an input of its
- * subgraph, a graph/output ticking one of its outputs) swap too, which
+ * included. Calls that go back out (a subgraph/input reading an input of its
+ * subgraph, a subgraph/output ticking one of its outputs) swap too, which
  * brings back the lists outside for that while. Calls nest, so the swaps
  * always come in pairs.
  *
@@ -4070,7 +4101,7 @@ typedef struct Graph {
         LinkList links;
         VarList vars; /* its locals: variables, lists and trees */
         BT *lists, *trees;
-        Da(Square *) inputs; /* graph/input squares inside, by port */
+        Da(Square *) inputs; /* subgraph/input squares inside, by port */
         Da(Square *) outputs;
 } Graph;
 
@@ -4096,9 +4127,9 @@ graph_swap(Graph *g)
 /* Port squares: pick a type, and an input or output of that type */
 static const Li_Type port_types[] = { LI_TICK, LI_ANY, LI_BOOL, LI_INT, LI_FLOAT, LI_STRING };
 #define PORT_OPTIONS "tick|any|bool|int|float|string"
-enum { PORT_IN_TYPE }; /* inputs of graph/input */
+enum { PORT_IN_TYPE }; /* inputs of subgraph/input */
 enum { PORT_OUT_TYPE,
-       PORT_OUT_VALUE }; /* of graph/output */
+       PORT_OUT_VALUE }; /* of subgraph/output */
 
 static Li_Type
 port_type(Square *s)
@@ -4317,14 +4348,14 @@ static const ModuleFns graph_fns = {
         .destroy = graph_destroy,
 };
 
-/* graph/input and graph/output, in the menu with the modules */
+/* subgraph/input and subgraph/output, in the menu with the modules */
 static void
 graph_builtins(void)
 {
         static const struct {
                 const char *name;
                 const ModuleFns *fn;
-        } builtins[] = { { "graph/input", &port_in_fns }, { "graph/output", &port_out_fns } };
+        } builtins[] = { { "subgraph/input", &port_in_fns }, { "subgraph/output", &port_out_fns } };
 
         for (int i = 0; i < countof(builtins); i++) {
                 if (module_find(builtins[i].name)) continue;
@@ -5427,8 +5458,8 @@ file_menu_open(void)
 /* Like "extract function": the selected squares and the wires between them
  * go to a new subgraph (a .lua under modules.source, linked into the
  * modules dir so it shows up now), and one square of it takes their place.
- * Each output outside that feeds the selection becomes a graph/input, and
- * each output inside that is used outside a graph/output, of the type of
+ * Each output outside that feeds the selection becomes a subgraph/input, and
+ * each output inside that is used outside a subgraph/output, of the type of
  * that output, so the wires around can be plugged to the new square as
  * they were. One output feeding several squares inside is one input. */
 
@@ -5437,7 +5468,7 @@ typedef struct Port {
         char name[64];
         Li_Type type;
         float y;      /* to keep them in the order they were, top to bottom */
-        Square *node; /* its graph/input or graph/output in the subgraph */
+        Square *node; /* its subgraph/input or subgraph/output in the subgraph */
 } Port;
 
 typedef Da(Port) PortList;
@@ -5470,7 +5501,7 @@ port_for(PortList *l, int sq, int pin)
         return &l->items[l->count - 1];
 }
 
-/* A graph/input or graph/output square for P at X, in the canvas there is */
+/* A subgraph/input or subgraph/output square for P at X, in the canvas there is */
 static Square *
 port_node(const char *module, Port *p, float x)
 {
@@ -5518,11 +5549,11 @@ subgraph_write(const char *path, PortList *ins, PortList *outs, Rectangle box)
         float gap = cfg.canvas.square_size * 2.5f;
         Da_foreach(p, *ins)
         {
-                p->node = port_node("graph/input", p, box.x - gap);
+                p->node = port_node("subgraph/input", p, box.x - gap);
         }
         Da_foreach(p, *outs)
         {
-                p->node = port_node("graph/output", p, box.x + box.width + gap);
+                p->node = port_node("subgraph/output", p, box.x + box.width + gap);
         }
         /* The wires inside to and from them: the ids are the same here */
         LinkList outside = g.links; /* graph_swap put the canvas's there */

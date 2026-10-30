@@ -4,21 +4,21 @@
 2 var/set: ::g = 7
 3 flow/loop: 4
 4 math/accumulate: 
-    0 graph/input: tick
-    1 graph/input: value
+    0 subgraph/input: tick
+    1 subgraph/input: value
     2 var/get: total = 10
     3 math/add: 10
     4 var/set: total = 10
-    5 graph/output: then
-    6 graph/output: total
+    5 subgraph/output: then
+    6 subgraph/output: total
 5 math/accumulate: 
-    0 graph/input: tick
-    1 graph/input: value
+    0 subgraph/input: tick
+    1 subgraph/input: value
     2 var/get: total = 50
     3 math/add: 50
     4 var/set: total = 50
-    5 graph/output: then
-    6 graph/output: total
+    5 subgraph/output: then
+    6 subgraph/output: total
 6 io/display: 10
 7 io/display: 50
 8 var/get: total = 100

@@ -101,15 +101,15 @@ Buzz
 -- 15 squares, 18 links
 2 flow/entry: 
 3 flow/loop: 100
-4 math/mod: 10
+4 math/modulo: 10
 5 compare/equal: false
 6 flow/ifelse: false
 7 io/print: FizzBuzz
-8 math/mod: 1
+8 math/modulo: 1
 9 compare/equal: false
 10 flow/ifelse: false
 11 io/print: Fizz
-12 math/mod: 0
+12 math/modulo: 0
 13 compare/equal: true
 14 flow/ifelse: true
 15 io/print: Buzz

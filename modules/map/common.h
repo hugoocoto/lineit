@@ -1,14 +1,14 @@
-/* Shared by the tree modules: the tree name is their first param, and they
+/* Shared by the map modules: the map name is their first param, and they
  * show it with its size. Keys are strings, other values are turned into one
  * (42 -> "42"). */
 #include "lineit.h"
 
-#define TREE(n) (li_get_param((n), 0).s)
+#define MAP(n) (li_get_param((n), 0).s)
 
 static inline void
-tree_param(Li_Node *n)
+map_param(Li_Node *n)
 {
-        li_param(n, "tree", li_string("t"));
+        li_param(n, "map", li_string("m"));
 }
 
 /* KEY input as a string, in BUF */
@@ -24,5 +24,5 @@ key(Li_Node *n, int input, char *buf, int size)
 void
 module_draw(Li_Node *n)
 {
-        li_text(n, "%s {%ld}", TREE(n), li_tree_len(TREE(n)));
+        li_text(n, "%s {%ld}", MAP(n), li_tree_len(MAP(n)));
 }
