@@ -71,6 +71,13 @@ DEPS += $(shell pkg-config --libs zlib)
 # libcrypto (OpenSSL): the SHA-256 of the files in packages
 DEPS += $(shell pkg-config --libs libcrypto)
 
+# What the programs Compile makes are built with (see Compile in
+# src/main.c): build/rt/liblineit-rt.a, and the headers they and their
+# modules include in build/rt/include. Before all: make expands a rule's
+# prerequisites when it reads it, an RT defined later would be empty there.
+RT = build/rt/liblineit-rt.a
+RT_H = src/lineit.h src/value.h src/rt/rt.h thirdparty/bt.h/bt.h thirdparty/cum.h/cum.h
+
 all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
 # -rdynamic exports the li_* functions (src/lineit.h) to the modules
@@ -88,12 +95,6 @@ build/modules/%.lua: modules/%.lua
 build/modules/%.so: modules/%.c src/lineit.h $(MODULES_H) build/.flags
 	@mkdir -p $(dir $@)
 	$(CC) $(WARN) $(CFLAGS) -I./src -fPIC -shared $< $(LDFLAGS:-pie=) -o $@
-
-# What the programs Compile makes are built with (see Compile in
-# src/main.c): build/rt/liblineit-rt.a, and the headers they and their
-# modules include in build/rt/include.
-RT = build/rt/liblineit-rt.a
-RT_H = src/lineit.h src/value.h src/rt/rt.h thirdparty/bt.h/bt.h thirdparty/cum.h/cum.h
 
 $(RT): src/value.c src/rt/rt.c $(RT_H) build/.flags
 	@mkdir -p build/rt/include
