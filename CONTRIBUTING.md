@@ -56,7 +56,8 @@ examples/, tests/        canvases, each with the .out make test checks it agains
 tools/                   the test runners, gen_examples, lineit-pack (packages)
 thirdparty/              git submodules: flag.h, conf.h, cum.h, bt.h
 docs/                    Typst documents, to PDF with make docs
-scripts/                 install.sh, release.sh, git hooks
+scripts/                 install.sh, release.sh, git hooks, the Docker entrypoint
+Dockerfile               the Docker image: lineit in the browser (see the README)
 assets/                  the icon and the desktop entry
 ```
 

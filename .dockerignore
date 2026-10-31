@@ -1,0 +1,8 @@
+# What the Dockerfile builds from: the source, as make wants it. Not what a
+# build here left (it's built again inside, with the image's libraries).
+.git
+build
+lineit
+*.tar.gz
+*.AppImage
+docs/**/*.pdf

@@ -53,6 +53,38 @@ Both have the AppImage, the source with the submodules, `install.sh` and
 [docs](https://github.com/hugoocoto/lineit/releases/tag/docs) release, also
 from main, and in each version's.
 
+## Mac and Windows: Docker
+
+On any system with [Docker](https://docs.docker.com/get-docker/), lineit
+runs in a container and shows up in the browser. From the folder you want
+to work in:
+
+    docker run --rm -p 127.0.0.1:6080:6080 -v "$PWD":/work ghcr.io/hugoocoto/lineit
+
+and open <http://localhost:6080>. On Windows, in PowerShell, it's
+`-v "${PWD}:/work"`. The folder is mounted as `/work`: lineit saves your
+canvases there, and keeps its config, your modules and what Compile makes
+in it too (`.config/lineit`, `.local/share/lineit`, `.cache/lineit`), so
+they're still there next time. Arguments after the image go to lineit
+(`... ghcr.io/hugoocoto/lineit -f examples/hello.lua`, a path in the
+folder). `:nightly` is the build of the last commit on main, `:latest` and
+`:v0.0.1` are versions.
+
+The catches:
+
+- Some input lag, and it's drawn by the CPU: it's a virtual screen sent to
+  the browser (Xvfb, x11vnc and noVNC).
+- Copy and paste between lineit and your system go through noVNC's
+  clipboard panel, in the tab on the left of the page.
+- The programs Compile makes are Linux ones: on Mac and Windows they only
+  run in the container (`docker exec`).
+- `127.0.0.1:` keeps the page to your machine. Without it anyone who can
+  reach port 6080 gets the editor, and Compile runs commands.
+- On Linux it runs as the owner of the folder; if that doesn't work, add
+  `--user "$(id -u):$(id -g)"`.
+
+The image is built from the `Dockerfile` (`docker build -t lineit .`).
+
 ## From source
 
 raylib 6.0 comes with the repository, built with glibc 2.38. With an older

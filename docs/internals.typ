@@ -93,7 +93,9 @@ print the same lines.
     `lineit-pack` (makes packages).],
   [`config.lua`], [Every setting of the editor, commented.],
   [`scripts/`], [`install.sh` (installs a release), `release.sh` (tags
-    one) and the git hooks.],
+    one), the git hooks and `docker-entrypoint.sh`.],
+  [`Dockerfile`], [The Docker image: lineit on a virtual screen (Xvfb),
+    shown in the browser by x11vnc and noVNC.],
   [`assets/`], [The icon and the desktop entry.],
 )
 
@@ -1132,6 +1134,15 @@ same commit gives the same bytes), the docs as PDF, `install.sh` and
 `scripts/install.sh` installs the AppImage of a release, checking it
 against `SHA256SUMS`, and `SHA256SUMS` against its attestation when `gh` is
 there, and adds it to the applications menu.
+
+The Docker image (`Dockerfile`) is `make install PREFIX=/usr` on Debian,
+with a C compiler and make for Compile. Its entrypoint,
+`scripts/docker-entrypoint.sh`, starts a 1280x720 Xvfb screen, x11vnc on
+it and noVNC (websockify) on port 6080, then lineit, again whenever it
+quits, as the owner of `/work`, which is also `HOME`. CI builds it, checks
+that noVNC reaches the VNC server, that lineit stays up and that Compile
+works, and pushes it to `ghcr.io` with the release: `nightly`, or the
+version and `latest`.
 
 = Configuration
 
