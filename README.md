@@ -15,6 +15,10 @@ native program.
 modulo and equal checks, and three ifelse squares pick what to
 print](assets/screenshot.png)
 
+![Writing Hello, World! from the entry module: a wire dragged from it to
+the canvas opens the module search, print is added wired to it, its value
+set to "Hello, World!", then Run, and Output shows it](assets/hello.gif)
+
 # Disclaimer
 
 This is the Alpha version of the editor/compiler. You must expect breaking
@@ -109,6 +113,8 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Right click on the canvas         | Add a module: type to search, or browse "Add module"    |
 | Right click on a square           | Configure, disconnect, duplicate, delete, make subgraph |
 | Drag from an output to an input   | Wire them (drag a plugged input to move its wire)       |
+| Drag from an output to the canvas | Search a module to add there, wired to that output      |
+| Drag a plugged wire to the canvas | Remove it                                               |
 | Double click a square             | Its settings (params)                                   |
 | Click a field next to an input    | Type a value used while nothing is plugged in           |
 | Drag the canvas, or Shift+click   | Select with a box, or add to the selection              |
