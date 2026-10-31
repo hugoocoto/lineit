@@ -266,55 +266,79 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: dist-*
+          name: dist-package
           path: release
-          merge-multiple: true
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-docs
+          path: docs
+
+      # release/ is the version's release, or nightly. docs/ is the docs
+      # release, from main: nightly has no docs of its own. A version's
+      # release has them too, the ones of that version.
       - name: Checksums
         run: |
           # PDFs from docs/ subfolders keep their folders: flatten them
-          find release -mindepth 2 -type f -exec mv -t release {} +
-          find release -mindepth 1 -type d -delete
+          find docs -mindepth 2 -type f -exec mv -t docs {} +
+          find docs -mindepth 1 -type d -delete
+          [ "$GITHUB_REF_TYPE" != tag ] || cp docs/* release/
           # The install script too, so it's attested like the rest: what the
           # README runs is releases/latest/download/install.sh
           cp scripts/install.sh release/
-          cd release && sha256sum -- * >SHA256SUMS && cat SHA256SUMS
+          for dir in release docs; do
+            (cd "$dir" && sha256sum -- * >SHA256SUMS && cat SHA256SUMS)
+          done
 
       # Proof that these files were built here, from this commit: `gh
       # attestation verify` checks SHA256SUMS, and SHA256SUMS the rest
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: release/*
+          subject-path: |
+            release/*
+            docs/*
 
+      # Nightly is the latest release: releases/latest, what install.sh and
+      # the README's link get. A version's release isn't, nor is docs.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" --verify-tag --generate-notes
+              --title "$GITHUB_REF_NAME" --verify-tag --generate-notes --latest=false
             exit
           fi
-          # The tag moves here, and the release's files are replaced in place:
-          # deleting it and making it again would leave a moment without it.
-          # SHA256SUMS goes last, so a download in between finds files newer
-          # than their checksums, and fails instead of using them.
-          notes="Built from $GITHUB_SHA on $(date -u '+%Y-%m-%d %H:%M UTC'). It changes with every push to main."
-          git tag -f nightly "$GITHUB_SHA"
-          git push -f origin nightly
-          if ! gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create nightly release/* --repo "$GITHUB_REPOSITORY" --prerelease --verify-tag \
-              --title "Nightly" --notes "$notes"
-            exit
-          fi
-          cd release
-          files=()
-          for file in *; do [ "$file" = SHA256SUMS ] || files+=("$file"); done
-          gh release upload nightly "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-          gh release upload nightly SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
-          # The files this build doesn't have, like the last one's tarball
-          gh release view nightly --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' |
-            while read -r asset; do
-              [ -e "$asset" ] || gh release delete-asset nightly "$asset" --repo "$GITHUB_REPOSITORY" --yes
-            done
-          gh release edit nightly --repo "$GITHUB_REPOSITORY" --notes "$notes"
+          built="Built from $GITHUB_SHA on $(date -u '+%Y-%m-%d %H:%M UTC'). It changes with every push to main."
+
+          # update TAG TITLE DIR LATEST NOTES: the release TAG, moved here,
+          # with the files in DIR. They're replaced in place: deleting it and
+          # making it again would leave a moment without it. SHA256SUMS goes
+          # last, so a download in between finds files newer than their
+          # checksums, and fails instead of using them.
+          update() {
+            local tag=$1 title=$2 dir=$3 latest=$4 notes=$5
+            git tag -f "$tag" "$GITHUB_SHA"
+            git push -f origin "$tag"
+            if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release create "$tag" "$dir"/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+                --title "$title" --notes "$notes" --latest="$latest"
+              return
+            fi
+            (
+              cd "$dir" || exit
+              files=()
+              for file in *; do [ "$file" = SHA256SUMS ] || files+=("$file"); done
+              gh release upload "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+              gh release upload "$tag" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+              # The files this build doesn't have, like the last one's tarball
+              gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' |
+                while read -r asset; do
+                  [ -e "$asset" ] || gh release delete-asset "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --yes
+                done
+            )
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes "$notes" \
+              --prerelease=false --latest="$latest"
+          }
+          update nightly Nightly release true "$built"
+          update docs Docs docs false "The docs as PDF. $built"

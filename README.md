@@ -32,16 +32,18 @@ attestation (proof that CI built it from this repo) if
 [`gh`](https://cli.github.com) is installed and logged in. Arguments go
 after `bash -s --`:
 
-    ... | bash -s -- nightly      # the last commit on main, not the latest release
-    ... | bash -s -- v0.1.0       # that release
+    ... | bash -s -- v0.0.1       # that version, instead of the latest (nightly)
     ... | bash -s -- uninstall
     ... | bash -s -- --help       # the rest
 
 The AppImage needs FUSE (the `fuse` or `fuse3` package). Compile, in the
-editor, needs a C compiler and make. Every
-[release](https://github.com/hugoocoto/lineit/releases) has the AppImage,
-the source with the submodules, the docs as PDF, `install.sh` and
-`SHA256SUMS`; the nightly one is built from main.
+editor, needs a C compiler and make. The latest
+[release](https://github.com/hugoocoto/lineit/releases) is nightly, built
+from every push to main; versions (`v0.0.1`) are releases of their own.
+Both have the AppImage, the source with the submodules, `install.sh` and
+`SHA256SUMS`. The docs as PDF are in the
+[docs](https://github.com/hugoocoto/lineit/releases/tag/docs) release, also
+from main, and in each version's.
 
 ## From source
 
@@ -126,7 +128,7 @@ explains it, and `examples/README.md` lists them.
 
 How it all works inside (modules, Run, Compile, packages, hot reload) is in
 `docs/internals.typ`. Its PDF is in the
-[releases](https://github.com/hugoocoto/lineit/releases) (the nightly one
+[docs](https://github.com/hugoocoto/lineit/releases/tag/docs) release (it
 follows main), or make it with `make docs` (needs typst).
 
 # Modules

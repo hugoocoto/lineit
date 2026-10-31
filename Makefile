@@ -56,12 +56,19 @@ CPPFLAGS += $(LUA_CFLAGS)
 SAN_FLAGS = -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 DEBUG_FLAGS = -O0 -g $(SAN_FLAGS)
 
-# Rebuild everything when the flags change (after `make debug`, or WERROR)
+# Every set of flags (make, make debug, WERROR=1, another CC...) builds into a
+# directory of its own, CONFIG, so going back to one doesn't build it again.
+# What lineit and the tests use (lineit, build/modules, build/rt) are copies
+# of the current one's: build/.flags changes with the flags, and copies again.
 FLAGS := $(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS)
 ifneq ($(FLAGS),$(file < build/.flags))
 $(shell mkdir -p build)
 $(file > build/.flags,$(FLAGS))
 endif
+CONFIG := build/config/$(shell sha256sum < build/.flags | cut -c1-12)
+# $(call use,FILE): FILE of CONFIG to $@. A new file, not the old one written
+# over: a running lineit could have it loaded.
+use = cp $(1) $@.tmp && mv -f $@.tmp $@
 
 DEPS += $(RAYLIB_LIB) -lX11 -lm
 DEPS += $(LUA_LIBS)
@@ -81,8 +88,12 @@ RT_H = src/lineit.h src/value.h src/rt/rt.h thirdparty/bt.h/bt.h thirdparty/cum.
 all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
 # -rdynamic exports the li_* functions (src/lineit.h) to the modules
-$(OUT): $(SRC) src/lineit.h src/value.h build/.flags $(RAYLIB_LIB)
+$(CONFIG)/lineit: $(SRC) src/lineit.h src/value.h $(RAYLIB_LIB)
+	@mkdir -p $(@D)
 	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) $(SRC) $(LDFLAGS) $(DEPS) -rdynamic -o $@
+
+$(OUT): $(CONFIG)/lineit build/.flags
+	$(call use,$<)
 
 # The same, without optimizations and with the sanitizers, while working on it
 debug:
@@ -92,20 +103,31 @@ build/modules/%.lua: modules/%.lua
 	@mkdir -p $(dir $@)
 	ln -sfr $< $@
 
-build/modules/%.so: modules/%.c src/lineit.h $(MODULES_H) build/.flags
-	@mkdir -p $(dir $@)
+$(CONFIG)/modules/%.so: modules/%.c src/lineit.h $(MODULES_H)
+	@mkdir -p $(@D)
 	$(CC) $(WARN) $(CFLAGS) -I./src -fPIC -shared $< $(LDFLAGS:-pie=) -o $@
 
-$(RT): src/value.c src/rt/rt.c $(RT_H) build/.flags
-	@mkdir -p build/rt/include
+# Kept: made only through a pattern rule, make would remove them after
+.PRECIOUS: $(CONFIG)/modules/%.so
+
+build/modules/%.so: $(CONFIG)/modules/%.so build/.flags
+	@mkdir -p $(@D)
+	$(call use,$<)
+
+# The headers are the same for every CONFIG: build/rt/include is shared
+$(CONFIG)/rt/liblineit-rt.a: src/value.c src/rt/rt.c $(RT_H)
+	@mkdir -p $(@D) build/rt/include
 	cp $(RT_H) build/rt/include/
-	$(CC) $(WARN) $(CFLAGS) -Ibuild/rt/include -c src/value.c -o build/rt/value.o
-	$(CC) $(WARN) $(CFLAGS) -Ibuild/rt/include -c src/rt/rt.c -o build/rt/rt.o
-	$(AR) rcs $@ build/rt/value.o build/rt/rt.o
+	$(CC) $(WARN) $(CFLAGS) -Ibuild/rt/include -c src/value.c -o $(@D)/value.o
+	$(CC) $(WARN) $(CFLAGS) -Ibuild/rt/include -c src/rt/rt.c -o $(@D)/rt.o
+	$(AR) rcs $@ $(@D)/value.o $(@D)/rt.o
+
+$(RT): $(CONFIG)/rt/liblineit-rt.a build/.flags
+	$(call use,$<)
 
 # examples/*.lua, see tools/gen_examples.c. It includes src/main.c, so it
 # links every other source file but that one.
-GEN_EXAMPLES = build/gen_examples
+GEN_EXAMPLES = $(CONFIG)/gen_examples
 
 examples: $(GEN_EXAMPLES) $(MODULES)
 	./$(GEN_EXAMPLES)
@@ -123,8 +145,8 @@ build/modules/string/reverse.li: $(wildcard examples/package/* examples/package/
 
 # Runs every canvas in examples/ and tests/ and compares it with its .out,
 # see tools/run_tests.c. `make test-update` rewrites the .out files.
-RUN_TESTS = build/run_tests
-TEST_EXTRACT = build/test_extract
+RUN_TESTS = $(CONFIG)/run_tests
+TEST_EXTRACT = $(CONFIG)/test_extract
 TESTS = $(wildcard examples/*.lua tests/*.lua)
 
 test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
