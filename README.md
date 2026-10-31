@@ -45,8 +45,10 @@ the source with the submodules, the docs as PDF, `install.sh` and
 
 ## From source
 
-raylib 6.0 comes with the repository; the rest are system packages. On
-Debian or Ubuntu:
+raylib 6.0 comes with the repository, built with glibc 2.38. With an older
+one (Ubuntu 22.04, Debian 12) `make RAYLIB=source` builds it from its source,
+which also needs `libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev`.
+The rest are system packages. On Debian or Ubuntu:
 
     sudo apt install build-essential pkg-config liblua5.1-0-dev lua5.1 \
         libfontconfig1-dev libx11-dev zlib1g-dev libssl-dev zip

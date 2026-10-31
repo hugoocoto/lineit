@@ -131,6 +131,10 @@ jobs:
     timeout-minutes: 30
     env:
       APPIMAGE_EXTRACT_AND_RUN: 1 # the runners have no FUSE
+      # The raylib in the repo needs glibc 2.38: build it here, with this one
+      # (see the Makefile). It needs the headers of the X11 extensions.
+      RAYLIB: source
+      RAYLIB_PACKAGES: libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,10 +142,10 @@ jobs:
           persist-credentials: false
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES $RAYLIB_PACKAGES
 
-      # The pinned AppImage tools (see the Makefile), checked before every use
-      # whether they come from here or from the download
+      # The pinned AppImage tools and raylib's source (see the Makefile),
+      # checked before every use whether they come from here or from the download
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/downloads

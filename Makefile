@@ -31,9 +31,23 @@ LDFLAGS ?= $(HARDEN_LDFLAGS)
 # and gcc warns about every one that could, however big the buffer.
 WARN = -Wall -Wextra -Wformat=2 -Wshadow -Wno-format-truncation $(if $(WERROR),-Werror)
 
+# raylib: the one in the repo (raylib-6.0_linux_amd64, built with glibc 2.38,
+# so it doesn't link with an older one), or with `make RAYLIB=source` the same
+# version built here from its source (see below), with this machine's glibc.
+# CI builds the AppImage that way, on an old glibc, so it runs on more systems.
+RAYLIB ?= repo
+RAYLIB_VERSION := 6.0
+ifeq ($(RAYLIB),source)
+RAYLIB_INCLUDE := build/raylib-$(RAYLIB_VERSION)/src
+RAYLIB_LIB := build/raylib-$(RAYLIB_VERSION)/src/libraylib.a
+else
+RAYLIB_INCLUDE := ./raylib-$(RAYLIB_VERSION)_linux_amd64/include
+RAYLIB_LIB := ./raylib-$(RAYLIB_VERSION)_linux_amd64/lib/libraylib.a
+endif
+
 # raylib and the libraries in thirdparty/ are -isystem: their warnings are
 # theirs, not lineit's
-CPPFLAGS += -isystem ./raylib-6.0_linux_amd64/include
+CPPFLAGS += -isystem $(RAYLIB_INCLUDE)
 CPPFLAGS += $(addprefix -isystem ./thirdparty/,flag.h conf.h cum.h bt.h)
 CPPFLAGS += $(LUA_CFLAGS)
 
@@ -49,7 +63,7 @@ $(shell mkdir -p build)
 $(file > build/.flags,$(FLAGS))
 endif
 
-DEPS += ./raylib-6.0_linux_amd64/lib/libraylib.a -lX11 -lm
+DEPS += $(RAYLIB_LIB) -lX11 -lm
 DEPS += $(LUA_LIBS)
 DEPS += $(shell pkg-config --libs fontconfig)
 DEPS += -ldl
@@ -60,7 +74,7 @@ DEPS += $(shell pkg-config --libs libcrypto)
 all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
 # -rdynamic exports the li_* functions (src/lineit.h) to the modules
-$(OUT): $(SRC) src/lineit.h src/value.h build/.flags
+$(OUT): $(SRC) src/lineit.h src/value.h build/.flags $(RAYLIB_LIB)
 	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) $(SRC) $(LDFLAGS) $(DEPS) -rdynamic -o $@
 
 # The same, without optimizations and with the sanitizers, while working on it
@@ -291,6 +305,22 @@ $(APPIMAGETOOL):
 $(RUNTIME):
 	@mkdir -p $(@D)
 	curl -fsSL -o $@ https://github.com/AppImage/type2-runtime/releases/download/$(RUNTIME_VERSION)/runtime-x86_64
+
+# raylib from its source, for RAYLIB=source: pinned and checked like the tools
+# above, it ends up in the AppImage too. Its own make, without lineit's
+# variables (make debug's CFLAGS, WERROR...).
+RAYLIB_SHA256 := 2b3ee1e2120c7a0796b33062c7e9a694dd8a8caa56a96319ac8c8ecf54a90d0b
+RAYLIB_TAR := $(DL)/raylib-$(RAYLIB_VERSION).tar.gz
+
+build/raylib-$(RAYLIB_VERSION)/src/libraylib.a: $(RAYLIB_TAR)
+	$(call check,$<,$(RAYLIB_SHA256))
+	rm -rf build/raylib-$(RAYLIB_VERSION)
+	tar -xzf $< -C build
+	env -u MAKEFLAGS -u MFLAGS $(MAKE) -C $(@D) PLATFORM=PLATFORM_DESKTOP RAYLIB_LIBTYPE=STATIC
+
+$(RAYLIB_TAR):
+	@mkdir -p $(@D)
+	curl -fsSL -o $@ https://github.com/raysan5/raylib/archive/refs/tags/$(RAYLIB_VERSION).tar.gz
 
 # Run the tests before every `git push` (scripts/hooks/pre-push)
 hooks:
