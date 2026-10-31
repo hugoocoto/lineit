@@ -59,16 +59,16 @@ On any system with [Docker](https://docs.docker.com/get-docker/), lineit
 runs in a container and shows up in the browser. From the folder you want
 to work in:
 
-    docker run --rm -p 127.0.0.1:6080:6080 -v "$PWD":/work ghcr.io/hugoocoto/lineit
+    docker run --rm -p 127.0.0.1:6080:6080 -v "$PWD":/work ghcr.io/hugoocoto/lineit:nightly
 
 and open <http://localhost:6080>. On Windows, in PowerShell, it's
 `-v "${PWD}:/work"`. The folder is mounted as `/work`: lineit saves your
 canvases there, and keeps its config, your modules and what Compile makes
 in it too (`.config/lineit`, `.local/share/lineit`, `.cache/lineit`), so
 they're still there next time. Arguments after the image go to lineit
-(`... ghcr.io/hugoocoto/lineit -f examples/hello.lua`, a path in the
-folder). `:nightly` is the build of the last commit on main, `:latest` and
-`:v0.0.1` are versions.
+(`... ghcr.io/hugoocoto/lineit:nightly -f examples/hello.lua`, a path in
+the folder). `:nightly` is the build of the last commit on main;
+versions, once there are any, are `:v0.0.1` and so on, and `:latest`.
 
 The catches:
 
