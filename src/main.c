@@ -659,6 +659,7 @@ static struct {
                DRAG_BOX } kind; /* selecting with a box */
         Square *square;         /* wire source */
         int pin;                /* wire source output */
+        bool picked;            /* the wire was plugged in, not a new one */
         Vector2 start;          /* where it started, world space */
         Vector2 last;           /* mouse on the last frame, world space */
 } drag;
@@ -723,6 +724,9 @@ static struct {
         bool searchable;     /* the canvas menu: typing searches the modules */
         float search_w;      /* its width, fixed while it's open so it doesn't move */
         int selected;        /* entry chosen with the arrow keys, -1 if none */
+        /* Opened by dropping a new wire on the canvas: the square (-1 if
+         * not) and output it comes from, wired to the module added */
+        int wire_from, wire_pin;
 } menu;
 
 /* What's typed in the search box of the canvas menu. Its type is defined
@@ -1884,7 +1888,18 @@ static void
 canvas_add_module(int id, void *arg)
 {
         (void) id;
-        square_new(arg, menu.world);
+        Square *s    = square_new(arg, menu.world);
+        Square *from = menu.wire_from >= 0 ? square_get(menu.wire_from) : NULL;
+        if (!s || !from) return;
+
+        /* The wire it was opened with goes to its first input that takes it */
+        Li_Type type = pin_info(from, PART_OUTPUT, menu.wire_pin)->type;
+        for (int i = 0; i < s->inputs.count; i++) {
+                if (s->inputs.items[i].kind != PIN_OPTIONS && types_compatible(type, s->inputs.items[i].type)) {
+                        link_add(from, menu.wire_pin, s, i);
+                        break;
+                }
+        }
 }
 
 static void
@@ -3193,6 +3208,7 @@ menu_open(Menu *m, int id, Vector2 pos)
         menu.world      = GetScreenToWorld2D(pos, camera);
         menu.searchable = false;
         menu.selected   = -1;
+        menu.wire_from  = -1;
 }
 
 static float
@@ -3621,6 +3637,7 @@ update_mouse(void)
                         drag.kind   = DRAG_WIRE;
                         drag.square = h.square;
                         drag.pin    = h.pin;
+                        drag.picked = false;
                         break;
 
                 case PART_INPUT: {
@@ -3629,8 +3646,9 @@ update_mouse(void)
                         Link k = links.items[l];
                         Da_remove(&links, l);
                         if ((drag.square = square_get(k.from))) {
-                                drag.kind = DRAG_WIRE;
-                                drag.pin  = k.from_pin;
+                                drag.kind   = DRAG_WIRE;
+                                drag.pin    = k.from_pin;
+                                drag.picked = true;
                         }
                         break;
                 }
@@ -3707,9 +3725,20 @@ update_mouse(void)
 
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
                 if (drag.kind == DRAG_WIRE) {
-                        /* Dropped outside an input: the wire is discarded */
+                        /* A new wire dropped on the empty canvas opens the
+                         * module search there, to add one wired to it. One
+                         * picked up from an input and dropped elsewhere, or
+                         * dropped on a square, is removed. */
                         Hit h = square_hit(world);
-                        if (h.part == PART_INPUT) link_add(drag.square, drag.pin, h.square, h.pin);
+                        if (h.part == PART_INPUT) {
+                                link_add(drag.square, drag.pin, h.square, h.pin);
+                        } else if (!h.square && !drag.picked && CheckCollisionPointRec(mouse, canvas_rect())) {
+                                canvas_menu_build();
+                                menu_search_open(&canvas_menu, mouse);
+                                text_input_set(menu_search(), "");
+                                menu.wire_from = drag.square->id;
+                                menu.wire_pin  = drag.pin;
+                        }
                 }
                 if (drag.kind == DRAG_BOX) {
                         /* Everything the box touches. A click (no box) just
@@ -4030,6 +4059,13 @@ draw_canvas(void)
         if (drag.kind == DRAG_WIRE) {
                 Color c = type_color(pin_info(drag.square, PART_OUTPUT, drag.pin)->type);
                 draw_wire(pin_pos(drag.square, PART_OUTPUT, drag.pin), world, c);
+        }
+
+        /* The wire the module search was opened with, until it's closed */
+        Square *from = menu.depth && menu.wire_from >= 0 ? square_get(menu.wire_from) : NULL;
+        if (from) {
+                Color c = type_color(pin_info(from, PART_OUTPUT, menu.wire_pin)->type);
+                draw_wire(pin_pos(from, PART_OUTPUT, menu.wire_pin), menu.world, c);
         }
 
         EndMode2D();
@@ -5931,8 +5967,7 @@ bar_compile(void)
         char bin[PATH_MAX];
         const char *name = canvas_path ? GetFileNameWithoutExt(canvas_path) : "canvas";
         if (compile_canvas(name, bin, sizeof bin)) {
-                output_add(TextFormat("Compiled %s", bin), true);
-                set_status("Compiled %s", bin);
+                set_status("Compiled %s", bin); /* to the output too */
         } else {
                 output_panel.open = true;
                 set_status("Could not compile, see the output");
