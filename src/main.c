@@ -234,14 +234,14 @@ conf_check(int err, const char *path)
 static void
 conf_int(Conf conf, int *val, const char *path)
 {
-        conf_check(Conf_get_int(conf, val, path), path);
+        conf_check(Conf_get_int(conf, val, "%s", path), path);
 }
 
 static void
 conf_float(Conf conf, float *val, const char *path)
 {
         double d;
-        int err = Conf_get_num(conf, &d, path);
+        int err = Conf_get_num(conf, &d, "%s", path);
         if (err == CONF_OK) *val = d;
         conf_check(err, path);
 }
@@ -250,7 +250,7 @@ static void
 conf_bool(Conf conf, bool *val, const char *path)
 {
         int b;
-        int err = Conf_get_bool(conf, &b, path);
+        int err = Conf_get_bool(conf, &b, "%s", path);
         if (err == CONF_OK) *val = b;
         conf_check(err, path);
 }
@@ -260,7 +260,7 @@ static void
 conf_str(Conf conf, const char **val, const char *path)
 {
         const char *str;
-        int err = Conf_get_str(conf, &str, path);
+        int err = Conf_get_str(conf, &str, "%s", path);
         if (err == CONF_OK) *val = strdup(str);
         conf_check(err, path);
 }
@@ -511,7 +511,7 @@ static bool
 conf_version(Conf conf, const char *key, Version *v, char *why, int size)
 {
         const char *str;
-        if (Conf_get_str(conf, &str, key) != CONF_OK) {
+        if (Conf_get_str(conf, &str, "%s", key) != CONF_OK) {
                 snprintf(why, size, "it has no %s version (\"MAJOR.MINOR.PATCH\")", key);
                 return false;
         }
