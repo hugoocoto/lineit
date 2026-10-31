@@ -11,6 +11,10 @@ square is a module, and wires carry either values or ticks, the signal that
 controls flow. The same canvas can be run inside the editor or compiled to a
 native program.
 
+![FizzBuzz in the lineit editor: a loop square sends each index to three
+modulo and equal checks, and three ifelse squares pick what to
+print](assets/screenshot.png)
+
 # Disclaimer
 
 This is the Alpha version of the editor/compiler. You must expect breaking
