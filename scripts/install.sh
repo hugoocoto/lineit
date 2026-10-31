@@ -126,8 +126,11 @@ installed() {
         local version
         [ -x "$BINDIR/$NAME" ] || return 0
         # "lineit, version 0.0.1", and the license
-        version=$(APPIMAGE_EXTRACT_AND_RUN=1 "$BINDIR/$NAME" --version 2>/dev/null | head -1) && [ -n "$version" ] &&
-                say "${version##* }" || say unknown
+        if version=$(APPIMAGE_EXTRACT_AND_RUN=1 "$BINDIR/$NAME" --version 2>/dev/null | head -1) && [ -n "$version" ]; then
+                say "${version##* }"
+        else
+                say unknown
+        fi
 }
 
 # The latest release's tag: releases/latest redirects to releases/tag/<tag>,

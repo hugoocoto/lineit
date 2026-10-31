@@ -9,6 +9,7 @@
 #include "raylib.h"
 #include "raymath.h"
 
+#include <assert.h>
 #include <ctype.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -3680,6 +3681,8 @@ update_mouse(void)
 
                         /* Move to the top of the draw order */
                         Da_remove(&squares, square_index(h.square));
+                        /* It made room: the append doesn't grow it */
+                        assert(squares.count < squares.capacity);
                         Da_append(&squares, h.square);
                         drag.kind = DRAG_SQUARE;
                         drag.last = world;
@@ -6750,6 +6753,7 @@ tab_rect(int i)
         float close = measure_text(TAB_CLOSE, fs) + 2 * pad;
         float plus  = measure_text(TAB_NEW, fs) + 4 * pad;
         float total = plus, x = 0;
+        assert(tabs.count >= 0);
         float w[tabs.count + 1];
 
         for (int k = 0; k < tabs.count; k++) {
