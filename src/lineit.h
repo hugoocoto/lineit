@@ -138,6 +138,13 @@ typedef enum Li_Type {
            there) and show them with li_format: "{x: 1, y: 2}". */
 } Li_Type;
 
+/* printf style functions: the compiler checks their formats */
+#if defined(__GNUC__)
+#define LI_PRINTF(fmt, args) __attribute__((format(printf, fmt, args)))
+#else
+#define LI_PRINTF(fmt, args)
+#endif
+
 /* What travels through a wire */
 typedef struct Li_Value {
         Li_Type type;
@@ -196,11 +203,11 @@ void *li_data(Li_Node *n);
 void li_set_data(Li_Node *n, void *data);
 
 /* Text drawn inside the square, printf style */
-void li_text(Li_Node *n, const char *fmt, ...);
+void li_text(Li_Node *n, const char *fmt, ...) LI_PRINTF(2, 3);
 
 /* A line in the output panel of the editor (and stdout), printf style.
    '\n' in it starts new lines. */
-void li_print(Li_Node *n, const char *fmt, ...);
+void li_print(Li_Node *n, const char *fmt, ...) LI_PRINTF(2, 3);
 
 /* Seconds since the program started */
 double li_time(void);

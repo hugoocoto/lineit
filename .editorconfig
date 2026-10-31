@@ -1,0 +1,35 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h}]
+indent_style = space
+indent_size = 8
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+# Canvases, types and the config: lineit writes them with 8
+[*.lua]
+indent_style = space
+indent_size = 8
+
+[*.md]
+indent_style = space
+indent_size = 4
+
+[*.typ]
+indent_style = space
+indent_size = 2
+
+[{*.sh,tools/lineit-pack,scripts/hooks/*}]
+indent_style = space
+indent_size = 8
+
+[*.yml]
+indent_style = space
+indent_size = 2

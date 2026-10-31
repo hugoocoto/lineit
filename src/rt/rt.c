@@ -45,7 +45,7 @@ li_input_options(Li_Node *n, const char *name, const char *options, int chosen)
         Rt_Pin *p  = &n->inputs.items[i];
         char *list = strdup(options ? options : ""), *save = NULL;
         for (char *o = strtok_r(list, "|", &save); o; o = strtok_r(NULL, "|", &save)) {
-                p->options = realloc(p->options, (p->option_count + 1) * sizeof *p->options);
+                p->options                    = realloc(p->options, (p->option_count + 1) * sizeof *p->options);
                 p->options[p->option_count++] = strdup(o);
         }
         free(list);
@@ -218,15 +218,15 @@ static int scope;
 static void
 locals_swap(int s)
 {
-        Locals *l    = &locals[s];
-        VarList v    = vars;
-        BT *ls       = lists, *ts = trees;
-        vars         = l->vars;
-        lists        = l->lists;
-        trees        = l->trees;
-        l->vars      = v;
-        l->lists     = ls;
-        l->trees     = ts;
+        Locals *l = &locals[s];
+        VarList v = vars;
+        BT *ls = lists, *ts = trees;
+        vars     = l->vars;
+        lists    = l->lists;
+        trees    = l->trees;
+        l->vars  = v;
+        l->lists = ls;
+        l->trees = ts;
 }
 
 int
@@ -278,7 +278,9 @@ rt_make_eval(Li_Node *n)
         Li_Value made = { .type = n->type, .p = r };
         Li_Value old  = { .type = n->type, .p = n->data };
         if (n->data && value_equal(old, made)) {
-                value_drop(made);
+                for (int i = 0; i < r->count; i++)
+                        value_drop(r->fields[i]);
+                free(r);
         } else {
                 n->data = r;
                 value_drop(old);

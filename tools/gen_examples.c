@@ -1,4 +1,4 @@
-/* Builds examples/*.lua: places the squares and wires with the real modules
+/* Builds examples/X.lua: places the squares and wires with the real modules
  * and writes them with the editor's own canvas_save, so pin indices can't be
  * wrong. Run it with `make examples` from the repo root (it reads config.lua
  * and the modules from build/modules). It opens a hidden window: square
@@ -90,7 +90,7 @@ save(const char *name, const char *description)
         }
         fprintf(out, "--\n-- Open it with: ./lineit -f %s, then press Run.\n", path);
         char line[4096];
-        fgets(line, sizeof line, in); /* skip "-- lineit canvas" */
+        if (!fgets(line, sizeof line, in)) *line = '\0'; /* skip "-- lineit canvas" */
         while (fgets(line, sizeof line, in))
                 fputs(line, out);
         fclose(in), fclose(out), remove(tmp);
@@ -267,7 +267,7 @@ fibonacci(void)
 int
 main(void)
 {
-        load_config("config.lua");
+        config_start("config.lua");
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         SetTraceLogLevel(LOG_WARNING);
         InitWindow(320, 240, "gen");

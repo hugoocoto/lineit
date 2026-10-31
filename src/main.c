@@ -1,5 +1,5 @@
 #define _POSIX_C_SOURCE 200809L /* strdup, strtok_r */
-#define _XOPEN_SOURCE   700     /* realpath */
+#define _XOPEN_SOURCE 700       /* realpath */
 #define _DEFAULT_SOURCE         /* SOCK_NONBLOCK, struct timeval */
 #define INCLUDE_CONF_IMPLEMENTATION
 #include "conf.h"
@@ -14,7 +14,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fontconfig/fontconfig.h>
-#include <libgen.h>
 #include <limits.h>
 #include <math.h>
 #include <poll.h>
@@ -31,9 +30,9 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#include "value.h"
+#include <openssl/evp.h>
 
-#define CONFIG_DEFAULT "config.lua"
+#include "value.h"
 
 #define countof(a) ((int) (sizeof(a) / sizeof *(a)))
 
@@ -111,12 +110,13 @@ static struct {
                 int spacing;
         } font;
         struct {
-                const char *path;
-                const char *source; /* where Make subgraph writes them */
+                const char *path;   /* loaded, read only */
+                const char *user;   /* loaded too, and where Make subgraph and New type write */
+                const char *source; /* their C, for Compile */
                 const char *cache;  /* packages built here, see package_build */
         } modules;
         struct {
-                const char *path; /* --file overrides it */
+                const char *path;        /* --file overrides it */
                 bool autosave;           /* at start, File > Autosave toggles it */
                 float autosave_interval; /* seconds */
         } save;
@@ -179,7 +179,7 @@ static struct {
         .bar     = { .height = 32, .font_size = 20 },
         .menu    = { .font_size = 20, .padding = 8 },
         .font    = { .name = "Iosevka NFM", .spacing = 0 },
-        .modules = { .path = "build/modules", .source = "modules", .cache = "build/cache" },
+        .modules = { .path = "build/modules", .user = "modules", .source = "modules", .cache = "build/cache" },
         .save    = { .path = "canvas.lua", .autosave = false, .autosave_interval = 30 },
         .output  = { .height = 200, .font_size = 16, .lines = 2000, .clear_on_run = false },
         .compile = { .output = "build/bin", .runtime = "build/rt", .cc = "cc", .cflags = "-O2", .objcopy = "objcopy" },
@@ -280,6 +280,100 @@ conf_color(Conf conf, Color *val, const char *path)
         conf_check(err, path);
 }
 
+/* ---- Paths ---- */
+
+/* Where lineit finds its modules, its runtime and its config, if the config
+ * doesn't say. It depends on where the binary is:
+ *
+ *   in the source tree   ./lineit, next to src/lineit.h: the tree, as make
+ *                        leaves it, and its config.lua
+ *   installed            PREFIX/bin/lineit, with PREFIX/lib/lineit (make
+ *                        install, the AppImage): PREFIX/lib/lineit and
+ *                        PREFIX/share/lineit for what comes with it, and
+ *                        the XDG folders for the user's own: the config
+ *                        ($XDG_CONFIG_HOME/lineit/config.lua), modules,
+ *                        compiled programs and the package cache
+ *   anywhere else        the built-in defaults, relative to the current
+ *                        folder (the tests)
+ *
+ * A config.lua in the current folder is never read on its own: it's Lua, so
+ * running lineit in a folder someone gave you would run their code. Use -c
+ * for that one. */
+
+static char config_default[PATH_MAX];
+
+/* $VAR, or $HOME/HOME_DIR if it's not set, plus /lineit/WHAT, in BUF */
+static const char *
+xdg_path(char *buf, int size, const char *var, const char *home_dir, const char *what)
+{
+        const char *v    = getenv(var);
+        const char *home = getenv("HOME");
+        if (v && *v == '/')
+                snprintf(buf, size, "%s/lineit/%s", v, what);
+        else
+                snprintf(buf, size, "%s/%s/lineit/%s", home ? home : "", home_dir, what);
+        return buf;
+}
+
+/* Set the path defaults of cfg, before it's copied to cfg_defaults */
+static void
+paths_default(void)
+{
+        static char path[PATH_MAX], user[PATH_MAX], source[PATH_MAX], cache[PATH_MAX];
+        static char output[PATH_MAX], runtime[PATH_MAX];
+        char exe[PATH_MAX], dir[PATH_MAX];
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+
+        xdg_path(config_default, sizeof config_default, "XDG_CONFIG_HOME", ".config", "config.lua");
+        if (n <= 0) return;
+        exe[n] = '\0';
+        snprintf(dir, sizeof dir, "%s", exe);
+        *strrchr(dir, '/') = '\0';
+
+        if (FileExists(TextFormat("%s/src/lineit.h", dir))) {
+                snprintf(path, sizeof path, "%s/build/modules", dir);
+                snprintf(user, sizeof user, "%s/modules", dir);
+                snprintf(source, sizeof source, "%s/modules", dir);
+                snprintf(cache, sizeof cache, "%s/build/cache", dir);
+                snprintf(output, sizeof output, "%s/build/bin", dir);
+                snprintf(runtime, sizeof runtime, "%s/build/rt", dir);
+                snprintf(config_default, sizeof config_default, "%s/config.lua", dir);
+        } else if (DirectoryExists(TextFormat("%s/../lib/lineit", dir))) {
+                char prefix[PATH_MAX];
+                if (!realpath(TextFormat("%s/..", dir), prefix)) return;
+                snprintf(path, sizeof path, "%s/lib/lineit/modules", prefix);
+                snprintf(runtime, sizeof runtime, "%s/lib/lineit/rt", prefix);
+                snprintf(source, sizeof source, "%s/share/lineit/modules", prefix);
+                xdg_path(user, sizeof user, "XDG_DATA_HOME", ".local/share", "modules");
+                xdg_path(output, sizeof output, "XDG_DATA_HOME", ".local/share", "bin");
+                xdg_path(cache, sizeof cache, "XDG_CACHE_HOME", ".cache", "packages");
+                xdg_path(config_default, sizeof config_default, "XDG_CONFIG_HOME", ".config", "config.lua");
+        } else {
+                xdg_path(config_default, sizeof config_default, "XDG_CONFIG_HOME", ".config", "config.lua");
+                return;
+        }
+        cfg.modules.path    = path;
+        cfg.modules.user    = user;
+        cfg.modules.source  = source;
+        cfg.modules.cache   = cache;
+        cfg.compile.output  = output;
+        cfg.compile.runtime = runtime;
+}
+
+static bool load_config(const char *path);
+
+/* Paths and the config at start: the one given with -c (GIVEN), or the
+ * default, which may not be there. Returns its path. */
+static const char *
+config_start(const char *given)
+{
+        paths_default();
+        cfg_defaults     = cfg;
+        const char *path = given ? given : config_default;
+        if (given || FileExists(path)) load_config(path);
+        return path;
+}
+
 /* Returns false if PATH can't be read (missing, or not valid Lua) */
 static bool
 load_config(const char *path)
@@ -321,6 +415,7 @@ load_config(const char *path)
         conf_int(conf, &cfg.font.spacing, "font.spacing");
 
         conf_str(conf, &cfg.modules.path, "modules.path");
+        conf_str(conf, &cfg.modules.user, "modules.user");
         conf_str(conf, &cfg.modules.source, "modules.source");
         conf_str(conf, &cfg.modules.cache, "modules.cache");
         conf_str(conf, &cfg.save.path, "save.path");
@@ -506,13 +601,13 @@ struct Li_Node {
         float label_w;    /* longest input name, cached with side */
         float field_w;    /* widest input field, cached with side */
         bool selected;
-        double flash;     /* last time a tick reached it */
-        double fired[16]; /* last time each tick output fired, for the tooltip */
-        void *data;       /* module state, see li_set_data */
-        char text[64];    /* drawn inside, see li_text */
-        bool evaluating;  /* guards module_eval against cycles */
-        int ir;           /* its node in the program, see Program */
-        struct Graph *graph; /* a subgraph: its own canvas, see Subgraphs */
+        double flash;          /* last time a tick reached it */
+        double fired[16];      /* last time each tick output fired, for the tooltip */
+        void *data;            /* module state, see li_set_data */
+        char text[64];         /* drawn inside, see li_text */
+        bool evaluating;       /* guards module_eval against cycles */
+        int ir;                /* its node in the program, see Program */
+        struct Graph *graph;   /* a subgraph: its own canvas, see Subgraphs */
         struct Li_Node *owner; /* subgraph/input and subgraph/output in one: the subgraph */
         int port;              /* and which of its inputs or outputs they are */
 };
@@ -528,15 +623,16 @@ typedef struct Link {
 /* A .so found in the modules dir. It's not kept open: each square opens
  * its own copy. */
 struct Module {
-        char *path;        /* the .so, or the .lua of a subgraph. NULL for built-in modules */
+        char *path;               /* the .so, or the .lua of a subgraph. NULL for built-in modules */
         const ModuleFns *builtin; /* callbacks in the editor itself instead of a .so */
         char *lib;                /* a package (.li): its .so for here, taken out (see Packages) */
         Li_Type type;             /* make_ and break_ of a custom type: which (see Types) */
-        char *name;        /* path inside the modules dir, no extension: "math/add" */
-        const char *label; /* last part of the name: "add" */
-        long long mtime;   /* of the .so loaded, ns, to see when it's rebuilt */
-        bool gone;         /* the .so was removed: not in the menu, its squares still work */
-        bool seen;         /* found in the last scan */
+        char *name;               /* path inside the modules dir, no extension: "math/add" */
+        const char *label;        /* last part of the name: "add" */
+        long long mtime;          /* of the .so loaded, ns, to see when it's rebuilt */
+        int dir;                  /* found in modules_dirs()[dir] */
+        bool gone;                /* the .so was removed: not in the menu, its squares still work */
+        bool seen;                /* found in the last scan */
 };
 
 typedef enum Part {
@@ -759,7 +855,7 @@ static struct {
         bool open;
         int scroll; /* lines up from the newest one */
         int unseen; /* added while it was closed */
-} output;
+} output_panel;
 
 /* Add TEXT, one line per '\n' in it */
 static void
@@ -769,39 +865,39 @@ output_add(const char *text, bool info)
         do {
                 const char *nl = strchr(p, '\n');
                 int len        = nl ? (int) (nl - p) : (int) strlen(p);
-                Da_append(&output.lines, (OutputLine) { .text = strndup(p, len), .info = info });
-                if (!output.open) output.unseen++;
-                if (output.scroll) output.scroll++; /* scrolled up: keep what's shown */
+                Da_append(&output_panel.lines, (OutputLine) { .text = strndup(p, len), .info = info });
+                if (!output_panel.open) output_panel.unseen++;
+                if (output_panel.scroll) output_panel.scroll++; /* scrolled up: keep what's shown */
                 p += len + (nl != NULL);
         } while (*p);
 
         /* Oldest first out. Remove in one go: the list can be long. */
-        int extra = output.lines.count - cfg.output.lines;
+        int extra = output_panel.lines.count - cfg.output.lines;
         if (extra > 0) {
                 for (int i = 0; i < extra; i++)
-                        free(output.lines.items[i].text);
-                memmove(output.lines.items, output.lines.items + extra, (output.lines.count - extra) * sizeof *output.lines.items);
-                output.lines.count -= extra;
+                        free(output_panel.lines.items[i].text);
+                memmove(output_panel.lines.items, output_panel.lines.items + extra, (output_panel.lines.count - extra) * sizeof *output_panel.lines.items);
+                output_panel.lines.count -= extra;
         }
 }
 
 static void
 output_clear(void)
 {
-        Da_foreach(l, output.lines)
+        Da_foreach(l, output_panel.lines)
         {
                 free(l->text);
         }
-        output.lines.count = 0;
-        output.scroll      = 0;
-        output.unseen      = 0;
+        output_panel.lines.count = 0;
+        output_panel.scroll      = 0;
+        output_panel.unseen      = 0;
 }
 
 /* The panel, above the bar, while it's open */
 static Rectangle
 output_rect(void)
 {
-        float h = output.open ? Min(cfg.output.height, GetScreenHeight() - cfg.bar.height - 40) : 0;
+        float h = output_panel.open ? Min(cfg.output.height, GetScreenHeight() - cfg.bar.height - 40) : 0;
         return (Rectangle) { 0, GetScreenHeight() - cfg.bar.height - h, GetScreenWidth(), h };
 }
 
@@ -1602,7 +1698,7 @@ module_open(const char *path, ModuleFns *fn)
         fn->load    = (void (*)(Li_Node *, const char *)) dlsym(handle, "module_load");
         fn->draw    = (void (*)(Li_Node *)) dlsym(handle, "module_draw");
         fn->start   = (void (*)(Li_Node *)) dlsym(handle, "module_start");
-        fn->emit    = (const char *(*) (Li_Node *) ) dlsym(handle, "module_emit");
+        fn->emit    = (const char *(*)(Li_Node *) ) dlsym(handle, "module_emit");
         if (!fn->init) {
                 fprintf(stderr, "modules: %s has no module_init\n", path);
                 dlclose(handle);
@@ -1624,9 +1720,11 @@ copy_file(const char *from, const char *to)
         FILE *out = in ? fopen(to, "wb") : NULL;
 
         if (in && out) {
-                ok = true;
-                while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0)
+                /* A short read is the end, or an error: ferror says which */
+                do {
+                        n  = fread(buf, 1, sizeof buf, in);
                         ok = fwrite(buf, 1, n, out) == n;
+                } while (ok && n == sizeof buf);
                 ok = ok && !ferror(in);
         }
         if (out && fclose(out) != 0) ok = false;
@@ -1956,6 +2054,12 @@ now_ns(void)
  *                  object needs to link: -lcurl...)
  *   LICENSE        for people, not read here
  *
+ * manifest.lua also has the SHA-256 of every other file in it (sha256,
+ * written by lineit-pack). Nothing in a package is used until it matches:
+ * a file that doesn't, or that isn't in the list, and the package isn't
+ * loaded, built or compiled. It finds a broken or changed file, not who
+ * made it: whoever can change the files can change manifest.lua too.
+ *
  * The library for this platform is taken out to tmp_dir once, and squares
  * copy it from there like any other .so. A package without this platform
  * is built from its src/ with its Makefile, once (see package_build). */
@@ -2036,13 +2140,13 @@ zip_member(const unsigned char *zip, size_t size, const char *name, size_t *len)
         if (!zip_directory(zip, size, &at, &n)) return NULL;
         for (unsigned e = 0; e < n; e++) {
                 if (at + 46 > size || le32(zip + at) != 0x02014b50) return NULL;
-                unsigned method  = le16(zip + at + 10);
+                unsigned method   = le16(zip + at + 10);
                 unsigned long crc = le32(zip + at + 16);
-                size_t csize     = le32(zip + at + 20);
-                size_t usize     = le32(zip + at + 24);
-                unsigned nlen    = le16(zip + at + 28);
-                size_t local     = le32(zip + at + 42);
-                bool match       = at + 46 + nlen <= size && nlen == strlen(name) && !memcmp(zip + at + 46, name, nlen);
+                size_t csize      = le32(zip + at + 20);
+                size_t usize      = le32(zip + at + 24);
+                unsigned nlen     = le16(zip + at + 28);
+                size_t local      = le32(zip + at + 42);
+                bool match        = at + 46 + nlen <= size && nlen == strlen(name) && !memcmp(zip + at + 46, name, nlen);
                 at += 46 + nlen + le16(zip + at + 30) + le16(zip + at + 32);
                 if (!match) continue;
 
@@ -2075,9 +2179,9 @@ zip_member(const unsigned char *zip, size_t size, const char *name, size_t *len)
 static bool
 write_if_changed(const char *path, const void *data, size_t len)
 {
-        int size            = 0;
-        unsigned char *old  = FileExists(path) ? LoadFileData(path, &size) : NULL;
-        bool same           = old && (size_t) size == len && !memcmp(old, data, len);
+        int size           = 0;
+        unsigned char *old = FileExists(path) ? LoadFileData(path, &size) : NULL;
+        bool same          = old && (size_t) size == len && !memcmp(old, data, len);
         if (old) UnloadFileData(old);
         if (same) return true;
         FILE *f = fopen(path, "wb");
@@ -2149,15 +2253,140 @@ run_to_buf(const char *cmd, char *buf, int size)
         return pclose(p) == 0;
 }
 
+/* The SHA-256 of the LEN bytes of DATA, as sha256sum prints it */
+static bool
+sha256_hex(const void *data, size_t len, char hex[65])
+{
+        unsigned char md[EVP_MAX_MD_SIZE];
+        unsigned n = 0;
+
+        if (!EVP_Digest(data, len, md, &n, EVP_sha256(), NULL) || n != 32) return false;
+        for (unsigned i = 0; i < n; i++)
+                snprintf(hex + 2 * i, 3, "%02x", md[i]);
+        return true;
+}
+
+typedef struct Sum {
+        char *file;
+        char sum[65];
+} Sum;
+
+typedef Da(Sum) SumList;
+
+static void
+sums_free(SumList *sums)
+{
+        Da_foreach(s, *sums)
+        {
+                free(s->file);
+        }
+        Da_destroy(sums);
+}
+
+static bool package_manifest(const unsigned char *zip, size_t size, Conf *conf, char *why, int why_size);
+static bool package_sum_ok(SumList *sums, const char *name, const void *data, size_t len, char *why, int why_size);
+
+/* The sha256 list of the manifest of the package ZIP, in SUMS (free them
+ * with sums_free). False with the reason in WHY if there's none, if it
+ * doesn't name every file of the package but manifest.lua, and only them,
+ * or if a file doesn't match it. */
+static bool
+package_sums(const unsigned char *zip, size_t size, SumList *sums, char *why, int why_size)
+{
+        NameList names = { 0 };
+        Conf conf;
+        int n   = 0;
+        bool ok = false;
+
+        if (!package_manifest(zip, size, &conf, why, why_size)) return false;
+        if (Conf_get_len(conf, &n, "sha256") != CONF_OK || n <= 0) {
+                snprintf(why, why_size, "no sha256 in its manifest.lua, make it again with tools/lineit-pack");
+                Conf_close(conf);
+                return false;
+        }
+        for (int i = 1; i <= n; i++) {
+                const char *file, *sum;
+                if (Conf_get_str(conf, &file, "sha256.%d.file", i) != CONF_OK ||
+                    Conf_get_str(conf, &sum, "sha256.%d.sum", i) != CONF_OK || strlen(sum) != 64 ||
+                    strspn(sum, "0123456789abcdef") != 64) {
+                        snprintf(why, why_size, "entry %d of sha256 in its manifest.lua is broken", i);
+                        Conf_close(conf);
+                        goto done;
+                }
+                Sum s = { .file = strdup(file) };
+                memcpy(s.sum, sum, sizeof s.sum);
+                Da_append(sums, s);
+        }
+        Conf_close(conf);
+
+        int files = 0;
+        zip_names(zip, size, &names);
+        Da_foreach(name, names)
+        {
+                size_t len = strlen(*name);
+                if (!len || (*name)[len - 1] == '/' || !strcmp(*name, "manifest.lua")) continue;
+                bool listed = false;
+                Da_foreach(s, *sums)
+                {
+                        listed = listed || !strcmp(s->file, *name);
+                }
+                if (!listed) {
+                        snprintf(why, why_size, "%s is not in the sha256 of its manifest.lua", *name);
+                        goto done;
+                }
+                size_t mlen;
+                unsigned char *data = zip_member(zip, size, *name, &mlen);
+                bool match          = data && package_sum_ok(sums, *name, data, mlen, why, why_size);
+                free(data);
+                if (!match) {
+                        if (!data) snprintf(why, why_size, "%s is broken", *name);
+                        goto done;
+                }
+                files++;
+        }
+        if (files != sums->count) {
+                snprintf(why, why_size, "the sha256 of its manifest.lua names files it doesn't have");
+                goto done;
+        }
+        ok = true;
+done:
+        Da_foreach(name, names)
+        {
+                free(*name);
+        }
+        Da_destroy(&names);
+        if (!ok) sums_free(sums);
+        return ok;
+}
+
+/* Whether the LEN bytes of DATA, the file NAME of a package, are what its
+ * SUMS say. False with the reason in WHY if not. */
+static bool
+package_sum_ok(SumList *sums, const char *name, const void *data, size_t len, char *why, int why_size)
+{
+        char hex[65];
+        Da_foreach(s, *sums)
+        {
+                if (strcmp(s->file, name)) continue;
+                if (sha256_hex(data, len, hex) && !strcmp(hex, s->sum)) return true;
+                snprintf(why, why_size, "%s doesn't match its SHA-256 in manifest.lua: broken or changed", name);
+                return false;
+        }
+        snprintf(why, why_size, "%s is not in the sha256 of its manifest.lua", name);
+        return false;
+}
+
 /* Takes the package ZIP out to DIR, but lib/ (built libraries). False with
  * the reason in WHY if it can't, or if it has no Makefile to build it. */
 static bool
 package_extract(const unsigned char *zip, size_t zsize, const char *dir, char *why, int why_size)
 {
         NameList names = { 0 };
+        SumList sums   = { 0 };
         char path[PATH_MAX * 2];
         bool ok = false, makefile = false;
 
+        if (!package_sums(zip, zsize, &sums, why, why_size)) return false;
         zip_names(zip, zsize, &names);
         Da_foreach(name, names)
         {
@@ -2195,6 +2424,7 @@ done:
                 free(*name);
         }
         Da_destroy(&names);
+        sums_free(&sums);
         return ok;
 }
 
@@ -2204,11 +2434,11 @@ static bool
 package_make(const char *dir, const char *rule, const char *out)
 {
         char qdir[PATH_MAX * 4 + 8], qout[PATH_MAX * 4 + 8], qinc[PATH_MAX * 4 + 8], qcc[1024], qflags[1024];
-        char include[PATH_MAX], cmd[PATH_MAX * 16];
+        char rel[PATH_MAX], include[PATH_MAX], cmd[PATH_MAX * 16];
 
         /* lineit.h, with the runtime of Compile: `make` puts it there */
-        snprintf(include, sizeof include, "%s/include", cfg.compile.runtime);
-        if (!realpath(include, include)) snprintf(include, sizeof include, "%s/include", cfg.compile.runtime);
+        snprintf(rel, sizeof rel, "%s/include", cfg.compile.runtime);
+        if (!realpath(rel, include)) snprintf(include, sizeof include, "%s", rel);
         shell_quote(qdir, sizeof qdir, dir);
         shell_quote(qout, sizeof qout, out);
         shell_quote(qinc, sizeof qinc, include);
@@ -2298,6 +2528,7 @@ package_lib(const char *path, char *why, int why_size)
         const char *str;
         Conf conf;
         Version api;
+        SumList sums = { 0 };
         bool has_api = false;
 
         if (!zip || !tmp_dir_make()) {
@@ -2311,6 +2542,10 @@ package_lib(const char *path, char *why, int why_size)
 
         if (!has_api) goto done; /* why says it */
         if (!version_ok(api, "package", why, why_size)) goto done;
+        /* All of it, even when its library is built already (the cache is
+         * by its CRC): one that doesn't match isn't used at all. From here
+         * on, its files are what manifest.lua says. */
+        if (!package_sums(zip, size, &sums, why, why_size)) goto done;
         if (!*member_name) {
                 lib = package_build(path, zip, size, why, why_size);
                 goto done;
@@ -2328,6 +2563,7 @@ package_lib(const char *path, char *why, int why_size)
         lib = strdup(tmp);
 done:
         free(member);
+        sums_free(&sums);
         UnloadFileData(zip);
         return lib;
 }
@@ -2376,7 +2612,7 @@ module_menu_build(void)
         }
 }
 
-static void set_status(const char *fmt, ...);
+static void set_status(const char *fmt, ...) LI_PRINTF(1, 2);
 static Module *module_find(const char *name);
 static void module_reload_squares(Module *m);
 
@@ -2385,8 +2621,27 @@ static void graph_builtins(void);
 static bool canvas_check(const char *path, char *why, int size);
 static bool square_uses(Square *s, Module *m);
 
-/* Where load_modules found them */
+/* Where modules are: modules.path, read when lineit starts, then
+ * modules.user, as the config says now. A module in both is the first's. */
 static const char *modules_dir;
+
+static int
+modules_dirs(const char *dirs[2])
+{
+        dirs[0] = modules_dir;
+        dirs[1] = cfg.modules.user;
+        return dirs[1] && *dirs[1] && strcmp(dirs[0], dirs[1]) ? 2 : 1;
+}
+
+/* "DIR/math/add.so" -> "math/add", to free. EXT: the length of its extension. */
+static char *
+module_name_of(const char *path, const char *dir, size_t ext)
+{
+        const char *rel = path + strlen(dir);
+        while (*rel == '/')
+                rel++;
+        return strndup(rel, strlen(rel) - ext);
+}
 
 /* A .so is only used once it has been left alone this long: make may be
  * writing it */
@@ -2481,7 +2736,9 @@ type_make_eval(Li_Node *n)
         Li_Value now = { .type = t, .p = r };
         Li_Value old = { .type = t, .p = n->data };
         if (n->data && value_equal(old, now)) {
-                value_drop(now);
+                for (int i = 0; i < r->count; i++)
+                        value_drop(r->fields[i]);
+                free(r);
         } else {
                 n->data = r;
                 value_drop(old);
@@ -2600,7 +2857,7 @@ type_read(const char *path, TypeDef *d, char **known, int nknown, char *why, int
                 }
                 Da_append(&d->fields, (Field) { strdup(nbuf), strdup(type) });
         }
-        d->color = type_color_for(path);
+        d->color    = type_color_for(path);
         double c[4] = { 0, 0, 0, 255 };
         int nc      = 0;
         if (ok && Conf_get_len(conf, &nc, "color") == CONF_OK && nc >= 3) {
@@ -2642,28 +2899,42 @@ type_module(TypeDef *d, Li_Type t, const char *what, const char *path, const Mod
         return m;
 }
 
-/* Every .type.lua under modules_dir: new ones get their modules, changed
+/* Every .type.lua in the modules dirs: new ones get their modules, changed
  * ones are read again and their squares made again. Like modules_scan,
  * which calls it. */
 static void
 types_scan(bool reload, bool *menu_changed)
 {
-        long long now      = now_ns();
-        FilePathList files = LoadDirectoryFilesEx(modules_dir, ".lua", true);
-        Da(char *) known   = { 0 };
+        long long now = now_ns();
+        const char *dirs[2];
+        int ndirs        = modules_dirs(dirs);
+        Da(char *) known = { 0 }; /* their names */
+        Da(char *) paths = { 0 }; /* and their files, the first dir's if in both */
 
-        for (unsigned i = 0; i < files.count; i++) {
-                if (!is_type_file(files.paths[i])) continue;
-                const char *rel = files.paths[i] + strlen(modules_dir);
-                while (*rel == '/')
-                        rel++;
-                Da_append(&known, strndup(rel, strlen(rel) - 9));
+        for (int di = 0; di < ndirs; di++) {
+                if (!DirectoryExists(dirs[di])) continue;
+                FilePathList files = LoadDirectoryFilesEx(dirs[di], ".lua", true);
+                for (unsigned i = 0; i < files.count; i++) {
+                        if (!is_type_file(files.paths[i])) continue;
+                        char *name = module_name_of(files.paths[i], dirs[di], 9);
+                        bool dup   = false;
+                        Da_foreach(n, known)
+                        {
+                                dup = dup || !strcmp(*n, name);
+                        }
+                        if (dup) {
+                                free(name);
+                                continue;
+                        }
+                        Da_append(&known, name);
+                        Da_append(&paths, strdup(files.paths[i]));
+                }
+                UnloadDirectoryFiles(files);
         }
 
-        for (unsigned i = 0, k = 0; i < files.count; i++) {
-                const char *path = files.paths[i];
-                if (!is_type_file(path)) continue;
-                const char *name = known.items[k++];
+        for (int k = 0; k < known.count; k++) {
+                const char *path = paths.items[k];
+                const char *name = known.items[k];
                 long long mtime  = file_mtime(path);
                 TypeDef *d       = NULL;
                 char make_name[PATH_MAX], break_name[PATH_MAX], why[256];
@@ -2701,9 +2972,9 @@ types_scan(bool reload, bool *menu_changed)
                 d->fields = read.fields;
                 d->color  = read.color;
 
-                Li_Type t = LI_TYPE_COUNT + type_index(d);
-                make      = type_module(d, t, "make", path, &type_make_fns, menu_changed);
-                brk       = type_module(d, t, "break", path, &type_break_fns, menu_changed);
+                Li_Type t   = LI_TYPE_COUNT + type_index(d);
+                make        = type_module(d, t, "make", path, &type_make_fns, menu_changed);
+                brk         = type_module(d, t, "break", path, &type_break_fns, menu_changed);
                 make->mtime = brk->mtime = mtime;
                 make->seen = brk->seen = true;
                 if (make->gone || brk->gone) *menu_changed = true;
@@ -2716,12 +2987,12 @@ types_scan(bool reload, bool *menu_changed)
                         set_status("Added type %s", name);
                 }
         }
-        Da_foreach(n, known)
-        {
-                free(*n);
+        for (int k = 0; k < known.count; k++) {
+                free(known.items[k]);
+                free(paths.items[k]);
         }
         Da_destroy(&known);
-        UnloadDirectoryFiles(files);
+        Da_destroy(&paths);
 }
 
 static void
@@ -2737,7 +3008,85 @@ types_free(void)
 }
 
 
-/* Look at every .so under modules_dir. The first time, load them all. Later
+/* PATH, found in DIR (modules_dirs()[DI]): a new module, a rebuilt one or
+ * one that hasn't changed. See modules_scan. */
+static void
+module_scan_file(const char *path, const char *dir, int di, bool reload, long long now, bool *menu_changed)
+{
+        if (is_type_file(path)) return; /* types_scan's */
+        long long mtime = file_mtime(path);
+        bool settled    = !reload || now - mtime > MODULE_SETTLE_NS;
+
+        char *name    = module_name_of(path, dir, strlen(GetFileExtension(path)));
+        Module *m     = module_find(name);
+        bool graph    = IsFileExtension(path, ".lua");
+        bool package  = IsFileExtension(path, ".li");
+        char *lib     = NULL; /* of the package */
+        char why[256] = "doesn't load";
+
+        if (m && m->dir != di) { /* the one in the first dir */
+                free(name);
+                return;
+        }
+        if (m) {
+                m->seen = true;
+                if (m->gone) {
+                        m->gone       = false;
+                        *menu_changed = true;
+                }
+                free(name);
+                if (mtime == m->mtime || !settled) return;
+                m->mtime = mtime; /* a broken build is tried again when it changes */
+                if ((package && !(lib = package_lib(path, why, sizeof why))) ||
+                    (graph && !canvas_check(path, why, sizeof why))) {
+                        set_status("Module %s: %s, keeping the old one", m->name, why);
+                        return;
+                }
+                if (!graph && !module_check(lib ? lib : path)) {
+                        set_status("Module %s doesn't load, keeping the old one", m->name);
+                        if (lib) remove(lib);
+                        free(lib);
+                        return;
+                }
+                if (lib) {
+                        if (m->lib) remove(m->lib);
+                        free(m->lib);
+                        m->lib = lib;
+                }
+                module_reload_squares(m);
+                set_status("Reloaded %s", m->name);
+                return;
+        }
+
+        if (!settled) {
+                free(name);
+                return;
+        }
+        if (package) lib = package_lib(path, why, sizeof why);
+        if ((package && !lib) || (graph && !canvas_check(path, why, sizeof why)) ||
+            (!graph && !module_check(lib ? lib : path))) {
+                fprintf(stderr, "modules: %s skipped: %s\n", path, why);
+                if (reload) set_status("Module %s: %s", name, why);
+                if (lib) remove(lib);
+                free(lib);
+                free(name);
+                return;
+        }
+        m          = calloc(1, sizeof *m);
+        m->lib     = lib;
+        m->path    = strdup(path);
+        m->builtin = graph ? &graph_fns : NULL;
+        m->name    = name;
+        m->label   = strrchr(m->name, '/') ? strrchr(m->name, '/') + 1 : m->name;
+        m->mtime   = mtime;
+        m->seen    = true;
+        m->dir     = di;
+        Da_append(&modules, m);
+        *menu_changed = true;
+        if (reload) set_status("Added module %s", m->name);
+}
+
+/* Look at every .so, .lua and .li in the modules dirs. The first time, load them all. Later
  * (RELOAD), add new ones, swap rebuilt ones in their squares, and take
  * removed ones out of the menu. */
 static void
@@ -2746,93 +3095,23 @@ modules_scan(bool reload)
         bool menu_changed = !reload;
         long long now     = now_ns();
 
-        if (!DirectoryExists(modules_dir)) {
-                if (!reload) fprintf(stderr, "modules: %s not found\n", modules_dir);
-                return;
-        }
+        const char *dirs[2];
+        int ndirs = modules_dirs(dirs);
+        if (!reload && !DirectoryExists(modules_dir)) fprintf(stderr, "modules: %s not found\n", modules_dir);
 
         Da_foreach(mp, modules)
 
         {
-                (*mp)->seen = !(*mp)->path; /* built-in, not in modules_dir */
+                (*mp)->seen = !(*mp)->path; /* built-in, not in a dir */
         }
         types_scan(reload, &menu_changed); /* first: modules may use them */
-        FilePathList files = LoadDirectoryFilesEx(modules_dir, ".so;.lua;.li", true);
-        for (unsigned i = 0; i < files.count; i++) {
-                const char *path = files.paths[i];
-                if (is_type_file(path)) continue; /* types_scan's */
-                long long mtime  = file_mtime(path);
-                bool settled     = !reload || now - mtime > MODULE_SETTLE_NS;
-
-                /* "build/modules/math/add.so" -> "math/add" */
-                const char *rel = path + strlen(modules_dir);
-                while (*rel == '/')
-                        rel++;
-                char *name          = strdup(rel);
-                *strrchr(name, '.') = '\0';
-                Module *m           = module_find(name);
-                bool graph          = IsFileExtension(path, ".lua");
-                bool package        = IsFileExtension(path, ".li");
-                char *lib           = NULL; /* of the package */
-                char why[256]       = "doesn't load";
-
-                if (m) {
-                        m->seen = true;
-                        if (m->gone) {
-                                m->gone      = false;
-                                menu_changed = true;
-                        }
-                        free(name);
-                        if (mtime == m->mtime || !settled) continue;
-                        m->mtime = mtime; /* a broken build is tried again when it changes */
-                        if ((package && !(lib = package_lib(path, why, sizeof why))) ||
-                            (graph && !canvas_check(path, why, sizeof why))) {
-                                set_status("Module %s: %s, keeping the old one", m->name, why);
-                                continue;
-                        }
-                        if (!graph && !module_check(lib ? lib : path)) {
-                                set_status("Module %s doesn't load, keeping the old one", m->name);
-                                if (lib) remove(lib);
-                                free(lib);
-                                continue;
-                        }
-                        if (lib) {
-                                if (m->lib) remove(m->lib);
-                                free(m->lib);
-                                m->lib = lib;
-                        }
-                        module_reload_squares(m);
-                        set_status("Reloaded %s", m->name);
-                        continue;
-                }
-
-                if (!settled) {
-                        free(name);
-                        continue;
-                }
-                if (package) lib = package_lib(path, why, sizeof why);
-                if ((package && !lib) || (graph && !canvas_check(path, why, sizeof why)) ||
-                    (!graph && !module_check(lib ? lib : path))) {
-                        fprintf(stderr, "modules: %s skipped: %s\n", path, why);
-                        if (reload) set_status("Module %s: %s", name, why);
-                        if (lib) remove(lib);
-                        free(lib);
-                        free(name);
-                        continue;
-                }
-                m          = calloc(1, sizeof *m);
-                m->lib     = lib;
-                m->path    = strdup(path);
-                m->builtin = graph ? &graph_fns : NULL;
-                m->name    = name;
-                m->label = strrchr(m->name, '/') ? strrchr(m->name, '/') + 1 : m->name;
-                m->mtime = mtime;
-                m->seen  = true;
-                Da_append(&modules, m);
-                menu_changed = true;
-                if (reload) set_status("Added module %s", m->name);
+        for (int di = 0; di < ndirs; di++) {
+                if (!DirectoryExists(dirs[di])) continue;
+                FilePathList files = LoadDirectoryFilesEx(dirs[di], ".so;.lua;.li", true);
+                for (unsigned i = 0; i < files.count; i++)
+                        module_scan_file(files.paths[i], dirs[di], di, reload, now, &menu_changed);
+                UnloadDirectoryFiles(files);
         }
-        UnloadDirectoryFiles(files);
 
         /* Removed: their squares keep their copies, so they still work */
         Da_foreach(mp, modules)
@@ -3014,8 +3293,8 @@ menu_search_open(Menu *m, Vector2 pos)
          * with room for some results too */
         int rows = Clamp((int) ((GetScreenHeight() - h) / h), 1, Max(m->count, 8));
         pos.y += h;
-        pos.y = fmaxf(fminf(pos.y, GetScreenHeight() - rows * h), h);
-        pos.x = fmaxf(fminf(pos.x, GetScreenWidth() - menu.search_w), 0);
+        pos.y             = fmaxf(fminf(pos.y, GetScreenHeight() - rows * h), h);
+        pos.x             = fmaxf(fminf(pos.x, GetScreenWidth() - menu.search_w), 0);
         menu.level[0].pos = pos;
 }
 
@@ -3175,7 +3454,7 @@ update_menu(void)
                 bool down = key_pressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN) ||
                             (ctrl && (key_pressed(KEY_N) || IsKeyPressedRepeat(KEY_N)));
                 bool up   = key_pressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP) ||
-                          (ctrl && (key_pressed(KEY_P) || IsKeyPressedRepeat(KEY_P)));
+                            (ctrl && (key_pressed(KEY_P) || IsKeyPressedRepeat(KEY_P)));
                 if (down) menu.selected = (menu.selected + 1) % m->count;
                 if (up) menu.selected = (menu.selected <= 0 ? m->count : menu.selected) - 1;
                 if (down || up) {
@@ -3228,7 +3507,7 @@ update_menu(void)
                         /* Still open: keep where it's scrolled to */
                         int scroll = next->menu == it->sub ? next->scroll : 0;
                         *next      = (MenuLevel) {
-                                it->sub, { r.x + r.width, r.y + (i - menu.level[lvl].scroll) * menu_item_height() }, scroll
+                                     it->sub, { r.x + r.width, r.y + (i - menu.level[lvl].scroll) * menu_item_height() }, scroll
                         };
                         menu_scroll_clamp(menu.depth - 1);
                 }
@@ -3259,9 +3538,9 @@ draw_menu_search(void)
 static void
 draw_menu(void)
 {
-        float h = menu_item_height();
-        int hover_lvl;
-        int hover = menu_hit(GetMousePosition(), &hover_lvl);
+        float h       = menu_item_height();
+        int hover_lvl = -1; /* menu_hit leaves it if nothing is hit */
+        int hover     = menu_hit(GetMousePosition(), &hover_lvl);
 
         for (int k = 0; k < menu.depth; k++) {
                 Menu *m     = menu.level[k].menu;
@@ -4737,7 +5016,7 @@ typedef struct Level {
 } Level;
 
 static Da(Level) levels;
-static Da(Wire) path; /* wires followed so far, while lowering */
+static Da(Wire) lower_path; /* wires followed so far, while lowering */
 
 /* Following ports deeper than this is a wire from a subgraph to itself */
 #define LOWER_DEPTH 64
@@ -4790,18 +5069,18 @@ lower_squares(int lv)
 static void
 path_push(LinkList *list, int link, Square *to)
 {
-        Da_append(&path, ((Wire) { list, link, to }));
+        Da_append(&lower_path, ((Wire) { list, link, to }));
 }
 
 /* Where input INPUT of S, in level LV, gets its value. Follows wires
- * through ports, with them in `path`. */
+ * through ports, with them in `lower_path`. */
 static Source
 lower_source(int lv, Square *s, int input, int depth)
 {
-        Level *l     = &levels.items[lv];
-        PinInfo *in  = pin_info(s, PART_INPUT, input);
-        Source none  = { .kind = SRC_NONE };
-        int k        = -1;
+        Level *l    = &levels.items[lv];
+        PinInfo *in = pin_info(s, PART_INPUT, input);
+        Source none = { .kind = SRC_NONE };
+        int k       = -1;
 
         if (!in || in->kind == PIN_OPTIONS || depth > LOWER_DEPTH) return none;
         for (int i = l->links->count - 1; i >= 0 && k < 0; i--) {
@@ -4842,7 +5121,7 @@ lower_targets(int lv, Square *s, int output, int depth)
                 PinInfo *in = to ? pin_info(to, PART_INPUT, e.to_pin) : NULL;
                 if (!in || !types_compatible(out->type, in->type)) continue;
 
-                int mark = path.count;
+                int mark = lower_path.count;
                 path_push(l->links, k, to);
                 if (to->graph) {
                         if (e.to_pin < to->graph->inputs.count)
@@ -4850,14 +5129,14 @@ lower_targets(int lv, Square *s, int output, int depth)
                 } else if (to->module->builtin == &port_out_fns) {
                         if (e.to_pin == PORT_OUT_VALUE && l->owner) lower_targets(l->up, l->owner, to->port, depth + 1);
                 } else {
-                        Target t = { .node = to->ir, .pin = e.to_pin, .wires = prog.wires.count, .wire_count = path.count };
-                        Da_foreach(w, path)
+                        Target t = { .node = to->ir, .pin = e.to_pin, .wires = prog.wires.count, .wire_count = lower_path.count };
+                        Da_foreach(w, lower_path)
                         {
                                 Da_append(&prog.wires, *w);
                         }
                         Da_append(&prog.targets, t);
                 }
-                path.count = mark;
+                lower_path.count = mark;
         }
 }
 
@@ -4880,11 +5159,11 @@ program_lower(void)
 
                 x->inputs = prog.sources.count;
                 for (int k = 0; k < s->inputs.count; k++) {
-                        path.count = 0;
-                        Source src = lower_source(x->level, s, k, 0);
-                        src.wires      = prog.wires.count;
-                        src.wire_count = path.count;
-                        Da_foreach(w, path)
+                        lower_path.count = 0;
+                        Source src       = lower_source(x->level, s, k, 0);
+                        src.wires        = prog.wires.count;
+                        src.wire_count   = lower_path.count;
+                        Da_foreach(w, lower_path)
                         {
                                 Da_append(&prog.wires, *w);
                         }
@@ -4893,8 +5172,8 @@ program_lower(void)
 
                 x->outputs = prog.outs.count;
                 for (int k = 0; k < s->outputs.count; k++) {
-                        Out o = { .first = prog.targets.count };
-                        path.count = 0;
+                        Out o            = { .first = prog.targets.count };
+                        lower_path.count = 0;
                         if (s->outputs.items[k].type == LI_TICK) lower_targets(x->level, s, k, 0);
                         o.count = prog.targets.count - o.first;
                         Da_append(&prog.outs, o);
@@ -4996,8 +5275,8 @@ static void
 program_each(bool start)
 {
         for (int i = 0; i < prog.nodes.count; i++) {
-                Node *x   = &prog.nodes.items[i];
-                Square *s = x->square;
+                Node *x               = &prog.nodes.items[i];
+                Square *s             = x->square;
                 void (*fn)(Li_Node *) = start ? s->fn.start : s->fn.frame;
                 if (!fn) continue;
                 Graph *was = scope_enter(x->scope);
@@ -5472,7 +5751,7 @@ compile_sources(const char *dir)
                 for (int j = 0; j < i && same < 0; j++)
                         if (prog.nodes.items[j].square->module == m) same = j;
                 if (same >= 0) {
-                        CompileNode *before = &compiled.items[same];
+                        CompileNode *before   = &compiled.items[same];
                         compiled.items[i].src = before->src ? strdup(before->src) : NULL;
                         compiled.items[i].obj = before->obj ? strdup(before->obj) : NULL;
                         /* Its libraries are already in the link, with the first */
@@ -5485,7 +5764,8 @@ compile_sources(const char *dir)
                                 compiled.items[i].libs = strdup(libs);
                         }
                 } else {
-                        snprintf(path, sizeof path, "%s/%s.c", cfg.modules.source, m->name);
+                        /* With lineit's (modules.source), or the user's own, next to its .so */
+                        snprintf(path, sizeof path, "%s/%s.c", m->dir ? cfg.modules.user : cfg.modules.source, m->name);
                         if (!m->builtin && realpath(path, src))
                                 compiled.items[i].src = strdup(src);
                         else
@@ -5651,7 +5931,7 @@ bar_compile(void)
                 output_add(TextFormat("Compiled %s", bin), true);
                 set_status("Compiled %s", bin);
         } else {
-                output.open = true;
+                output_panel.open = true;
                 set_status("Could not compile, see the output");
         }
 }
@@ -5665,8 +5945,7 @@ compile_file(const char *config, const char *path)
         bool ok = false;
 
         SetTraceLogLevel(LOG_WARNING);
-        cfg_defaults = cfg;
-        load_config(config);
+        config_start(config);
         /* No window: no fonts, squares are measured as 0, they're not shown */
         load_modules(cfg.modules.path);
         canvas_path = path;
@@ -5674,7 +5953,7 @@ compile_file(const char *config, const char *path)
                 output_add(TextFormat("compile: can't read %s", path), true);
         else
                 ok = compile_canvas(GetFileNameWithoutExt(path), bin, sizeof bin);
-        Da_foreach(l, output.lines)
+        Da_foreach(l, output_panel.lines)
         {
                 fprintf(stderr, "%s\n", l->text);
         }
@@ -5937,15 +6216,15 @@ bar_run_stop(void)
 static void
 bar_output(void)
 {
-        output.open   = !output.open;
-        output.unseen = 0;
+        output_panel.open   = !output_panel.open;
+        output_panel.unseen = 0;
 }
 
 /* A * when there are lines not seen yet */
 static const char *
 output_label(void)
 {
-        return output.unseen ? "Output*" : "Output";
+        return output_panel.unseen ? "Output*" : "Output";
 }
 
 static const char *
@@ -6059,6 +6338,7 @@ config_reload(void)
         /* The old strings, now that nothing uses them */
         str_drop(prev.window.title, cfg.window.title, cfg_defaults.window.title);
         str_drop(prev.font.name, cfg.font.name, cfg_defaults.font.name);
+        str_drop(prev.modules.user, cfg.modules.user, cfg_defaults.modules.user);
         str_drop(prev.modules.source, cfg.modules.source, cfg_defaults.modules.source);
         str_drop(prev.modules.cache, cfg.modules.cache, cfg_defaults.modules.cache);
         str_drop(prev.compile.output, cfg.compile.output, cfg_defaults.compile.output);
@@ -6099,10 +6379,10 @@ static int tab_cur;      /* the one shown */
 static bool handed_over; /* a rebuilt editor took over: quit (see Reloading) */
 static bool quitting;    /* the editor closes after this frame: the window or the last tab was closed */
 
-#define SWAP(a, b)                    \
-        do {                          \
-                Typeof(a) swap_ = a;  \
-                a               = b;  \
+#define SWAP(a, b)                       \
+        do {                             \
+                Typeof(a) swap_ = a;     \
+                a               = b;     \
                 b               = swap_; \
         } while (0)
 
@@ -6228,7 +6508,7 @@ static void ask_close_tab(int i);
  * it was, unsaved changes included (they're still marked unsaved). Tabs
  * never touched and never saved aren't kept. */
 typedef struct ClosedTab {
-        char *path; /* NULL if untitled */
+        char *path;   /* NULL if untitled */
         char *canvas; /* canvas_text with camera and state */
         char *saved;
         Typeof(history.undo) undo;
@@ -6392,7 +6672,7 @@ tab_reopen(void)
         Da_destroy(&history.redo);
         history.undo = c.undo;
         history.redo = c.redo;
-        Tab *t = tabs.items[tab_cur];
+        Tab *t       = tabs.items[tab_cur];
         free(t->saved);
         t->saved = c.saved;
         free(c.canvas);
@@ -6452,7 +6732,7 @@ tabs_height(void)
 }
 
 #define TAB_CLOSE "x"
-#define TAB_NEW   "+"
+#define TAB_NEW "+"
 
 static float
 tab_pad(void)
@@ -6561,11 +6841,11 @@ static struct {
 static void
 prompt_open(const char *label, const char *text, void (*done)(const char *))
 {
-        prompt.open       = true;
-        prompt.label      = label;
-        prompt.done       = done;
-        prompt.matches[0] = '\0';
-        prompt.hint       = NULL;
+        prompt.open        = true;
+        prompt.label       = label;
+        prompt.done        = done;
+        prompt.matches[0]  = '\0';
+        prompt.hint        = NULL;
         prompt.no_complete = false;
         text_input_set(&prompt.input, text);
         menu.depth = 0;
@@ -6582,10 +6862,10 @@ str_cmp(const void *a, const void *b)
 static void
 prompt_complete(void)
 {
-        TextInput *t      = &prompt.input;
-        char *slash       = strrchr(t->buf, '/');
-        int dir_len       = slash ? (int) (slash - t->buf) + 1 : 0;
-        char *start       = t->buf + dir_len;
+        TextInput *t = &prompt.input;
+        char *slash  = strrchr(t->buf, '/');
+        int dir_len  = slash ? (int) (slash - t->buf) + 1 : 0;
+        char *start  = t->buf + dir_len;
         char dir[PATH_MAX];
         Da(char *) found = { 0 };
 
@@ -6740,8 +7020,11 @@ file_next_tab(int step)
         tab_switch((tab_cur + step + tabs.count) % tabs.count);
 }
 
-#define FILE_ITEM(fn) \
-        static void fn##_item(int id, void *arg) { (void) id, (void) arg, fn(); }
+#define FILE_ITEM(fn)                            \
+        static void fn##_item(int id, void *arg) \
+        {                                        \
+                (void) id, (void) arg, fn();     \
+        }
 static void type_new_ask(void);
 FILE_ITEM(file_new)
 FILE_ITEM(type_new_ask)
@@ -6788,8 +7071,8 @@ file_menu_open(void)
 /* ---- Make subgraph: the selection becomes a module ---- */
 
 /* Like "extract function": the selected squares and the wires between them
- * go to a new subgraph (a .lua under modules.source, linked into the
- * modules dir so it shows up now), and one square of it takes their place.
+ * go to a new subgraph (a .lua under modules.user, one of the modules
+ * dirs, so it shows up now), and one square of it takes their place.
  * Each output outside that feeds the selection becomes a subgraph/input, and
  * each output inside that is used outside a subgraph/output, of the type of
  * that output, so the wires around can be plugged to the new square as
@@ -6869,8 +7152,8 @@ ports_spread(PortList *l)
 static bool
 subgraph_write(const char *path, PortList *ins, PortList *outs, Rectangle box)
 {
-        char *text = canvas_text(WRITE_SELECTED | WRITE_STATE);
-        Graph g    = { 0 };
+        char *text     = canvas_text(WRITE_SELECTED | WRITE_STATE);
+        Graph g        = { 0 };
         Camera2D outer = camera;
         bool ok;
 
@@ -6907,7 +7190,7 @@ subgraph_write(const char *path, PortList *ins, PortList *outs, Rectangle box)
                 for (int j = links.count - 1; j > i; j--)
                         if (!memcmp(&links.items[i], &links.items[j], offsetof(Link, flash))) Da_remove(&links, j);
 
-        camera = (Camera2D) { .target = { box.x + box.width / 2, box.y + box.height / 2 }, .offset = { cfg.window.width / 2.0f, cfg.window.height / 2.0f }, .zoom = 1 };
+        camera  = (Camera2D) { .target = { box.x + box.width / 2, box.y + box.height / 2 }, .offset = { cfg.window.width / 2.0f, cfg.window.height / 2.0f }, .zoom = 1 };
         FILE *f = fopen(path, "w");
         ok      = f != NULL;
         if (f) {
@@ -6946,14 +7229,14 @@ mkdir_parents(const char *path)
 static void
 subgraph_make(const char *typed)
 {
-        char path[PATH_MAX], name[PATH_MAX], link[PATH_MAX], abs[PATH_MAX];
-        const char *src = cfg.modules.source;
+        char path[PATH_MAX], name[PATH_MAX];
+        const char *src = cfg.modules.user;
         size_t slen     = strlen(src);
         PortList ins = { 0 }, outs = { 0 };
 
         snprintf(path, sizeof path, "%s%s", typed, IsFileExtension(typed, ".lua") ? "" : ".lua");
         if (strncmp(path, src, slen) || path[slen] != '/') {
-                set_status("Subgraphs go in %s/ (modules.source in the config)", src);
+                set_status("Subgraphs go in %s/ (modules.user in the config)", src);
                 return;
         }
         if (FileExists(path)) {
@@ -6995,15 +7278,6 @@ subgraph_make(const char *typed)
         if (!subgraph_write(path, &ins, &outs, box)) {
                 set_status("Could not write %s", path);
                 goto done;
-        }
-        /* Into the modules dir, where it's looked for. A link, like make does. */
-        if (strcmp(src, modules_dir) != 0) {
-                snprintf(link, sizeof link, "%s/%s.lua", modules_dir, name);
-                mkdir_parents(link);
-                if (!realpath(path, abs) || symlink(abs, link) != 0) {
-                        set_status("Wrote %s, but could not link it to %s", path, link);
-                        goto done;
-                }
         }
         modules_scan(false); /* now, not when it settles */
         Module *m = module_find(name);
@@ -7052,7 +7326,7 @@ static void
 subgraph_ask(void)
 {
         if (!selected_count()) return;
-        prompt_open("Subgraph", TextFormat("%s/", cfg.modules.source), subgraph_make);
+        prompt_open("Subgraph", TextFormat("%s/", cfg.modules.user), subgraph_make);
 }
 
 static void
@@ -7066,7 +7340,7 @@ menu_subgraph(int id, void *arg)
 
 /* Both ask for the fields in one line, "x:float y:float" (a field without
  * a type is any), and write the .type.lua (see Types): a new one under
- * modules.source, linked into the modules dir like subgraphs, or the one
+ * modules.user, like subgraphs, or the one
  * the type came from. Its squares pick it up right away. */
 
 #define TYPE_FIELDS_HINT "fields as name:type, types: bool int float string any, or a custom type"
@@ -7134,7 +7408,7 @@ type_write(const char *path, const char *name, void *fields, Color color)
 static void
 type_new_done(const char *text)
 {
-        char name[256], path[PATH_MAX], link[PATH_MAX], abs[PATH_MAX], why[256];
+        char name[256], path[PATH_MAX], why[256];
         Da(Field) fields = { 0 };
         int len          = (int) strcspn(text, " \t");
         snprintf(name, sizeof name, "%.*s", len, text);
@@ -7154,7 +7428,7 @@ type_new_done(const char *text)
                 set_status("Type %s: %s", name, why);
                 return;
         }
-        snprintf(path, sizeof path, "%s/%s.type.lua", cfg.modules.source, name);
+        snprintf(path, sizeof path, "%s/%s.type.lua", cfg.modules.user, name);
         mkdir_parents(path);
         if (FileExists(path) || !type_write(path, name, &fields, type_color_for(path))) {
                 set_status(FileExists(path) ? "%s already exists" : "Could not write %s", path);
@@ -7162,15 +7436,6 @@ type_new_done(const char *text)
                 return;
         }
         fields_free(&fields);
-        /* Into the modules dir, where it's looked for. A link, like make does. */
-        if (strcmp(cfg.modules.source, modules_dir) != 0) {
-                snprintf(link, sizeof link, "%s/%s.type.lua", modules_dir, name);
-                mkdir_parents(link);
-                if (!realpath(path, abs) || symlink(abs, link) != 0) {
-                        set_status("Wrote %s, but could not link it to %s", path, link);
-                        return;
-                }
-        }
         modules_scan(false); /* now, not when it settles */
         char make[PATH_MAX], brk[PATH_MAX];
         type_module_name(name, "make", make, sizeof make);
@@ -7310,7 +7575,7 @@ static void
 quit_request(void)
 {
         char names[200] = "";
-        int n = 0;
+        int n           = 0;
         for (int i = 0; i < tabs.count; i++) {
                 if (!tab_dirty(i)) continue;
                 size_t used = strlen(names);
@@ -7559,8 +7824,8 @@ tab_socket_poll(void)
         if (tab_socket < 0) return;
         while ((c = accept(tab_socket, NULL, NULL)) >= 0) {
                 char buf[PATH_MAX + 1];
-                size_t len   = 0;
-                ssize_t n    = 0;
+                size_t len        = 0;
+                ssize_t n         = 0;
                 struct timeval tv = { .tv_usec = 200000 };
                 setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
                 while (len < sizeof buf - 1 && (n = read(c, buf + len, sizeof buf - 1 - len)) > 0)
@@ -7603,14 +7868,14 @@ prompt_is_open(void)
 
 static char exe_path[PATH_MAX]; /* this binary, as it was at start */
 static long long exe_mtime;
-static int ready_fd = -1;     /* in the new one: where to say it's ready */
+static int ready_fd = -1; /* in the new one: where to say it's ready */
 #define HANDOVER_TIMEOUT_MS 10000
-#define READY_FRAMES        3 /* drawn before saying it's ready */
+#define READY_FRAMES 3 /* drawn before saying it's ready */
 
 static void
 exe_watch(void)
 {
-        ssize_t n = readlink("/proc/self/exe", exe_path, sizeof exe_path - 1);
+        ssize_t n               = readlink("/proc/self/exe", exe_path, sizeof exe_path - 1);
         exe_path[n > 0 ? n : 0] = '\0';
         exe_mtime               = file_mtime(exe_path);
 
@@ -7657,11 +7922,11 @@ session_write(const char *path)
         fprintf(f, "-- lineit session, see --restore\nsession = {\n");
         fprintf(f, "        active = %d,\n", tab_cur + 1);
         fprintf(f, "        autosave = %s,\n", autosave ? "true" : "false");
-        fprintf(f, "        output_open = %s,\n", output.open ? "true" : "false");
+        fprintf(f, "        output_open = %s,\n", output_panel.open ? "true" : "false");
         fprintf(f, "        window = { x = %d, y = %d, width = %d, height = %d },\n",
                 (int) win.x, (int) win.y, GetScreenWidth(), GetScreenHeight());
         fprintf(f, "        output = {\n");
-        Da_foreach(l, output.lines)
+        Da_foreach(l, output_panel.lines)
         {
                 fprintf(f, "                { info = %s, text = ", l->info ? "true" : "false");
                 lua_quote(f, l->text);
@@ -7729,7 +7994,11 @@ exe_handover(void)
                         snprintf(fd, sizeof fd, "%d", tab_socket);
                         setenv("LINEIT_SOCKET_FD", fd, 1);
                 }
-                execl(exe_path, exe_path, "--config", config_path, "--restore", session, (char *) NULL);
+                /* Its default config is this one's, unless it wasn't there */
+                if (FileExists(config_path))
+                        execl(exe_path, exe_path, "--config", config_path, "--restore", session, (char *) NULL);
+                else
+                        execl(exe_path, exe_path, "--restore", session, (char *) NULL);
                 perror("lineit: exec");
                 _exit(127);
         }
@@ -7808,8 +8077,8 @@ session_restore(const char *path)
                 Conf_get_bool(conf, &info, "session.output.%d.info", i);
                 if (Conf_get_str(conf, &str, "session.output.%d.text", i) == CONF_OK) output_add(str, info);
         }
-        if (Conf_get_bool(conf, &b, "session.output_open") == CONF_OK) output.open = b;
-        output.unseen = 0;
+        if (Conf_get_bool(conf, &b, "session.output_open") == CONF_OK) output_panel.open = b;
+        output_panel.unseen = 0;
         if (Conf_get_bool(conf, &b, "session.autosave") == CONF_OK) autosave = b;
 
         int ntabs = 0;
@@ -7940,7 +8209,7 @@ output_visible_lines(void)
 static bool
 update_output(void)
 {
-        if (!output.open) return false;
+        if (!output_panel.open) return false;
 
         Vector2 mouse = GetMousePosition();
         if (!CheckCollisionPointRec(mouse, output_rect())) return false;
@@ -7948,8 +8217,8 @@ update_output(void)
         /* The wheel scrolls it (the canvas doesn't zoom from here) */
         float wheel = GetMouseWheelMove();
         if (wheel) {
-                int max       = Max(0, output.lines.count - output_visible_lines());
-                output.scroll = Clamp(output.scroll + (int) (wheel * 3), 0, max);
+                int max             = Max(0, output_panel.lines.count - output_visible_lines());
+                output_panel.scroll = Clamp(output_panel.scroll + (int) (wheel * 3), 0, max);
         }
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 if (CheckCollisionPointRec(mouse, output_clear_rect())) output_clear();
@@ -7961,7 +8230,7 @@ update_output(void)
 static void
 draw_output(void)
 {
-        if (!output.open) return;
+        if (!output_panel.open) return;
 
         Rectangle r = output_rect();
         Rectangle h = output_header_rect();
@@ -7973,7 +8242,7 @@ draw_output(void)
         DrawRectangleRec(r, cfg.colors.output);
         DrawLine(r.x, r.y, r.x + r.width, r.y, cfg.colors.bar_border);
 
-        const char *title = output.scroll ? TextFormat("Output (%d newer below)", output.scroll) : "Output";
+        const char *title = output_panel.scroll ? TextFormat("Output (%d newer below)", output_panel.scroll) : "Output";
         draw_text(title, h.x + 10, h.y + (h.height - fs) / 2, fs, cfg.colors.bar_text);
         DrawRectangleRec(c, CheckCollisionPointRec(GetMousePosition(), c) ? cfg.colors.menu_hover : cfg.colors.menu);
         DrawRectangleLinesEx(c, 1.0f, cfg.colors.menu_border);
@@ -7982,9 +8251,9 @@ draw_output(void)
 
         /* Newest at the bottom */
         BeginScissorMode(r.x, h.y + h.height, r.width, r.height - h.height);
-        int last = output.lines.count - 1 - output.scroll;
+        int last = output_panel.lines.count - 1 - output_panel.scroll;
         for (int k = 0; k < n && last - k >= 0; k++) {
-                OutputLine *l = &output.lines.items[last - k];
+                OutputLine *l = &output_panel.lines.items[last - k];
                 float y       = r.y + r.height - 4 - (k + 1) * lh;
                 draw_text(l->text, r.x + 10, y + 2, fs, l->info ? cfg.colors.name : cfg.colors.output_text);
         }
@@ -8120,9 +8389,9 @@ main(int argc, char **argv)
         const char *f_compile;
 
         flag_program();
-        flag_add(&f_version, "--version");
-        flag_add(&f_config, "--config", "-c", .defaults = CONFIG_DEFAULT, .nargs = 1,
-                 .help = "lua config file");
+        flag_add(&f_version, "--version", .help = "show the version and exit");
+        flag_add(&f_config, "--config", "-c", .nargs = 1,
+                 .help = "lua config file (default: config.lua next to lineit in its source tree, or $XDG_CONFIG_HOME/lineit/config.lua)");
         flag_add(&f_file, "--file", "-f", .nargs = 1,
                  .help = "canvas file to load at start, and to save to (default: save.path in the config)");
         flag_add(&f_tab, "--tab", "-t", .nargs = 1,
@@ -8137,7 +8406,7 @@ main(int argc, char **argv)
         }
 
         if (f_version) {
-                fprintf(stdout, "%s, version %s\n", basename(argv[0]), LI_VERSION);
+                fprintf(stdout, "lineit, version %s\n", LI_VERSION);
                 fprintf(stdout, "Copyright (C) 2026 Hugo Coto Flórez.\n");
                 fprintf(stdout, "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n");
                 fprintf(stdout, "\n");
@@ -8153,11 +8422,9 @@ main(int argc, char **argv)
                 f_file = f_tab; /* none running: this one */
         }
 
-        cfg_defaults = cfg;
-        config_path  = f_config;
+        config_path  = config_start(f_config);
         config_mtime = file_mtime(config_path);
-        load_config(config_path);
-        autosave = cfg.save.autosave;
+        autosave     = cfg.save.autosave;
         exe_watch();
         if (f_restore) session_window(f_restore);
         init_raylib();
@@ -8214,13 +8481,13 @@ main(int argc, char **argv)
         unload_modules();
         unload_fonts();
         output_clear();
-        Da_destroy(&output.lines);
+        Da_destroy(&output_panel.lines);
         CloseWindow();
         Da_destroy(&squares);
         Da_destroy(&links);
         program_free(&prog);
         Da_destroy(&levels);
-        Da_destroy(&path);
+        Da_destroy(&lower_path);
         flag_free();
         return 0;
 }

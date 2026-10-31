@@ -1,0 +1,41 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: What you did, and what lineit printed to the terminal and the output panel.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Canvas
+      description: The canvas file, if it happens with one (or the smallest canvas that shows it).
+      render: lua
+  - type: dropdown
+    attributes:
+      label: Where
+      options:
+        - In the editor (Run)
+        - In a compiled program (Compile)
+        - Both
+        - Neither (editing, loading, saving...)
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Version
+      description: The output of `lineit --version`, and the commit if you built it (`git rev-parse --short HEAD`).
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Distro and architecture
+      placeholder: Arch Linux, x86_64

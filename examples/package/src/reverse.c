@@ -19,7 +19,8 @@ module_eval(Li_Node *n)
 {
         char buf[64];
         Li_Value v    = li_get(n, 0);
-        const char *s = v.type == LI_STRING ? (v.s ? v.s : "") : v.type == LI_NONE ? "" : (li_format(v, buf, sizeof buf), buf);
+        const char *s = v.type == LI_STRING ? (v.s ? v.s : "") : v.type == LI_NONE ? "" :
+                                                                                     (li_format(v, buf, sizeof buf), buf);
         size_t len    = strlen(s);
 
         free(result);

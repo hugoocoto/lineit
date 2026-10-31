@@ -374,6 +374,7 @@ containers_clear(void)
                 Da_destroy(&l->items);
                 stored_free(&l->popped);
                 free(l);
+                it->value = NULL; /* bt_destroy reads it */
         }
         bt_destroy(lists);
         free(lists);
@@ -386,9 +387,11 @@ containers_clear(void)
                 {
                         stored_free(e->value);
                         free(e->value);
+                        e->value = NULL;
                 }
                 bt_destroy(&t->map);
                 free(t);
+                it->value = NULL;
         }
         bt_destroy(trees);
         free(trees);

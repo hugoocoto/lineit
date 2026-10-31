@@ -6,8 +6,12 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-repo=$(dirname "$here")
-api=$(sed -n 's/^#define LI_VERSION "\([0-9.]*\)".*/\1/p' "$repo/src/lineit.h")
+# lineit.h: in lineit's source tree (tools/lineit-pack), or installed with it
+# (PREFIX/bin/lineit-pack, PREFIX/lib/lineit/rt/include)
+include=$(dirname "$here")/src
+[ -f "$include/lineit.h" ] || include=$(dirname "$here")/lib/lineit/rt/include
+[ -f "$include/lineit.h" ] || { echo "lineit-pack: no lineit.h in $include" >&2; exit 1; }
+api=$(sed -n 's/^#define LI_VERSION "\([0-9.]*\)".*/\1/p' "$include/lineit.h")
 
 usage() {
         cat <<EOF
@@ -153,7 +157,7 @@ trap 'rm -rf "$stage"' EXIT
 
 echo "lineit-pack: make lineit-package ($makefile)"
 (cd "$(dirname "$makefile")" && make --no-print-directory -f "$makefile" lineit-package \
-        PACKAGE_DIR="$stage" LINEIT_INCLUDE="$repo/src" LINEIT_API="$api")
+        PACKAGE_DIR="$stage" LINEIT_INCLUDE="$include" LINEIT_API="$api")
 
 fail() {
         echo "lineit-pack: $*" >&2
@@ -177,7 +181,7 @@ for rule in lineit-so lineit-o; do
         ext=$([[ $rule == lineit-so ]] && echo so || echo o)
         echo "lineit-pack: checking make $rule, in the package"
         (cd "$check/pkg" && make --no-print-directory -s "$rule" OUT="$check/module.$ext" \
-                LINEIT_INCLUDE="$repo/src" CC="${CC:-cc}" CFLAGS="-O2") ||
+                LINEIT_INCLUDE="$include" CC="${CC:-cc}" CFLAGS="-O2") ||
                 fail "make $rule failed in the package"
         [[ -f $check/module.$ext ]] || fail "make $rule made no OUT"
         if command -v nm >/dev/null && ! nm --defined-only "$check/module.$ext" 2>/dev/null | grep -qw module_init; then
@@ -210,6 +214,7 @@ if not ok then fail(err) end
 if type(env.name) ~= "string" or not env.name:match("^[%w_-]+$") then fail("name has to be [A-Za-z0-9_-]") end
 if type(env.version) ~= "string" then fail("no version") end
 if type(env.license) ~= "string" then fail("no license") end
+if env.sha256 ~= nil then fail("sha256: lineit-pack writes it, leave it out") end
 -- "MAJOR.MINOR.PATCH". Same major, and a minor not newer than this
 -- lineit's: the patch isn't checked.
 local function version(v)
@@ -279,6 +284,18 @@ if [[ -z $hostlib ]]; then
 elif command -v nm >/dev/null && ! nm -D --defined-only "$stage/$hostlib" 2>/dev/null | grep -qw module_init; then
         fail "$hostlib has no module_init"
 fi
+
+# The SHA-256 of every other file, at the end of manifest.lua: lineit checks
+# each one against it before it uses it (see Packages in src/main.c)
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+{
+        printf '\n-- Written by lineit-pack: the SHA-256 of every other file in it\nsha256 = {\n'
+        while IFS= read -r f; do
+                [[ $f != *[\"\\]* ]] || fail "$f: no \" or \\ in file names"
+                printf '        { file = "%s", sum = "%s" },\n' "$f" "$(cd "$stage" && sha256 "$f")"
+        done < <(cd "$stage" && find . -type f ! -path ./manifest.lua | sed 's|^\./||' | LC_ALL=C sort)
+        printf '}\n'
+} >>"$stage/manifest.lua"
 
 out=${out:-$name.li}
 mkdir -p "$(dirname "$out")"

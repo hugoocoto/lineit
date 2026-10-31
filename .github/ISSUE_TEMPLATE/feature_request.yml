@@ -1,0 +1,18 @@
+name: Feature request
+description: Suggest an idea, or a module
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: The problem
+      description: What are you trying to do, and why is it hard now?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: The solution you'd like
+      description: How it could work. A module and its pins, a key, the config...
+  - type: textarea
+    attributes:
+      label: Alternatives
+      description: Other ways to solve it, or how you work around it now.

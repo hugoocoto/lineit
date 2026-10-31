@@ -146,7 +146,8 @@ module_eval(Li_Node *n)
         Li_Type to  = target(n);
         char buf[64];
         bool ok = to == LI_INT ? to_int(in, &v) : to == LI_FLOAT ? to_float(in, &v) :
-                  to == LI_BOOL ? to_bool(in, &v) : to_string(in, &v);
+                                                  to == LI_BOOL  ? to_bool(in, &v) :
+                                                                   to_string(in, &v);
 
         li_output_type(n, 0, to);
         if (!ok) {

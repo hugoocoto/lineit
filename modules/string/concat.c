@@ -17,7 +17,7 @@ module_eval(Li_Node *n)
         const char *a = text(li_get(n, 0), ba, sizeof ba);
         const char *b = text(li_get(n, 1), bb, sizeof bb);
         size_t la = strlen(a), lb = strlen(b);
-        char *s   = malloc(la + lb + 1);
+        char *s = malloc(la + lb + 1);
         memcpy(s, a, la);
         memcpy(s + la, b, lb + 1);
         set_result(n, 0, s);

@@ -15,7 +15,7 @@
  * same. */
 
 /* The editor itself, without its main, and with fake time */
-#define main    lineit_main
+#define main lineit_main
 #define GetTime fake_time
 #include "../src/main.c"
 #undef GetTime
@@ -81,7 +81,7 @@ run(const char *path)
         char *buf;
         size_t len;
         FILE *f = open_memstream(&buf, &len);
-        Da_foreach(l, output.lines)
+        Da_foreach(l, output_panel.lines)
         {
                 if (!l->info) fprintf(f, "%s\n", l->text);
         }
@@ -109,7 +109,7 @@ run_compiled(const char *path)
         canvas_path = NULL;
         canvas_clear(-1, NULL);
         if (!ok) {
-                Da_foreach(l, output.lines)
+                Da_foreach(l, output_panel.lines)
                 {
                         fprintf(stderr, "  %s\n", l->text);
                 }
@@ -167,12 +167,11 @@ show_line(const char *label, const char *text, int line)
 int
 main(int argc, char **argv)
 {
-        bool update   = argc > 1 && !strcmp(argv[1], "-u");
-        bool compiled = argc > 1 && !strcmp(argv[1], "-c");
+        bool update  = argc > 1 && !strcmp(argv[1], "-u");
+        bool compile = argc > 1 && !strcmp(argv[1], "-c");
         int failed = 0, total = 0;
 
-        cfg_defaults = cfg;
-        load_config("config.lua");
+        config_start("config.lua");
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         SetTraceLogLevel(LOG_WARNING);
         InitWindow(320, 240, "test");
@@ -181,20 +180,23 @@ main(int argc, char **argv)
         signal(SIGALRM, timeout);
         report = fdopen(dup(STDOUT_FILENO), "w");
         setvbuf(report, NULL, _IOLBF, 0); /* in order with the FAILs on stderr */
-        freopen("/dev/null", "w", stdout);
+        if (!freopen("/dev/null", "w", stdout)) {
+                perror("run_tests: /dev/null");
+                return 1;
+        }
 
         /* Not where the config says: these are only tests */
         if (cfg.compile.output != cfg_defaults.compile.output) free((char *) cfg.compile.output);
         cfg.compile.output = "build/test-bin";
-        for (int i = 1 + update + compiled; i < argc; i++) {
+        for (int i = 1 + update + compile; i < argc; i++) {
                 const char *path = argv[i];
                 char out[PATH_MAX];
                 snprintf(out, sizeof out, "%.*s.out", (int) (strlen(path) - strlen(GetFileExtension(path))), path);
                 current = path;
                 total++;
 
-                char *got = compiled ? run_compiled(path) : run(path);
-                if (!got && compiled) {
+                char *got = compile ? run_compiled(path) : run(path);
+                if (!got && compile) {
                         fprintf(stderr, "FAIL %s: can't compile or run it\n", path);
                         failed++;
                         continue;
@@ -213,7 +215,7 @@ main(int argc, char **argv)
                         failed++;
                 } else {
                         char *want = LoadFileText(out);
-                        if (compiled) printed_only(want);
+                        if (compile) printed_only(want);
                         if (strcmp(got, want)) {
                                 int line = diff_line(got, want);
                                 fprintf(stderr, "FAIL %s: differs from %s at line %d\n", path, out, line);
@@ -221,7 +223,7 @@ main(int argc, char **argv)
                                 show_line("got ", got, line);
                                 failed++;
                         } else {
-                                fprintf(report, "ok   %s%s\n", path, compiled ? " (compiled)" : "");
+                                fprintf(report, "ok   %s%s\n", path, compile ? " (compile)" : "");
                         }
                         UnloadFileText(want);
                 }
@@ -233,7 +235,7 @@ main(int argc, char **argv)
         /* No CloseWindow: it unloads the GL driver, and the one under Xvfb
          * (Mesa) leaves memory that LeakSanitizer can't tell from ours in
          * make test-asan. The process ends right after anyway. */
-        fprintf(report, "%d/%d passed%s\n", total - failed, total, compiled ? ", compiled" : "");
+        fprintf(report, "%d/%d passed%s\n", total - failed, total, compile ? ", compile" : "");
         fclose(report);
         return failed != 0;
 }

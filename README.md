@@ -1,5 +1,8 @@
 # lineit
 
+[![CI](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml/badge.svg)](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/hugoocoto/lineit)](LICENSE)
+
 A graphical yet compiled modular programming language.
 
 
@@ -15,16 +18,42 @@ changes on every commit. I appreciate any kind of collaboration, from feedback
 to features, but don't try to write anything on this language with the aim of
 preserving it along the versions.
 
-# Build
+# Install
 
-lineit runs on Linux (x86_64). raylib 6.0 comes with the repository; the
-rest are system packages. On Debian or Ubuntu:
+On x86_64 Linux:
+
+    curl -fsSL https://github.com/hugoocoto/lineit/releases/latest/download/install.sh | bash
+
+It installs the AppImage as `~/.local/bin/lineit` (`/usr/local` as root),
+with its entry in the applications menu. It asks what and where first, with
+its suggestion filled in (Enter takes it), and checks the download against
+the release's `SHA256SUMS`, and `SHA256SUMS` against the release's
+attestation (proof that CI built it from this repo) if
+[`gh`](https://cli.github.com) is installed and logged in. Arguments go
+after `bash -s --`:
+
+    ... | bash -s -- nightly      # the last commit on main, not the latest release
+    ... | bash -s -- v0.1.0       # that release
+    ... | bash -s -- uninstall
+    ... | bash -s -- --help       # the rest
+
+The AppImage needs FUSE (the `fuse` or `fuse3` package). Compile, in the
+editor, needs a C compiler and make. Every
+[release](https://github.com/hugoocoto/lineit/releases) has the AppImage,
+the source with the submodules, the docs as PDF, `install.sh` and
+`SHA256SUMS`; the nightly one is built from main.
+
+## From source
+
+raylib 6.0 comes with the repository; the rest are system packages. On
+Debian or Ubuntu:
 
     sudo apt install build-essential pkg-config liblua5.1-0-dev lua5.1 \
-        libfontconfig1-dev libx11-dev zlib1g-dev zip
+        libfontconfig1-dev libx11-dev zlib1g-dev libssl-dev zip
 
-`zip` and `lua5.1` are only needed to make packages (see Packages). LuaJIT
-works instead of Lua 5.1: `make LUA=luajit`.
+On Arch: `base-devel lua51 fontconfig libx11 zlib openssl zip`. `zip` and
+`lua5.1` are only needed to make packages (see Packages). LuaJIT works
+instead of Lua 5.1: `make LUA=luajit`.
 
 The small libraries in `thirdparty/` are git submodules:
 
@@ -33,21 +62,37 @@ The small libraries in `thirdparty/` are git submodules:
     make
 
 If you cloned without `--recursive`, run `git submodule update --init`
-first. `make` builds:
-
-- `lineit`, the editor
-- `build/modules/`, every module in `modules/` (one `.so` per `.c`)
-- `build/rt/`, the runtime that compiled programs link with
-
-Then:
+first. Then:
 
     ./lineit                          # opens canvas.lua (save.path in the config)
     ./lineit -f examples/hello.lua    # opens that canvas
     ./lineit -t examples/clock.lua    # in a new tab of the lineit already open
     ./lineit --compile examples/hello.lua   # compile it without opening a window
 
+`make install` puts it in `~/.local` (or `PREFIX`), and `make uninstall`
+takes it out. Run from the source tree, lineit uses the tree (`build/`,
+`modules/`, its `config.lua`); installed, it finds what comes with it next
+to itself, and keeps your own things in `~/.config/lineit`,
+`~/.local/share/lineit` and `~/.cache/lineit`.
+
+| Command             | What it does                                                   |
+|---------------------|----------------------------------------------------------------|
+| `make`              | the editor, the modules and the runtime of Compile             |
+| `make WERROR=1`     | the same, failing on any warning, like CI                      |
+| `make debug`        | without optimizations, with AddressSanitizer and UBSan         |
+| `make test`         | run every canvas in `examples/` and `tests/`, and compile them |
+| `make test-asan`    | the same, with AddressSanitizer and UBSan                      |
+| `make analyze`      | clang's static analyzer                                        |
+| `make format`       | format the C with clang-format (`make check-format` checks)    |
+| `make docs`         | `docs/*.typ` to PDF (needs typst)                              |
+| `make install`      | install it to `~/.local` (`PREFIX`, `DESTDIR`)                 |
+| `make appimage`     | `lineit-x86_64.AppImage` (downloads its pinned tools)          |
+| `make dist`         | `lineit-VERSION.tar.gz`, the source with the submodules        |
+| `make hooks`        | run `make test` before every `git push`                        |
+| `make clean`        | remove what the build made                                     |
+
 The default font is Iosevka NFM. If you don't have it, set `font.name` in
-`config.lua` to one you do have (see `fc-list`; it has to be a .ttf or .otf).
+the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 
 # Using the editor
 
@@ -77,6 +122,11 @@ does saving `config.lua`.
 Start with the canvases in `examples/`: each begins with a comment that
 explains it, and `examples/README.md` lists them.
 
+How it all works inside (modules, Run, Compile, packages, hot reload) is in
+`docs/internals.typ`. Its PDF is in the
+[releases](https://github.com/hugoocoto/lineit/releases) (the nightly one
+follows main), or make it with `make docs` (needs typst).
+
 # Modules
 
 A module is a C file in `modules/` that uses `src/lineit.h`, which documents
@@ -101,13 +151,19 @@ void module_tick(Li_Node *n, int input) {
 
 # Packages
 
-To give a module to others, make a package: a `.li` file (a zip) with the
+To give a module to others, make a package: a `.li` file with the
 module built for one or more platforms, its source, a license, and a
-Makefile that builds it. Put the `.li` in `build/modules` and it loads like
-a `.so`.
+Makefile that builds it. Put the `.li` with your own modules
+(`~/.local/share/lineit/modules` installed, `modules/` in the source tree:
+`modules.user` in the config) and it loads like a `.so`.
 
-    tools/lineit-pack -o build/modules/string/reverse.li examples/package/Makefile
+    tools/lineit-pack -o reverse.li examples/package/Makefile
     tools/lineit-pack --howto    # what a package has to have
+
+`lineit-pack` writes the SHA-256 of every file in it, and lineit loads,
+builds or compiles nothing of a package until they match. That finds a
+broken or changed file, not who made it: packages are native code, so only
+use the ones you trust.
 
 # Configuration
 
@@ -115,6 +171,19 @@ a `.so`.
 fonts, where modules and saves go, the output panel and how to compile.
 Delete a key to use its default. Saving it applies the changes while lineit
 runs, except the window size and the modules and save paths, read at start.
+
+lineit reads the one given with `-c`, or else the `config.lua` next to it in
+its source tree, or, installed, `~/.config/lineit/config.lua`
+(`$XDG_CONFIG_HOME`): copy the one in `share/lineit/` there to start. With
+none, it uses the defaults. A `config.lua` in the folder you run it from is
+never read on its own: it's Lua, and so are canvases, so only open the ones
+you trust.
+
+# Contributing
+
+Bug reports, ideas and pull requests are welcome: see
+[CONTRIBUTING.md](CONTRIBUTING.md). Security problems go privately, see
+[SECURITY.md](.github/SECURITY.md).
 
 # License
 
@@ -134,6 +203,5 @@ GPL too.
 - Modules are weird
 - UI and modules are ugly as fuck - Themes?
 - Edit config from the GUI
-- Proper setup: make install, ~/.config/lineit, releases...
 - Proper documentation
 

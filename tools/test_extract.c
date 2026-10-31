@@ -1,10 +1,10 @@
 /* Tests Make subgraph: extracts squares of example canvases into subgraphs
  * and checks the canvas prints the same as before, with the ports it should
  * have. Run it with `make test` from the repo root. The subgraphs go to a
- * temporary folder, linked into build/modules/test-extract/ while it runs. */
+ * temporary folder, modules.user while it runs. */
 
 /* The editor itself, without its main, and with fake time */
-#define main    lineit_main
+#define main lineit_main
 #define GetTime fake_time
 #include "../src/main.c"
 #undef GetTime
@@ -34,7 +34,7 @@ run(void)
         }
         running = false;
         FILE *f = open_memstream(&buf, &len);
-        Da_foreach(l, output.lines)
+        Da_foreach(l, output_panel.lines)
         {
                 if (!l->info) fprintf(f, "%s\n", l->text);
         }
@@ -65,7 +65,7 @@ check(const char *canvas, const int *ids, int n, const char *name, const char *i
         for (int i = 0; i < n; i++)
                 square_get(ids[i])->selected = true;
 
-        snprintf(path, sizeof path, "%s/test-extract/%s", cfg.modules.source, name);
+        snprintf(path, sizeof path, "%s/test-extract/%s", cfg.modules.user, name);
         subgraph_make(path);
         char *after = run();
 
@@ -98,16 +98,16 @@ check(const char *canvas, const int *ids, int n, const char *name, const char *i
 int
 main(void)
 {
-        char source[] = "/tmp/lineit-test-extract-XXXXXX";
-        load_config("config.lua");
+        char user[] = "/tmp/lineit-test-extract-XXXXXX";
+        config_start("config.lua");
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         SetTraceLogLevel(LOG_WARNING);
         InitWindow(320, 240, "test");
         load_font();
         load_modules(cfg.modules.path);
-        if (!mkdtemp(source)) return 1;
-        const char *source_default = cfg.modules.source;
-        cfg.modules.source         = source;
+        if (!mkdtemp(user)) return 1;
+        const char *user_default = cfg.modules.user;
+        cfg.modules.user         = user;
         /* print writes to stdout too: only the results, on stderr */
         if (!freopen("/dev/null", "w", stdout)) return 1;
 
@@ -121,9 +121,9 @@ main(void)
         /* No CloseWindow: it unloads the GL driver, and the one under Xvfb
          * (Mesa) leaves memory that LeakSanitizer can't tell from ours in
          * make test-asan. The process ends right after anyway. */
-        cfg.modules.source = source_default;
-        /* What it made: the subgraphs and their links */
-        if (system(TextFormat("rm -rf '%s' '%s/test-extract'", source, cfg.modules.path)) != 0) failed++;
+        cfg.modules.user = user_default;
+        /* What it made: the subgraphs */
+        if (system(TextFormat("rm -rf '%s'", user)) != 0) failed++;
         fprintf(stderr, "%s\n", failed ? "test_extract: FAILED" : "test_extract: ok");
         return failed != 0;
 }

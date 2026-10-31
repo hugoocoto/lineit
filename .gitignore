@@ -1,2 +1,5 @@
 build/
 lineit
+docs/**/*.pdf
+/*.tar.gz
+/*.AppImage

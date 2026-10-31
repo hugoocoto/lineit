@@ -19,8 +19,8 @@
 
 typedef struct Rt_Pin {
         Li_Type type;
-        Li_Value value;  /* outputs: the last value set. Options: .i, the chosen one */
-        char **options;  /* li_input_options */
+        Li_Value value; /* outputs: the last value set. Options: .i, the chosen one */
+        char **options; /* li_input_options */
         int option_count;
 } Rt_Pin;
 
@@ -31,10 +31,10 @@ typedef struct Rt_Param {
 
 struct Li_Node {
         /* Given by main.c */
-        const char *module; /* "math/add" */
-        int square;         /* its id in the canvas */
-        int scope;          /* whose locals it uses: 0 the canvas's, then one per subgraph square */
-        Li_Type type;       /* custom type of make_ and break_ squares */
+        const char *module;           /* "math/add" */
+        int square;                   /* its id in the canvas */
+        int scope;                    /* whose locals it uses: 0 the canvas's, then one per subgraph square */
+        Li_Type type;                 /* custom type of make_ and break_ squares */
         Li_Value (*const *get)(void); /* per input, its value (NULL: options) */
         int get_count;
         void (*const *tick)(void); /* per output, what it ticks (NULL: nothing) */

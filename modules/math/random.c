@@ -91,7 +91,7 @@ module_tick(Li_Node *n, int input)
         } else {
                 long l = (long) lo, h = (long) hi;
                 uint64_t range = (uint64_t) h - (uint64_t) l + 1; /* 0: every long */
-                v = li_int((long) ((uint64_t) l + (range ? next() % range : next())));
+                v              = li_int((long) ((uint64_t) l + (range ? next() % range : next())));
         }
         li_set(n, OUT_VALUE, v);
         li_format(v, buf, sizeof buf);

@@ -1,4 +1,6 @@
 -- lineit configuration
+-- lineit reads the one given with -c, or this one next to it in its source
+-- tree, or, installed, ~/.config/lineit/config.lua: copy this file there.
 -- Colors are { r, g, b } or { r, g, b, a }, each in 0..255.
 -- Any key can be removed; the built-in default is used instead.
 
@@ -38,10 +40,16 @@ font = {
         spacing = 0,
 }
 
+-- The paths below are found from where lineit is, so they're commented out:
+-- run from its source tree, in it (build/modules, modules...), installed
+-- (make install, the AppImage), in PREFIX/lib/lineit and PREFIX/share/lineit
+-- for what comes with it, and in ~/.local/share/lineit and ~/.cache/lineit
+-- for your own. Set them to use others.
 modules = {
-        path = "build/modules", -- every .so here (and in subfolders) is loaded, `make` builds them from modules/
-        source = "modules",     -- Make subgraph (Ctrl+G) writes the new .lua here, and links it into path
-        cache = "build/cache",  -- packages (.li) not built for this machine are built here, from their src/
+        -- path = "build/modules",  -- every .so, subgraph (.lua), type (.type.lua) and package (.li) here is loaded
+        -- user = "modules",        -- loaded too, your own: Make subgraph (Ctrl+G) and New type write here
+        -- source = "modules",      -- the C of the modules in path, for Compile (yours: next to their .so in user)
+        -- cache = "build/cache",   -- packages (.li) not built for this machine are built here, from their src/
 }
 
 save = {
@@ -58,8 +66,8 @@ output = {
 }
 
 compile = {
-        output = "build/bin",   -- Compile (in the bar) makes the program NAME here (NAME: the canvas file's), its C in NAME.build/
-        runtime = "build/rt",   -- what programs are built with, `make` builds it
+        -- output = "build/bin", -- Compile (in the bar) makes the program NAME here (NAME: the canvas file's), its C in NAME.build/
+        -- runtime = "build/rt", -- what programs are built with, `make` builds it
         cc = "cc",
         cflags = "-O2",
         objcopy = "objcopy",    -- gives each square of a package its own copy of it (llvm-objcopy works too)

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=lineit
+Comment=A graphical yet compiled modular programming language
+Exec=lineit %f
+Icon=lineit
+Terminal=false
+Categories=Development;IDE;
