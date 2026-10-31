@@ -20,10 +20,11 @@ if [ "$(id -u)" = 0 ]; then
 fi
 [ -w /work ] || echo "lineit-docker: /work isn't writable by uid $(id -u): run with --user \"\$(id -u):\$(id -g)\"" >&2
 
-export HOME=/work DISPLAY=:0 XDG_RUNTIME_DIR=/tmp/runtime-$(id -u)
-mkdir -p -m700 "$XDG_RUNTIME_DIR"
+XDG_RUNTIME_DIR=/tmp/runtime-$(id -u)
+export HOME=/work DISPLAY=:0 XDG_RUNTIME_DIR
+[ -d "$XDG_RUNTIME_DIR" ] || mkdir -m700 "$XDG_RUNTIME_DIR"
 
-pids= lineit=
+pids='' lineit=''
 trap 'trap - TERM INT; kill $pids $lineit 2>/dev/null; exit 0' TERM INT
 
 # What the last one left, if the container is started again
