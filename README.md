@@ -73,7 +73,8 @@ versions, once there are any, are `:v0.0.1` and so on, and `:latest`.
 The catches:
 
 - Some input lag, and it's drawn by the CPU: it's a virtual screen sent to
-  the browser (Xvfb, x11vnc and noVNC).
+  the browser (Xvnc and noVNC). The screen takes the size of the browser's
+  window, and lineit fills it.
 - Copy and paste between lineit and your system go through noVNC's
   clipboard panel, in the tab on the left of the page.
 - The programs Compile makes are Linux ones: on Mac and Windows they only

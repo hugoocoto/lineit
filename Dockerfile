@@ -4,8 +4,8 @@
 #   docker run --rm -p 127.0.0.1:6080:6080 -v "$PWD":/work lineit
 #
 # and open http://localhost:6080. A container has no screen, so lineit draws
-# on a virtual one (Xvfb, drawn by the CPU), and x11vnc and noVNC show it as
-# a web page. Your canvases, config and compiled programs are in /work (see
+# on a virtual one (Xvnc, drawn by the CPU), which noVNC shows as a web page,
+# as big as the browser's window. Your canvases, config and compiled programs are in /work (see
 # scripts/docker-entrypoint.sh). Arguments after the image go to lineit.
 
 # Debian 13, pinned like the actions in CI (Dependabot updates both): glibc
@@ -31,19 +31,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         liblua5.1-0 libfontconfig1 libx11-6 zlib1g libssl3t64 fonts-dejavu-core \
         libgl1 libglx-mesa0 libgl1-mesa-dri libxrandr2 libxinerama1 libxcursor1 libxi6 \
         gcc libc6-dev make binutils zip lua5.1 \
-        xvfb x11vnc novnc websockify \
+        tigervnc-standalone-server matchbox-window-manager novnc websockify \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/usr /usr
 COPY scripts/docker-entrypoint.sh /usr/bin/lineit-docker
 # The default font isn't here: DejaVu Sans Mono instead. The web page opens
-# connected, scaled to the browser's window, and reconnects if it drops.
-# /tmp/.X11-unix as X wants it, made by root: Xvfb doesn't run as root.
+# connected, makes the screen the size of the browser's window, and
+# reconnects if it drops. /tmp/.X11-unix as X wants it, made by root: Xvnc
+# doesn't run as root.
 RUN printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
         '<fontconfig><alias binding="same"><family>Iosevka NFM</family>' \
         '<prefer><family>DejaVu Sans Mono</family></prefer></alias></fontconfig>' \
         >/etc/fonts/local.conf && \
     printf '%s\n' '<!doctype html><title>lineit</title>' \
-        '<meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=true&amp;resize=scale&amp;reconnect=true">' \
+        '<meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=true&amp;resize=remote&amp;reconnect=true">' \
         >/usr/share/novnc/index.html && \
     mkdir -m1777 -p /tmp/.X11-unix && \
     useradd --uid 1000 --user-group --home-dir /work --create-home --shell /bin/sh lineit
