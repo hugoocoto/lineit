@@ -70,6 +70,15 @@ they're still there next time. Arguments after the image go to lineit
 the folder). `:nightly` is the build of the last commit on main;
 versions, once there are any, are `:v0.0.1` and so on, and `:latest`.
 
+Docker downloads the image the first time and then keeps using that copy,
+so to update it, download it again and start lineit as before:
+
+    docker pull ghcr.io/hugoocoto/lineit:nightly
+
+(or add `--pull always` to `docker run`, to check every time).
+`docker image prune` removes the old one. What's in your folder isn't
+touched.
+
 The catches:
 
 - Some input lag, and it's drawn by the CPU: it's a virtual screen sent to
@@ -242,13 +251,3 @@ license and with no extra restrictions. It comes with no warranty.
 Your canvases are yours. The programs Compile makes include lineit's runtime
 and modules, so if you give someone a compiled program, it's covered by the
 GPL too.
-
-
-# TODO
-
-- VIM MODE!
-- Modules are weird
-- UI and modules are ugly as fuck - Themes?
-- Edit config from the GUI
-- Proper documentation
-

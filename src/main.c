@@ -8393,7 +8393,11 @@ draw_bar(void)
         snprintf(stats[5], sizeof stats[5], "modules: %d", modules.count);
         snprintf(stats[6], sizeof stats[6], "FPS: %d", GetFPS());
         float sx = 10, gap = measure_text("  ", fs);
+        /* On a narrow window, the ones that would go under the buttons
+         * aren't drawn, from the last */
+        float room = bar_button_rect(countof(bar_buttons) - 1).x - gap;
         for (int i = 0; i < countof(widest); i++) {
+                if (sx + measure_text(stats[i], fs) > room) break;
                 draw_text(stats[i], sx, y + (h - fs) / 2, fs, cfg.colors.bar_text);
                 sx += fmaxf(measure_text(stats[i], fs), measure_text(widest[i], fs)) + gap;
         }

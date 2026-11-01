@@ -31,14 +31,17 @@ trap 'trap - TERM INT; kill $pids $lineit 2>/dev/null; exit 0' TERM INT
 
 # What the last one left, if the container is started again
 rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
-# No password: only websockify, in here, reaches it
+# No password: only websockify, in here, reaches it. What it says goes to a
+# file, shown if it doesn't start or quits: it always says it can't use the
+# GPU (DRI3, no /dev/dri here), which isn't a problem, it draws with the CPU.
+xvnc_log=$XDG_RUNTIME_DIR/xvnc.log
 Xvnc :0 -geometry 1280x720 -depth 24 -desktop lineit -nolisten tcp \
-        -rfbport 5900 -localhost -SecurityTypes None -AlwaysShared -Log '*:stderr:0' &
+        -rfbport 5900 -localhost -SecurityTypes None -AlwaysShared -Log '*:stderr:0' 2>"$xvnc_log" &
 xvnc=$!
 pids=$xvnc
 i=0
 until [ -S /tmp/.X11-unix/X0 ]; do
-        kill -0 "$xvnc" 2>/dev/null && [ $i -lt 100 ] || { echo "lineit-docker: Xvnc didn't start" >&2; exit 1; }
+        kill -0 "$xvnc" 2>/dev/null && [ $i -lt 100 ] || { cat "$xvnc_log" >&2; echo "lineit-docker: Xvnc didn't start" >&2; exit 1; }
         i=$((i + 1))
         sleep 0.1
 done
@@ -56,5 +59,6 @@ while kill -0 "$xvnc" 2>/dev/null; do
         wait $lineit || true
         sleep 1
 done
+cat "$xvnc_log" >&2
 echo "lineit-docker: Xvnc quit" >&2
 exit 1
