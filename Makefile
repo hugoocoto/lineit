@@ -83,7 +83,7 @@ DEPS += $(shell pkg-config --libs libcrypto)
 # modules include in build/rt/include. Before all: make expands a rule's
 # prerequisites when it reads it, an RT defined later would be empty there.
 RT = build/rt/liblineit-rt.a
-RT_H = src/lineit.h src/value.h src/rt/rt.h thirdparty/bt.h/bt.h thirdparty/cum.h/cum.h
+RT_H = src/lineit.h src/value.h src/branches.h src/rt/rt.h thirdparty/bt.h/bt.h thirdparty/cum.h/cum.h
 
 all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
@@ -115,12 +115,14 @@ build/modules/%.so: $(CONFIG)/modules/%.so build/.flags
 	$(call use,$<)
 
 # The headers are the same for every CONFIG: build/rt/include is shared
-$(CONFIG)/rt/liblineit-rt.a: src/value.c src/rt/rt.c $(RT_H)
+$(CONFIG)/rt/liblineit-rt.a: src/value.c src/branches.c src/rt/rt.c $(RT_H)
 	@mkdir -p $(@D) build/rt/include
 	cp $(RT_H) build/rt/include/
 	$(CC) $(WARN) $(CFLAGS) -Ibuild/rt/include -c src/value.c -o $(@D)/value.o
+	$(CC) $(WARN) $(CFLAGS) -Ibuild/rt/include -c src/branches.c -o $(@D)/branches.o
 	$(CC) $(WARN) $(CFLAGS) -Ibuild/rt/include -c src/rt/rt.c -o $(@D)/rt.o
-	$(AR) rcs $@ $(@D)/value.o $(@D)/rt.o
+	rm -f $@ # made again: ar only adds, an old object would stay
+	$(AR) rcs $@ $(@D)/value.o $(@D)/branches.o $(@D)/rt.o
 
 $(RT): $(CONFIG)/rt/liblineit-rt.a build/.flags
 	$(call use,$<)
@@ -165,6 +167,16 @@ test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(P
 build/%_asan: tools/%.c $(SRC) src/lineit.h
 	@mkdir -p $(dir $@)
 	$(CC) $(WARN) -O1 -g $(SAN_FLAGS) $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+
+# The same with ThreadSanitizer: branches run in parallel (see
+# src/branches.h), and any data race between them fails it. The modules
+# aren't built with it: races inside one aren't seen.
+test-tsan: build/run_tests_tsan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
+	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan $(TESTS)
+
+build/%_tsan: tools/%.c $(SRC) src/lineit.h
+	@mkdir -p $(dir $@)
+	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
 test-update: $(RUN_TESTS) $(MODULES) $(GRAPHS) $(PACKAGES)
 	./$(RUN_TESTS) -u $(TESTS)
@@ -354,5 +366,5 @@ clean:
 	rm -rf build
 	find docs -name '*.pdf' -delete
 
-.PHONY: all analyze check-format clean debug dist docs examples format hooks install test test-update test-asan
+.PHONY: test-tsan all analyze check-format clean debug dist docs examples format hooks install test test-update test-asan
 .PHONY: appimage uninstall version

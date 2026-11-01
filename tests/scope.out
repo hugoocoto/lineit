@@ -1,4 +1,4 @@
--- 11 squares, 8 links
+-- 14 squares, 13 links
 0 flow/entry: 
 1 var/set: total = 100
 2 var/set: ::g = 7
@@ -11,6 +11,7 @@
     4 var/set: total = 10
     5 subgraph/output: then
     6 subgraph/output: total
+    7 var/var: total = 10
 5 math/accumulate: 
     0 subgraph/input: tick
     1 subgraph/input: value
@@ -19,8 +20,12 @@
     4 var/set: total = 50
     5 subgraph/output: then
     6 subgraph/output: total
+    7 var/var: total = 50
 6 io/display: 10
 7 io/display: 50
 8 var/get: total = 100
 9 var/get: ::g = 7
 10 var/get: g = -
+11 var/var: total = 100
+12 var/var: ::g = 7
+13 var/var: g = -

@@ -1,4 +1,4 @@
--- 19 squares, 18 links
+-- 21 squares, 22 links
 0 types/make_point: {x: 1.5, y: 2}
 1 io/display: {x: 1.5, y: 2}
 2 types/break_point: 
@@ -18,3 +18,5 @@
 16 list/get: segments [1]
 17 types/break_segment: 
 18 io/display: {x: 4, y: 6}
+19 var/var: p = {x: 1.5, y: 2}
+20 var/var: segments = [{from: {x: 1.5, y: 2}, to: {x: 4, y: 6}}]

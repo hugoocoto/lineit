@@ -16,10 +16,10 @@ x-y-z
 12 string/upper: "HELLO, WORLD 1!"
 13 string/lower: "hello, world 1!"
 14 flow/entry: 
-15 string/split: parts [4]
+15 string/split: [4]
 16 string/join: "a | b |  | c"
 17 io/print: a | b |  | c
-18 string/split: chars [3]
+18 string/split: [3]
 19 string/join: "x-y-z"
 20 io/print: x-y-z
 21 string/format: "len 5"

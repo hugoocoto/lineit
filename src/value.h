@@ -1,5 +1,5 @@
-/* value.h - what values need at run time: records, variables, lists and
- * trees, and li_format. Shared by the editor (src/main.c) and the programs
+/* value.h - what values need at run time: records, lists, maps, variables
+ * and li_format. Shared by the editor (src/main.c) and the programs
  * Compile makes (src/rt/rt.c), so both run canvases the same way.
  *
  * Whoever links it says what the custom types are: type_is_record and
@@ -23,30 +23,37 @@ typedef struct Record {
 bool type_is_record(Li_Type t);
 const char *type_field_name(Li_Type t, int field); /* "?" if there's none */
 
-/* A copy of V that owns what it points to (strings, records), for whoever
- * keeps it longer than the module that made it: free it with value_drop */
+/* A copy of V that owns what it points to (strings, lists, maps, records),
+ * for whoever keeps it longer than the module that made it: free it with
+ * value_drop. li_copy and li_drop for modules. */
 Li_Value value_dup(Li_Value v);
 void value_drop(Li_Value v);
 bool value_equal(Li_Value a, Li_Value b);
 
-/* Variables, by name: li_var_* and li_global_* */
+/* Variables, by name: li_var_* */
 typedef struct Var {
         char *name;
         Li_Value value; /* a copy it owns (value_dup) */
+        bool set;       /* ever set: li_var_has */
+        /* What li_var_declare says (var/var): its type, LI_ANY for any */
+        bool declared;
+        Li_Type type;
+        Li_Value start;
 } Var;
 
 typedef Da(Var) VarList;
 
-/* The locals of the canvas running (its variables, lists and trees), and
- * the globals. Whoever runs canvases trades them to change which canvas is
- * running: subgraphs have their own locals, like C functions. */
+/* The locals of the canvas running, and the globals ("::name"). Whoever
+ * runs canvases trades them to change which canvas is running: subgraphs
+ * have their own locals, like C functions. */
 extern VarList vars;
 extern VarList globals;
-extern BT *lists; /* name -> List * */
-extern BT *trees; /* name -> Tree * */
+
+/* The thread runs a square of the subgraph square whose locals are L, or
+ * of the canvas (NULL) */
+void value_locals(VarList *l);
 
 void var_list_clear(VarList *l);
-void vars_clear(void);       /* vars and globals */
-void containers_clear(void); /* lists and trees */
+void vars_clear(void); /* vars and globals */
 
 #endif /* VALUE_H_ */

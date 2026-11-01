@@ -96,7 +96,11 @@ li_get(Li_Node *n, int input)
 void
 li_set(Li_Node *n, int output, Li_Value value)
 {
-        if (output >= 0 && output < n->outputs.count) n->outputs.items[output].value = value;
+        if (output < 0 || output >= n->outputs.count) return;
+        /* A copy of its own, like the editor's */
+        Li_Value old                   = n->outputs.items[output].value;
+        n->outputs.items[output].value = value_dup(value);
+        value_drop(old);
 }
 
 void
@@ -105,13 +109,117 @@ li_output_type(Li_Node *n, int output, Li_Type type)
         if (output >= 0 && output < n->outputs.count) n->outputs.items[output].type = type;
 }
 
+void
+li_input_type(Li_Node *n, int input, Li_Type type)
+{
+        if (input >= 0 && input < n->inputs.count) n->inputs.items[input].type = type;
+}
+
 /* Tick chains are plain recursion, this stops loops in the graph */
 #define TICK_DEPTH_MAX 256
+
+static _Thread_local int depth; /* of the branch the thread runs */
+
+/* What rt_pull gave in this thread: copies, freed once the square that
+ * asked is done, like the editor's */
+static _Thread_local Da(Li_Value) got;
+
+static void
+got_free(int mark)
+{
+        while (got.count > mark)
+                value_drop(got.items[--got.count]);
+}
+
+/* ---- Branches: like the editor's, see src/branches.h ---- */
+
+static Sched *sched;
+
+/* A tick from node FROM can get to TO: rt_next, from main.c */
+static bool
+reach(void *ctx, int from, int to)
+{
+        (void) ctx;
+        static char *seen;
+        static int *todo;
+        int n = 0;
+        if (!seen) seen = malloc(rt_node_count + 1), todo = malloc((rt_node_count + 1) * sizeof *todo);
+        memset(seen, 0, rt_node_count + 1);
+        todo[n++] = from;
+        while (n) {
+                int x = todo[--n];
+                for (int i = rt_next_first[x]; i < rt_next_first[x + 1]; i++) {
+                        int t = rt_next[i];
+                        if (t == to) return true;
+                        if (seen[t]) continue;
+                        seen[t]   = 1;
+                        todo[n++] = t;
+                }
+        }
+        return false;
+}
+
+void
+rt_run(const Sched_Task *tasks, int n)
+{
+        if (n) sched_run(sched, tasks, n);
+}
+
+void
+rt_fork(const Sched_Task *tasks, int n)
+{
+        sched_fork(sched, tasks, n);
+}
+
+void
+rt_start(Li_Node *n, void (*fn)(Li_Node *), int node)
+{
+        int at = sched_at(sched, node);
+        if (!sched_aborted(sched)) {
+                int mark = got.count;
+                rt_call(n, fn);
+                got_free(mark);
+        }
+        sched_back(sched, at);
+}
+
+Li_Value
+rt_pull(Li_Node *n, void (*eval)(Li_Node *), int pin, int node)
+{
+        /* Ours while we read it: it may be computing it for another branch */
+        sched_lock(sched, node);
+        if (eval && !n->evaluating) {
+                int mark      = got.count;
+                int was       = rt_scope(n->scope);
+                n->evaluating = true;
+                eval(n);
+                n->evaluating = false;
+                rt_scope(was);
+                got_free(mark);
+        }
+        Li_Value v = pin < n->outputs.count ? value_dup(n->outputs.items[pin].value) : (Li_Value) { .type = LI_NONE };
+        sched_unlock(sched, node);
+        Da_append(&got, v);
+        return v;
+}
+
+void
+rt_tick(Li_Node *n, void (*tick)(Li_Node *, int), int pin, int node, bool merge)
+{
+        if (!tick) return;
+        if (merge && !sched_merge(sched, node, pin)) return;
+        int at = sched_at(sched, node);
+        if (!sched_aborted(sched)) {
+                int mark = got.count;
+                rt_call_tick(n, tick, pin);
+                got_free(mark);
+        }
+        sched_back(sched, at);
+}
 
 void
 li_tick(Li_Node *n, int output)
 {
-        static int depth;
         static bool warned;
 
         if (output < 0 || output >= n->tick_count || !n->tick[output]) return;
@@ -209,34 +317,17 @@ rt_param(Li_Node *n, int param, Li_Value value)
 
 typedef struct Locals {
         VarList vars;
-        BT *lists, *trees;
 } Locals;
 
-static Locals *locals; /* by scope: while it's in the globals, the canvas's (0) */
-static int scope;
-
-static void
-locals_swap(int s)
-{
-        Locals *l = &locals[s];
-        VarList v = vars;
-        BT *ls = lists, *ts = trees;
-        vars     = l->vars;
-        lists    = l->lists;
-        trees    = l->trees;
-        l->vars  = v;
-        l->lists = ls;
-        l->trees = ts;
-}
+static Locals *locals;          /* by scope, the canvas's (0) is value.c's vars */
+static _Thread_local int scope; /* the thread's: branches run in parallel */
 
 int
 rt_scope(int s)
 {
         int was = scope;
-        if (s == scope) return was;
-        if (scope) locals_swap(scope);
-        if (s) locals_swap(s);
-        scope = s;
+        scope   = s;
+        value_locals(s ? &locals[s].vars : NULL);
         return was;
 }
 
@@ -321,6 +412,7 @@ rt_main(int argc, char **argv, void (*setup)(void), void (*start)(void), void (*
 
         clock_gettime(CLOCK_MONOTONIC, &t0);
         locals = calloc(rt_scope_count > 0 ? rt_scope_count : 1, sizeof *locals);
+        sched  = sched_new((Sched_Hooks) { .reach = reach });
         setup();
         start();
 

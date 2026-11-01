@@ -1,0 +1,44 @@
+a,b
+["X", "y"]
+1
+false
+z
+2
+{a: 1, b: 2}
+["y"]
+[]
+p+q
+-- 33 squares, 50 links
+0 var/var: m = {a: 1, b: 2}
+1 var/var: l = []
+2 flow/entry: 
+3 map/set: m {2}
+4 map/set: m {2}
+5 map/set: m {2}
+6 map/delete: m {2}
+7 list/push: l [0]
+8 list/push: l [0]
+9 list/push: l [0]
+10 list/pop: l [0]
+11 list/set: l [0]
+12 io/print: a,b
+13 io/print: ["X", "y"]
+14 io/print: 1
+15 io/print: false
+16 io/print: z
+17 io/print: 2
+18 io/print: {a: 1, b: 2}
+19 list/remove: l [0]
+20 io/print: ["y"]
+21 list/clear: l [0]
+22 io/print: []
+23 map/keys: m {2}
+24 string/join: "a,b"
+25 var/get: l = []
+26 map/get: m {2}
+27 map/has: m {2}
+28 list/length: l [0]
+29 var/get: m = {a: 1, b: 2}
+30 string/split: [2]
+31 io/print: p+q
+32 string/join: "p+q"

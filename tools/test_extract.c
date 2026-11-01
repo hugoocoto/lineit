@@ -112,7 +112,7 @@ main(void)
         if (!freopen("/dev/null", "w", stdout)) return 1;
 
         /* Data only: index feeds both pins of mul, it's one input */
-        check("examples/sum_squares.lua", (int[]) { 25, 27 }, 2, "mul_add", "index:int value:any", "sum:any");
+        check("examples/sum_squares.lua", (int[]) { 24, 27 }, 2, "mul_add", "index:int value:int", "sum:any");
         /* Ticks in and out: the first FizzBuzz check */
         check("examples/fizzbuzz.lua", (int[]) { 4, 5, 6, 7 }, 4, "fizz", "body:tick index:int", "false:tick");
 

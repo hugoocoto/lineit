@@ -172,10 +172,15 @@ main(int argc, char **argv)
         int failed = 0, total = 0;
 
         config_start("config.lua");
-        SetConfigFlags(FLAG_WINDOW_HIDDEN);
         SetTraceLogLevel(LOG_WARNING);
+        /* No window with ThreadSanitizer (make test-tsan): the GL driver's
+         * own threads aren't what it's there for. Running doesn't need the
+         * font, Compile runs without it too. */
+#ifndef __SANITIZE_THREAD__
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
         InitWindow(320, 240, "test");
         load_font();
+#endif
         load_modules(cfg.modules.path);
         signal(SIGALRM, timeout);
         report = fdopen(dup(STDOUT_FILENO), "w");
@@ -231,7 +236,9 @@ main(int argc, char **argv)
         }
 
         unload_modules();
+#ifndef __SANITIZE_THREAD__
         unload_fonts();
+#endif
         /* No CloseWindow: it unloads the GL driver, and the one under Xvfb
          * (Mesa) leaves memory that LeakSanitizer can't tell from ours in
          * make test-asan. The process ends right after anyway. */

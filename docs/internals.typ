@@ -77,7 +77,7 @@ print the same lines.
     loader, the program lowering, Run, Compile, undo, hot reload. One file.],
   [`src/lineit.h`], [The module API. The only header a module includes.],
   [`src/value.c`, `src/value.h`], [What values need at run time: records,
-    variables, lists, trees and `li_format`. Shared by the editor and the
+    lists, maps, variables and `li_format`. Shared by the editor and the
     compiled programs.],
   [`src/rt/rt.c`, `src/rt/rt.h`], [The runtime of compiled programs: the
     module API without the editor.],
@@ -164,10 +164,18 @@ keeps the buffer alive (a static buffer or its state) and the readers only
 use it until the next change.
 
 Whoever keeps a value longer than the module that made it copies it with
-`value_dup`, which duplicates strings and records recursively, and frees it
-with `value_drop`. That is what variables, lists and trees do (see
-@sec-vars), so a module can store a string it got from a wire and forget
-about it.
+`value_dup`, which duplicates strings, lists, maps and records
+recursively, and frees it with `value_drop` (`li_copy` and `li_drop` for
+modules). That is what variables, lists and maps do (see @sec-vars), so a
+module can store a string it got from a wire and forget about it.
+
+Lists (`LI_LIST`) and maps (`LI_MAP`) are values like strings: `.p` points
+to a `List` (a dynamic array of values it owns) or a `Map` (a red-black tree
+from `bt.h`, string keys to values it owns, in key order). `li_list_*` and
+`li_map_*` work on them: the ones that read take a value, the ones that
+change it take a pointer, and make it a list or a map if it isn't one, so a
+module's own list starts as `(Li_Value) { 0 }`. `li_format` writes them as
+`[1, "a"]` and `{a: 1}`.
 
 == Records: custom types
 
@@ -520,41 +528,118 @@ nothing can happen after that: the run is over, and `running` is cleared
 right away, as a compiled program ends after start. With one (a clock) it
 runs until Stop. Stop only clears `running`: the squares keep their state.
 
-= Variables, lists and trees <sec-vars>
+== Branches <sec-branches>
+
+`src/branches.c`, shared with the compiled programs, runs tick chains as
+_branches_, in parallel, each on a thread of a pool that grows as needed (a
+branch waiting for its children keeps its thread). The starts of a run
+(`module_start` of the nodes nothing ticks: entries) are branches,
+siblings, and so are the `module_frame` of a frame (`program_each`,
+`sched_run`). The `module_start` of a square with a tick input sets it up
+(random seeds), so those run first, on the main thread. `li_tick` of an
+output with one target calls it; with more, it forks a branch per target
+(`sched_fork`), runs the first on its own thread and returns when they're
+all done.
+
+What branches share is guarded. A square (a node) runs one tick or read at
+a time: `sched_at` (before a tick) and `sched_lock` (a read, `li_get`) make
+it the branch's until `sched_back` or `sched_unlock`; a branch that wants
+one another has waits. A branch can use the squares of the one that forked
+it, which waits for it and doesn't run them (a loop's body reads its
+index). Two squares reading each other at once would wait forever: that one
+isn't waited for. An output keeps a copy of what `li_set` gave it, and
+`li_get` gives a copy, made with the square locked, kept until the square
+that asked is done (`got_mark`, `got_free`). Variables are behind one lock
+(`li_var_*`, `li_var_update`), the output panel and the glow of wires
+behind others. Each thread has its own scope (`scope_enter` sets a
+thread-local pointer to the locals, `value_locals`) and depth.
+
+A tick input that more than one output ticks is a _merge_ (`Node.merge`).
+A branch that reaches it waits (`sched_merge`) while a relative could
+still get there: a sibling, or a sibling of its parent, of the parent's
+parent... (a branch of a fan-out inside another one gets there for that
+one). One that ended doesn't count. One that's running counts if it hasn't
+started yet and that's its first square, or a tick from the square it's
+in, or any square it's inside of (`Branch.path`, a loop around it), can get
+there (`prog_reach`). One waiting for its children counts through them, and
+through itself only if none of them is there already. One waiting at
+another merge counts from there, once that one goes; only if nothing can
+run at all (`merges_check`, stuck) it doesn't, or they'd wait for each
+other forever. Then the last to arrive runs the square once, and the others
+go on without it. So the two sides of an `ifelse` meeting again don't wait:
+there's only one branch.
+
+Stepping (the Step button), `sched_at` stops every branch before every
+square (PARKED); a press (`sched_resume`) lets each run one square, and the
+main thread waits until none is running (`wait_main`). The squares they
+stopped before (`sched_next`, shown as the subgraph square when it's inside
+one) have an outline. Stop (`sched_abort`) lets the branches end without
+running more squares. Each tab has its own `Sched`, and changing the canvas
+stops stepping.
+
+`tests/order.lua` checks the order of things without depending on how the
+branches interleave: each one pushes to a list of its own, and where two
+meet one says how long both lists were. `make test-tsan` runs the tests
+with ThreadSanitizer.
+
+Compiled programs do the same: `nI_tickK` forks with `rt_fork` when it has
+more than one target, each target goes through `rt_tick` (merge, lock,
+call) and `start` and `frame` are `rt_run` of their nodes. `rt_next` gives
+the ticks between nodes, for merges, and `rt_pull` reads like `li_get`.
+
+= Variables, lists and maps <sec-vars>
 
 == Storage
 
-`value.c` implements three kinds of named storage for modules:
+Variables are named values, in a dynamic array of `Var` (`vars`, the
+locals, and `globals` for names that start with `::`). `li_var_set` and
+`li_var_get` copy in and out (every value stored is a `value_dup` copy, so
+it outlives the module that set it), and `li_var` gives the stored value
+itself, to change a list or map in place: `li_list_push(li_var("l"), v)`.
 
-- *Variables* (`li_var_set`, `li_var_get`): a dynamic array of name and
-  value.
-- *Lists* (`li_list_*`): growable arrays of values, by name. Negative
-  indices count from the end.
-- *Trees* (`li_tree_*`): string keys to values, in key order, a red-black
-  tree from `bt.h`. `li_tree_keys` writes the keys, in order, to a list.
+Squares get to a variable through `var/var`, which declares it: name, type,
+start, global. Its `var` output is a `LI_REF`, a value whose `.s` is the
+variable's name (`::name` for a global), and the squares that use it
+(`var/get`, `var/set`, the `list/` and `map/` ones) take it in a `LI_REF`
+input and read it with `li_ref`. A `LI_REF` only wires to a `LI_REF`. Not
+wired, the input is a field where the name is typed (`li_var_ref`): a typed
+`LI_REF` is kept and saved like a typed string. So that a variable used only
+by name starts as its `var/var` says too, Run reads every `var/var` before
+the starts (`program_each`), and so does a compiled program's `start`.
+Whenever it's read, `var/var` calls `li_var_declare`, which keeps the type
+and the start in the `Var` and sets it to the start if it isn't set yet (or
+they changed). `li_var_type` gives the type to the squares wired to it, so
+`var/get` and `var/set` change their pins to it (`li_output_type`,
+`li_input_type`) and wires are checked against it.
 
-Lists and trees themselves are found by name in two more red-black trees
-(`lists` and `trees`). Every value stored is a `value_dup` copy, so it
-outlives the module that set it, and is freed with `value_drop` when it is
-replaced or cleared. None of this is saved with the canvas: it starts empty,
-and Clear all or Load empty it.
+Several `var/var` with the same name (and scope) are the same variable,
+copies. `decls_check`, every frame, compares the ones of the tab shown, its
+subgraphs' included, and marks (`conflict`, drawn in red) the ones that say
+another type or start than one of their copies. Run and Compile refuse
+while there are some. It's the one module the editor knows by name, like
+`flow/entry`.
+
+Nothing of this is saved with the canvas. Run empties the variables of the
+canvas, of every subgraph square in it and the globals (`vars_reset`), so
+every run starts from the declared values, like a compiled program, which
+starts with none.
 
 == Scopes <sec-scopes>
 
-Variables, lists and trees are _local_ to the canvas a square is in, like a
-C function's locals. A square inside a subgraph can't see the ones of the
-canvas around it, and the canvas can't see the subgraph's. Each subgraph
-square has its own, kept between ticks. `li_global_*` variables are shared
-by every canvas of the tab.
+Variables are _local_ to the canvas a square is in, like a C function's
+locals. A square inside a subgraph can't see the ones of the canvas around
+it, and the canvas can't see the subgraph's. Each subgraph square has its
+own, kept between ticks. Globals (`::name`) are shared by every canvas of
+the tab.
 
-This is done without passing a scope around. The globals `vars`, `lists`
-and `trees` always hold the locals of the canvas that is running _now_.
+This is done without passing a scope around. The global `vars` always
+holds the locals of the canvas that is running _now_.
 Each subgraph's `Graph` holds its own while it isn't running. `scope_enter(g)`
 swaps them: it gives the current ones back to their owner and puts `g`'s in
 the globals, returning whose were there so the caller can restore them.
 Every call into a module (`module_tick`, `module_eval` through `li_get`,
 `module_start`, `module_frame`) is wrapped in `scope_enter` of that node's
-scope. Swapping is three pointer assignments, so it costs nothing.
+scope. Swapping is a struct assignment, so it costs nothing.
 
 Compiled programs do the same with an array of locals indexed by a scope
 number (`rt_scope`): 0 is the canvas, and each subgraph square gets the next
@@ -573,7 +658,6 @@ typedef struct Graph {
         SquareList squares; /* while swapped in: the ones outside */
         LinkList links;
         VarList vars;       /* its locals */
-        BT *lists, *trees;
         Da(Square *) inputs;  /* subgraph/input squares inside, by port */
         Da(Square *) outputs; /* subgraph/output squares inside */
 } Graph;
@@ -816,8 +900,8 @@ what `main.c` gives (module name, square id, scope, the `get` and `tick`
 tables) and what the module makes (pins, params, data). It implements the
 `li_*` functions without anything of the editor: `li_text` does nothing,
 `li_print` writes to stdout, `li_time` is seconds since the start.
-Variables, lists, trees and records come from the same `value.c` the editor
-uses.
+Values, variables, lists, maps and records come from the same `value.c` the
+editor uses.
 
 `rt_main` runs the program: `setup`, `start`, and then, if there is a
 `frame`, one frame every 1/60 s until it is killed. A program with no

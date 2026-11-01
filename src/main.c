@@ -18,6 +18,7 @@
 #include <limits.h>
 #include <math.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -33,6 +34,7 @@
 
 #include <openssl/evp.h>
 
+#include "branches.h"
 #include "value.h"
 
 #define countof(a) ((int) (sizeof(a) / sizeof *(a)))
@@ -72,6 +74,9 @@ static const char *type_names[LI_TYPE_COUNT] = {
         [LI_FLOAT]  = "float",
         [LI_STRING] = "string",
         [LI_PTR]    = "ptr",
+        [LI_LIST]   = "list",
+        [LI_MAP]    = "map",
+        [LI_REF]    = "ref",
 };
 
 /* The colors of the editor: a theme gives them all, and colors.* in the
@@ -300,6 +305,9 @@ static const struct {
         [LI_FLOAT]  = { 190, 242, 100, 255 },
         [LI_STRING] = { 244, 114, 182, 255 },
         [LI_PTR]    = { 192, 132, 252, 255 },
+        [LI_LIST]   = { 56, 189, 248, 255 },
+        [LI_MAP]    = { 251, 146, 60, 255 },
+        [LI_REF]    = { 45, 212, 191, 255 },
         },
         .menu        = { 39, 39, 42, 255 },
         .menu_border = { 63, 63, 70, 255 },
@@ -337,6 +345,9 @@ static const struct {
         [LI_FLOAT]  = { 101, 163, 13, 255 },
         [LI_STRING] = { 219, 39, 119, 255 },
         [LI_PTR]    = { 147, 51, 234, 255 },
+        [LI_LIST]   = { 2, 132, 199, 255 },
+        [LI_MAP]    = { 234, 88, 12, 255 },
+        [LI_REF]    = { 13, 148, 136, 255 },
         },
         .menu        = { 255, 255, 255, 255 },
         .menu_border = { 212, 212, 216, 255 },
@@ -374,6 +385,9 @@ static const struct {
         [LI_FLOAT]  = { 143, 188, 187, 255 },
         [LI_STRING] = { 180, 142, 173, 255 },
         [LI_PTR]    = { 208, 135, 112, 255 },
+        [LI_LIST]   = { 94, 129, 172, 255 },
+        [LI_MAP]    = { 208, 135, 112, 255 },
+        [LI_REF]    = { 143, 188, 187, 255 },
         },
         .menu        = { 59, 66, 82, 255 },
         .menu_border = { 76, 86, 106, 255 },
@@ -411,6 +425,9 @@ static const struct {
         [LI_FLOAT]  = { 142, 192, 124, 255 },
         [LI_STRING] = { 211, 134, 155, 255 },
         [LI_PTR]    = { 254, 128, 25, 255 },
+        [LI_LIST]   = { 131, 165, 152, 255 },
+        [LI_MAP]    = { 254, 128, 25, 255 },
+        [LI_REF]    = { 142, 192, 124, 255 },
         },
         .menu        = { 60, 56, 54, 255 },
         .menu_border = { 80, 73, 69, 255 },
@@ -530,6 +547,9 @@ static const Setting settings[] = {
         TYPE_COLOR(LI_FLOAT, "float"),
         TYPE_COLOR(LI_STRING, "string"),
         TYPE_COLOR(LI_PTR, "ptr"),
+        TYPE_COLOR(LI_LIST, "list"),
+        TYPE_COLOR(LI_MAP, "map"),
+        TYPE_COLOR(LI_REF, "ref"),
 };
 #undef SETTING
 #undef TYPE_COLOR
@@ -964,6 +984,7 @@ struct Li_Node {
         struct Graph *graph;   /* a subgraph: its own canvas, see Subgraphs */
         struct Li_Node *owner; /* subgraph/input and subgraph/output in one: the subgraph */
         int port;              /* and which of its inputs or outputs they are */
+        bool conflict;         /* a var/var that says another thing than one of its variable, see Declarations */
 };
 typedef struct Li_Node Square;
 
@@ -994,6 +1015,7 @@ typedef enum Part {
         PART_INPUT,
         PART_OUTPUT,
         PART_FIELD, /* the typed value of an input, pin is its index */
+        PART_PARAM, /* the field of a param, pin is its index */
         PART_BODY,
 } Part;
 
@@ -1033,7 +1055,11 @@ static const ModuleFns graph_fns;
 static const ModuleFns port_in_fns, port_out_fns;
 static long long squares_version = 1; /* bumped when a square is made or freed, see Program */
 static void program_lower(void);
-static void program_each(bool start);
+static bool program_each(bool start);
+static bool stepping; /* a run going one square at a time, see Step */
+static void run_stop(void);
+static bool step_next(struct Li_Node *s);
+static const char *step_names(void);
 static void square_open_tab(int id, void *arg);
 static void menu_subgraph(int id, void *arg);
 static void type_edit(int id, void *arg);
@@ -1218,10 +1244,14 @@ static struct {
         int unseen; /* added while it was closed */
 } output_panel;
 
+/* Branches print from their threads: one at a time */
+static pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* Add TEXT, one line per '\n' in it */
 static void
 output_add(const char *text, bool info)
 {
+        pthread_mutex_lock(&output_lock);
         const char *p = text;
         do {
                 const char *nl = strchr(p, '\n');
@@ -1240,6 +1270,7 @@ output_add(const char *text, bool info)
                 memmove(output_panel.lines.items, output_panel.lines.items + extra, (output_panel.lines.count - extra) * sizeof *output_panel.lines.items);
                 output_panel.lines.count -= extra;
         }
+        pthread_mutex_unlock(&output_lock);
 }
 
 static void
@@ -1349,9 +1380,23 @@ field_width(PinInfo *p)
         return w;
 }
 
-/* Always a square: as tall as the text and the pins need, and as wide as
- * the longest input name, its field and the longest output name side by
- * side */
+/* Width of the field of a param: a checkbox for bools */
+static float
+param_field_width(Param *p)
+{
+        return p->value.type == LI_BOOL ? cfg.canvas.pin_font_size + 6 : cfg.canvas.field_width;
+}
+
+/* Height of the rows of the params, at the bottom */
+static float
+params_height(Square *s)
+{
+        return s->params.count * cfg.canvas.pin_spacing;
+}
+
+/* Always a square: as tall as the text, the pins and the params need, and
+ * as wide as the longest input or param name, its field and the longest
+ * output name side by side */
 static float
 square_side(Square *s)
 {
@@ -1363,9 +1408,14 @@ square_side(Square *s)
         {
                 s->field_w = fmaxf(s->field_w, field_width(p));
         }
+        Da_foreach(p, s->params)
+        {
+                s->label_w = fmaxf(s->label_w, measure_canvas_text(p->name, cfg.canvas.pin_font_size));
+                s->field_w = fmaxf(s->field_w, param_field_width(p));
+        }
 
         int pins     = Max(s->inputs.count, s->outputs.count);
-        float height = square_text_band() + (pins + 1) * cfg.canvas.pin_spacing;
+        float height = square_text_band() + (pins + 1) * cfg.canvas.pin_spacing + params_height(s);
         float width  = s->label_w + (s->field_w ? s->field_w + 6 : 0) + pins_label_width(&s->outputs) +
                        2 * pin_label_gap() + 12;
         s->side      = fmaxf(fmaxf(height, width), cfg.canvas.square_size);
@@ -1386,15 +1436,16 @@ pin_info(Square *s, Part part, int i)
         return i >= 0 && i < l->count ? &l->items[i] : NULL;
 }
 
-/* Inputs on the left side, outputs on the right, centered vertically below
- * the text band */
+/* Inputs on the left side, outputs on the right, centered vertically
+ * between the text band and the params */
 static Vector2
 pin_pos(Square *s, Part part, int i)
 {
         float side = square_side(s);
         float band = square_text_band();
+        float room = side - band - params_height(s);
         int count  = part == PART_INPUT ? s->inputs.count : s->outputs.count;
-        float y    = s->pos.y + band + (side - band) / 2 + (i - (count - 1) / 2.0f) * cfg.canvas.pin_spacing;
+        float y    = s->pos.y + band + room / 2 + (i - (count - 1) / 2.0f) * cfg.canvas.pin_spacing;
         float x    = part == PART_INPUT ? s->pos.x : s->pos.x + side;
         return (Vector2) { x, y };
 }
@@ -1409,6 +1460,23 @@ field_rect(Square *s, int i)
         float h   = cfg.canvas.pin_font_size + 6;
         square_side(s);
         return (Rectangle) { p.x + pin_label_gap() + s->label_w + 6, p.y - h / 2, field_width(&s->inputs.items[i]), h };
+}
+
+/* Middle of the row of param I, at the bottom of the square */
+static float
+param_y(Square *s, int i)
+{
+        return s->pos.y + square_side(s) - params_height(s) + (i + 0.5f) * cfg.canvas.pin_spacing;
+}
+
+/* Field of param I, below the input fields */
+static Rectangle
+param_rect(Square *s, int i)
+{
+        float h = cfg.canvas.pin_font_size + 6;
+        square_side(s);
+        return (Rectangle) { s->pos.x + pin_label_gap() + s->label_w + 6, param_y(s, i) - h / 2,
+                             param_field_width(&s->params.items[i]), h };
 }
 
 /* Options are always shown, typed values only while nothing is plugged in */
@@ -1437,6 +1505,9 @@ square_hit(Vector2 p)
                                 return (Hit) { s, PART_INPUT, j };
                         if (field_visible(s, j) && CheckCollisionPointRec(p, field_rect(s, j)))
                                 return (Hit) { s, PART_FIELD, j };
+                }
+                for (int j = 0; j < s->params.count; j++) {
+                        if (CheckCollisionPointRec(p, param_rect(s, j))) return (Hit) { s, PART_PARAM, j };
                 }
                 if (CheckCollisionPointRec(p, square_rect(s))) return (Hit) { s, PART_BODY, -1 };
         }
@@ -1468,7 +1539,8 @@ pin_connected(Square *s, Part part, int pin)
 static bool
 types_compatible(Li_Type out, Li_Type in)
 {
-        if (out == LI_TICK || in == LI_TICK) return out == in;
+        /* A variable only goes to what reads or changes one */
+        if (out == LI_TICK || in == LI_TICK || out == LI_REF || in == LI_REF) return out == in;
         return out == in || out == LI_ANY || in == LI_ANY;
 }
 
@@ -1525,8 +1597,9 @@ static void
 pin_store(PinInfo *p, Li_Value value)
 {
         char *old = p->str;
-        p->str    = value.type == LI_STRING ? strdup(value.s ? value.s : "") : NULL;
-        p->value  = value;
+        /* Strings and variable names are kept here */
+        p->str   = value.type == LI_STRING || value.type == LI_REF ? strdup(value.s ? value.s : "") : NULL;
+        p->value = value;
         if (p->str) p->value.s = p->str;
         free(old);
 }
@@ -1587,14 +1660,32 @@ void
 li_output_type(Li_Node *n, int output, Li_Type type)
 {
         PinInfo *out = pin_info(n, PART_OUTPUT, output);
-        if (out) out->type = type;
+        if (out && out->type != type) {
+                out->type = type;
+                n->side   = 0; /* its field may change */
+        }
+}
+
+void
+li_input_type(Li_Node *n, int input, Li_Type type)
+{
+        PinInfo *in = pin_info(n, PART_INPUT, input);
+        if (in && in->type != type) {
+                in->type = type;
+                n->side  = 0;
+        }
 }
 
 void
 li_set(Li_Node *n, int output, Li_Value value)
 {
+        /* A copy of its own: the module's may not live long, and readers in
+         * other branches may read it while the module makes the next one */
         PinInfo *out = pin_info(n, PART_OUTPUT, output);
-        if (out) out->value = value;
+        if (!out) return;
+        Li_Value old = out->value;
+        out->value   = value_dup(value);
+        value_drop(old);
 }
 
 void *
@@ -1790,6 +1881,7 @@ value_parse_as(Li_Type type, const char *text, Li_Value *out)
                         return false;
                 return true;
         case LI_STRING: *out = li_string(text); return true;
+        case LI_REF: *out = li_var_ref(text); return true; /* a variable's name */
         case LI_NONE: *out = (Li_Value) { .type = LI_NONE }; return true;
         case LI_ANY:
                 /* Whatever it looks like: 2 is an int, 2.5 a float, true a
@@ -1934,31 +2026,49 @@ menu_search(void)
         return &menu_search_text;
 }
 
-/* Input field being typed in the square */
+/* Input field, or param field, being typed in the square */
 static struct {
         Square *square; /* NULL if none */
-        int input;
+        int input;      /* or param */
+        bool param;
         TextInput text;
         bool error; /* what is typed is not valid */
 } field_edit;
 
+static bool param_set_text(Square *s, int i, const char *text);
+static void param_text(Param *p, char *buf, int size, bool exact);
+
 static void
-field_edit_start(Square *s, int i)
+field_edit_start(Square *s, int i, bool param)
 {
         char buf[256];
-        input_text(s, i, buf, sizeof buf, false);
+        if (param)
+                param_text(&s->params.items[i], buf, sizeof buf, false);
+        else
+                input_text(s, i, buf, sizeof buf, false);
         text_input_set(&field_edit.text, buf);
         field_edit.square = s;
         field_edit.input  = i;
+        field_edit.param  = param;
         field_edit.error  = false;
+}
+
+/* Field I of S (a param if PARAM) is being typed */
+static bool
+field_typing(Square *s, int i, bool param)
+{
+        return field_edit.square == s && field_edit.input == i && field_edit.param == param;
 }
 
 /* Apply what is typed. On error it stays open. */
 static bool
 field_edit_apply(void)
 {
-        if (!field_edit.square) return true;
-        if (!input_set_text(field_edit.square, field_edit.input, field_edit.text.buf, LI_NONE)) {
+        Square *s = field_edit.square;
+        if (!s) return true;
+        bool ok = field_edit.param ? param_set_text(s, field_edit.input, field_edit.text.buf) :
+                                     input_set_text(s, field_edit.input, field_edit.text.buf, LI_NONE);
+        if (!ok) {
                 field_edit.error = true;
                 return false;
         }
@@ -1984,8 +2094,9 @@ update_field(void)
 
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
                 Vector2 world = GetScreenToWorld2D(GetMousePosition(), camera);
-                if (field_edit.square && CheckCollisionPointRec(world, field_rect(field_edit.square, field_edit.input)))
-                        return true;
+                Square *s     = field_edit.square;
+                Rectangle f   = field_edit.param ? param_rect(s, field_edit.input) : field_rect(s, field_edit.input);
+                if (CheckCollisionPointRec(world, f)) return true;
                 /* Clicking away applies what's valid, the click goes on */
                 if (!field_edit_apply()) field_edit.square = NULL;
         }
@@ -2185,6 +2296,10 @@ square_free(Square *s)
         if (field_edit.square == s) field_edit.square = NULL;
         if (s->fn.destroy) s->fn.destroy(s);
         pins_free(&s->inputs);
+        Da_foreach(p, s->outputs)
+        {
+                value_drop(p->value); /* li_set's copy */
+        }
         pins_free(&s->outputs);
         Da_foreach(p, s->params)
         {
@@ -2276,7 +2391,6 @@ canvas_clear(int id, void *arg)
         squares.count = 0;
         links.count   = 0;
         vars_clear();
-        containers_clear();
 }
 
 static void each_selected(void (*fn)(int id, void *arg));
@@ -3541,11 +3655,15 @@ unload_modules(void)
 
 /* Let squares start tick chains (only while running), and update what
  * they show (always) */
+static void got_free(int mark);
+
 static void
 run_frame(void)
 {
+        got_free(0); /* what the main thread read since the last frame: draws, tooltips */
         program_lower();
-        if (running) program_each(false);
+        /* Stepping, frames go on with Step */
+        if (running && !stepping) program_each(false);
         for (int i = 0; i < squares.count; i++) {
                 Square *s = squares.items[i];
                 if (s->fn.draw) s->fn.draw(s);
@@ -4023,8 +4141,17 @@ update_mouse(void)
                         } else if (p->type == LI_BOOL) {
                                 pin_store(p, li_bool(!(p->value.type == LI_BOOL && p->value.b)));
                         } else {
-                                field_edit_start(h.square, h.pin);
+                                field_edit_start(h.square, h.pin, false);
                         }
+                        break;
+                }
+
+                case PART_PARAM: {
+                        Param *p = &h.square->params.items[h.pin];
+                        if (p->value.type == LI_BOOL)
+                                param_set_text(h.square, h.pin, p->value.b ? "false" : "true");
+                        else
+                                field_edit_start(h.square, h.pin, true);
                         break;
                 }
 
@@ -4266,40 +4393,77 @@ fit_canvas_text(const char *in, char *out, int size, float max, float fs)
         }
 }
 
-/* The typed value or chosen option of input I */
+/* A field at F showing VALUE (what's typed, if TYPING), with an arrow if
+ * it's a list of OPTIONS */
 static void
-draw_field(Square *s, int i)
+draw_value_field(Rectangle f, const char *value, bool typing, bool options)
 {
-        PinInfo *p   = &s->inputs.items[i];
-        Rectangle f  = field_rect(s, i);
         float fs     = cfg.canvas.pin_font_size;
-        bool typing  = field_edit.square == s && field_edit.input == i;
         Color border = typing && field_edit.error ? cfg.colors.error :
                        typing                     ? cfg.colors.pin_hover :
                                                     cfg.colors.square_border;
         char buf[256], text[256];
 
-        /* Bools: a round checkbox, filled when true (clicked in the same box) */
-        if (p->kind == PIN_VALUE && p->type == LI_BOOL) {
-                Vector2 c = { f.x + f.width / 2, f.y + f.height / 2 };
-                float r   = fminf(f.width, f.height) / 2;
-                DrawCircleV(c, r, border); /* the border: a circle under the field */
-                DrawCircleV(c, r - 1, cfg.colors.field);
-                if (p->value.type == LI_BOOL && p->value.b) DrawCircleV(c, r - 4, cfg.colors.square_text);
-                return;
-        }
-
         DrawRectangleRec(f, cfg.colors.field);
         DrawRectangleLinesEx(f, typing ? 2.0f : 1.0f, border);
 
-        float arrow = p->kind == PIN_OPTIONS ? measure_canvas_text(FIELD_ARROW, fs) + 6 : 0;
+        float arrow = options ? measure_canvas_text(FIELD_ARROW, fs) + 6 : 0;
         if (typing)
                 snprintf(buf, sizeof buf, "%s%s", field_edit.text.buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "");
         else
-                input_text(s, i, buf, sizeof buf, false);
+                snprintf(buf, sizeof buf, "%s", value);
         fit_canvas_text(buf, text, sizeof text, f.width - 8 - arrow, fs);
         draw_canvas_text(text, f.x + 4, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
         if (arrow) draw_canvas_text(FIELD_ARROW, f.x + f.width - arrow, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
+}
+
+/* Bools: a round checkbox, filled when ON (clicked in the same box) */
+static void
+draw_checkbox(Rectangle f, bool on)
+{
+        Vector2 c = { f.x + f.width / 2, f.y + f.height / 2 };
+        float r   = fminf(f.width, f.height) / 2;
+        DrawCircleV(c, r, cfg.colors.square_border); /* the border: a circle under the field */
+        DrawCircleV(c, r - 1, cfg.colors.field);
+        if (on) DrawCircleV(c, r - 4, cfg.colors.square_text);
+}
+
+/* The typed value or chosen option of input I */
+static void
+draw_field(Square *s, int i)
+{
+        PinInfo *p = &s->inputs.items[i];
+        char buf[256];
+
+        if (p->kind == PIN_VALUE && p->type == LI_BOOL) {
+                draw_checkbox(field_rect(s, i), p->value.type == LI_BOOL && p->value.b);
+                return;
+        }
+        input_text(s, i, buf, sizeof buf, false);
+        draw_value_field(field_rect(s, i), buf, field_typing(s, i, false), p->kind == PIN_OPTIONS);
+}
+
+/* The params, in rows at the bottom, under a line */
+static void
+draw_params(Square *s)
+{
+        float fs = cfg.canvas.pin_font_size;
+        char buf[256];
+
+        if (!s->params.count) return;
+        Rectangle r = square_rect(s);
+        float top   = r.y + r.height - params_height(s);
+        DrawLineEx((Vector2) { r.x + 4, top }, (Vector2) { r.x + r.width - 4, top }, 1.0f, Fade(cfg.colors.square_border, 0.4f));
+        for (int i = 0; i < s->params.count; i++) {
+                Param *p = &s->params.items[i];
+                draw_canvas_text(p->name, r.x + pin_label_gap(), param_y(s, i) - fs / 2, fs, cfg.colors.square_text);
+                if (p->value.type == LI_BOOL) {
+                        draw_checkbox(param_rect(s, i), p->value.b);
+                        continue;
+                }
+                param_text(p, buf, sizeof buf, false);
+                draw_value_field(param_rect(s, i), buf, field_typing(s, i, true), false);
+        }
 }
 
 /* HOVER_TINT is the color of the hovered pin, if it's one of S */
@@ -4318,6 +4482,9 @@ draw_square(Square *s, Hit hover, Color hover_tint)
                 DrawRectangleLinesEx((Rectangle) { r.x - 2, r.y - 2, r.width + 4, r.height + 4 }, 3.0f, cfg.colors.selection);
         else
                 DrawRectangleLinesEx(r, 2.0f, cfg.colors.square_border);
+        if (s->conflict) DrawRectangleLinesEx((Rectangle) { r.x - 4, r.y - 4, r.width + 8, r.height + 8 }, 3.0f, cfg.colors.error);
+        /* Stepping: the one it runs next */
+        if (step_next(s)) DrawRectangleLinesEx((Rectangle) { r.x - 7, r.y - 7, r.width + 14, r.height + 14 }, 4.0f, cfg.colors.pin_hover);
 
         for (int i = 0; i < s->inputs.count; i++) {
                 PinInfo *in = &s->inputs.items[i];
@@ -4337,6 +4504,8 @@ draw_square(Square *s, Hit hover, Color hover_tint)
                                  cfg.colors.square_text);
         }
 
+        draw_params(s);
+
         /* Text in the band at the top. Cut to fit, so a long value doesn't
          * cover the pins or resize the square. */
         if (*s->text) {
@@ -4347,10 +4516,11 @@ draw_square(Square *s, Hit hover, Color hover_tint)
                                  cfg.colors.square_text);
         }
 
-        /* Module name below */
-        float nfs = cfg.canvas.name_font_size;
-        float nw  = measure_canvas_text(s->module->label, nfs);
-        draw_canvas_text(s->module->label, r.x + (r.width - nw) / 2, r.y + r.height + 4, nfs, cfg.colors.name);
+        /* Module name below, or what's wrong with it */
+        float nfs         = cfg.canvas.name_font_size;
+        const char *label = s->conflict ? "says another type or start than its copies" : s->module->label;
+        float nw          = measure_canvas_text(label, nfs);
+        draw_canvas_text(label, r.x + (r.width - nw) / 2, r.y + r.height + 4, nfs, s->conflict ? cfg.colors.error : cfg.colors.name);
 }
 
 static void
@@ -4383,7 +4553,7 @@ draw_canvas(void)
                 Square *a = square_get(l->from);
                 Square *b = square_get(l->to);
                 if (!a || !b) continue;
-                Color c     = type_color(pin_info(a, PART_OUTPUT, l->from_pin)->type);
+                Color c     = a->conflict ? cfg.colors.error : type_color(pin_info(a, PART_OUTPUT, l->from_pin)->type);
                 float g     = glow(l->flash);
                 float thick = cfg.canvas.wire_thickness * (1 + g + (i == hovered ? 0.6f : 0));
                 draw_wire_ex(pin_pos(a, PART_OUTPUT, l->from_pin), pin_pos(b, PART_INPUT, l->to_pin),
@@ -5059,8 +5229,7 @@ canvas_read_text(const char *text, ReadMode mode)
 typedef struct Graph {
         SquareList squares; /* while swapped in: the ones outside */
         LinkList links;
-        VarList vars; /* its locals: variables, lists and trees */
-        BT *lists, *trees;
+        VarList vars;        /* its locals */
         Da(Square *) inputs; /* subgraph/input squares inside, by port */
         Da(Square *) outputs;
 } Graph;
@@ -5070,13 +5239,8 @@ static void
 locals_swap(Graph *g)
 {
         VarList v = vars;
-        BT *ls = lists, *ts = trees;
-        vars     = g->vars;
-        lists    = g->lists;
-        trees    = g->trees;
-        g->vars  = v;
-        g->lists = ls;
-        g->trees = ts;
+        vars      = g->vars;
+        g->vars   = v;
 }
 
 static void
@@ -5091,20 +5255,19 @@ graph_swap(Graph *g)
         locals_swap(g);
 }
 
-/* Whose locals are in the globals: NULL for the canvas's, or a subgraph's
- * while one of its squares runs */
-static Graph *scope;
+/* Whose locals the thread uses: NULL for the canvas's, or a subgraph
+ * square's while one of its squares runs. Each thread its own: branches run
+ * in parallel. */
+static _Thread_local Graph *scope;
 
-/* Put the locals of G (NULL: the canvas's) in the globals. Returns whose
- * were there, to give back to it when done. */
+/* Use the locals of G (NULL: the canvas's). Returns whose it used, to give
+ * back when done. */
 static Graph *
 scope_enter(Graph *g)
 {
         Graph *was = scope;
-        if (g == scope) return was;
-        if (scope) locals_swap(scope);
-        if (g) locals_swap(g);
-        scope = g;
+        scope      = g;
+        value_locals(g ? &g->vars : NULL);
         return was;
 }
 
@@ -5271,7 +5434,6 @@ graph_destroy(Li_Node *n)
         Da_destroy(&squares);
         Da_destroy(&links);
         var_list_clear(&vars);
-        containers_clear();
         graph_swap(g);
         Da_destroy(&g->inputs);
         Da_destroy(&g->outputs);
@@ -5303,6 +5465,105 @@ graph_builtins(void)
                 m->seen    = true;
                 Da_append(&modules, m);
         }
+}
+
+/* ---- Declarations: var/var squares of one variable agree ---- */
+
+/* Squares of var/var with the same name in a canvas (or global anywhere in
+ * the tab) are the same variable: copies, so its wires can be short. They
+ * have to say the same type and start. The ones that don't are marked
+ * (conflict, drawn as an error), and Run and Compile refuse until they do. */
+
+enum { DECL_TYPE,
+       DECL_START }; /* inputs of var/var */
+enum { DECL_NAME,
+       DECL_GLOBAL }; /* its params */
+
+typedef struct Decl {
+        Square *square;
+        const void *scope; /* NULL if global */
+        const char *name;
+        int type;
+        char start[128];
+} Decl;
+
+typedef Da(Decl) DeclList;
+
+static bool
+is_decl(Square *s)
+{
+        return !strcmp(s->module->name, "var/var") && s->inputs.count > DECL_START && s->params.count > DECL_GLOBAL;
+}
+
+/* The var/var of LIST, a canvas whose locals are LOCALS', and the ones of
+ * the subgraphs in it */
+static void
+decls_collect(SquareList *list, const void *locals, DeclList *out)
+{
+        Da_foreach(sp, *list)
+        {
+                Square *s = *sp;
+                if (s->graph) decls_collect(&s->graph->squares, s->graph, out);
+                if (!is_decl(s)) continue;
+                Decl d = {
+                        .square = s,
+                        .scope  = s->params.items[DECL_GLOBAL].value.b ? NULL : locals,
+                        .name   = s->params.items[DECL_NAME].value.s,
+                        .type   = (int) s->inputs.items[DECL_TYPE].value.i,
+                };
+                input_text(s, DECL_START, d.start, sizeof d.start, true);
+                Da_append(out, d);
+        }
+}
+
+/* Mark the ones of the canvas shown (and its subgraphs) that disagree.
+ * Returns the name of one of them, NULL if they all agree. */
+static const char *
+decls_check(void)
+{
+        static char bad[128];
+        DeclList d = { 0 };
+        bool any   = false;
+
+        decls_collect(&squares, &squares, &d);
+        Da_foreach(x, d)
+        {
+                x->square->conflict = false;
+        }
+        for (int i = 0; i < d.count; i++) {
+                for (int j = i + 1; j < d.count; j++) {
+                        Decl *a = &d.items[i], *b = &d.items[j];
+                        if (a->scope != b->scope || strcmp(a->name, b->name)) continue;
+                        if (a->type == b->type && !strcmp(a->start, b->start)) continue;
+                        a->square->conflict = b->square->conflict = true;
+                        snprintf(bad, sizeof bad, "%s%s", a->scope ? "" : "::", a->name);
+                        any = true;
+                }
+        }
+        free(d.items);
+        return any ? bad : NULL;
+}
+
+/* Run starts from nothing: the variables of the canvas, of every subgraph
+ * in it and the globals are emptied, and var/var sets them to their start
+ * when they are first used */
+static void
+locals_clear(SquareList *list)
+{
+        Da_foreach(sp, *list)
+        {
+                Graph *g = (*sp)->graph;
+                if (!g) continue;
+                var_list_clear(&g->vars);
+                locals_clear(&g->squares);
+        }
+}
+
+static void
+vars_reset(void)
+{
+        vars_clear();
+        locals_clear(&squares);
 }
 
 /* ---- Program: the canvas, lowered ---- */
@@ -5358,10 +5619,11 @@ typedef struct Wire {
 
 typedef struct Node {
         Square *square;
-        Graph *scope; /* whose locals it uses, NULL for the canvas's (see Subgraphs) */
-        int inputs;   /* its first in prog.sources, one per input */
-        int outputs;  /* its first in prog.outs, one per output */
-        int level;    /* the canvas it's in, while lowering */
+        Graph *scope;   /* whose locals it uses, NULL for the canvas's (see Subgraphs) */
+        int inputs;     /* its first in prog.sources, one per input */
+        int outputs;    /* its first in prog.outs, one per output */
+        int level;      /* the canvas it's in, while lowering */
+        unsigned merge; /* its tick inputs with more than one wire, a bit each: see branches.h */
 } Node;
 
 /* The targets of an output: COUNT from FIRST in prog.targets, none for data */
@@ -5442,14 +5704,29 @@ level_of(Square *owner)
 
 /* Every square of level LV that runs is a node, with the ones inside its
  * subgraphs where they are */
+/* Top to bottom, then left to right: the order of the squares in the
+ * program, so the one starts go in (and fan-outs, see lower_targets) is the
+ * one you see, not the order they were drawn in */
+static int
+square_order(const void *a, const void *b)
+{
+        const Square *x = *(Square *const *) a, *y = *(Square *const *) b;
+        if (x->pos.y != y->pos.y) return x->pos.y < y->pos.y ? -1 : 1;
+        if (x->pos.x != y->pos.x) return x->pos.x < y->pos.x ? -1 : 1;
+        return x->id - y->id;
+}
+
 static void
 lower_squares(int lv)
 {
         SquareList *list = levels.items[lv].squares;
         Graph *graph     = levels.items[lv].graph;
-        Da_foreach(sp, *list)
-        {
-                Square *s = *sp;
+        assert(list->count >= 0);
+        Square *sorted[list->count + 1];
+        memcpy(sorted, list->items, list->count * sizeof *sorted);
+        qsort(sorted, list->count, sizeof *sorted, square_order);
+        for (int i = 0; i < list->count; i++) {
+                Square *s = sorted[i];
                 s->ir     = -1;
                 if (s->graph) {
                         Da_append(&levels, ((Level) { &s->graph->squares, &s->graph->links, s->graph, s, lv }));
@@ -5509,9 +5786,30 @@ lower_targets(int lv, Square *s, int output, int depth)
         PinInfo *out = pin_info(s, PART_OUTPUT, output);
         if (!out || depth > LOWER_DEPTH) return;
 
+        /* Its wires by where they go, top to bottom: the order of the
+         * branches of a fan-out */
+        assert(l->links->count >= 0);
+        int order[l->links->count + 1], n = 0;
         for (int k = 0; k < l->links->count; k++) {
                 Link e = l->links->items[k];
-                if (e.from != s->id || e.from_pin != output) continue;
+                if (e.from == s->id && e.from_pin == output) order[n++] = k;
+        }
+        for (int i = 1; i < n; i++) {
+                for (int j = i; j > 0; j--) {
+                        Link a = l->links->items[order[j - 1]], b = l->links->items[order[j]];
+                        Square *sa = level_square(l, a.to), *sb = level_square(l, b.to);
+                        if (!sa || !sb) break;
+                        Vector2 pa = pin_pos(sa, PART_INPUT, a.to_pin), pb = pin_pos(sb, PART_INPUT, b.to_pin);
+                        if (pa.y < pb.y || (pa.y == pb.y && pa.x <= pb.x)) break;
+                        int t        = order[j];
+                        order[j]     = order[j - 1];
+                        order[j - 1] = t;
+                }
+        }
+
+        for (int i = 0; i < n; i++) {
+                int k       = order[i];
+                Link e      = l->links->items[k];
                 Square *to  = level_square(l, e.to);
                 PinInfo *in = to ? pin_info(to, PART_INPUT, e.to_pin) : NULL;
                 if (!in || !types_compatible(out->type, in->type)) continue;
@@ -5574,21 +5872,57 @@ program_lower(void)
                         Da_append(&prog.outs, o);
                 }
         }
+
+        /* Merges: tick inputs more than one output ticks */
+        Da_foreach(x, prog.nodes)
+        {
+                x->merge = 0;
+        }
+        Da_foreach(t, prog.targets)
+        {
+                unsigned bit = t->pin < 32 ? 1u << t->pin : 0;
+                Node *x      = &prog.nodes.items[t->node];
+                for (Target *u = prog.targets.items; u < t && !(x->merge & bit); u++)
+                        if (u->node == t->node && u->pin == t->pin) x->merge |= bit;
+        }
         prog.version = squares_version;
 }
 
 static void
 wires_glow(int first, int count, double now)
 {
+        static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER; /* branches glow them from their threads */
+        pthread_mutex_lock(&lock);
         for (int i = first; i < first + count; i++) {
                 Wire w = prog.wires.items[i];
                 if (w.link < w.list->count) w.list->items[w.link].flash = now;
                 if (w.to) w.to->flash = now;
         }
+        pthread_mutex_unlock(&lock);
 }
 
 /* How deep in a tick chain we are, 0 outside of one */
-static int tick_depth;
+static _Thread_local int tick_depth; /* of the branch the thread runs */
+
+static Sched *sched_get(void);
+
+/* What li_get gave in this thread: copies, so a branch reading an output
+ * another one changes doesn't see it go. Freed once the square that asked
+ * is done (got_free with what got_mark said before it ran). */
+static _Thread_local Da(Li_Value) got_values;
+
+static int
+got_mark(void)
+{
+        return got_values.count;
+}
+
+static void
+got_free(int mark)
+{
+        while (got_values.count > mark)
+                value_drop(got_values.items[--got_values.count]);
+}
 
 Li_Value
 li_get(Li_Node *n, int input)
@@ -5618,15 +5952,23 @@ li_get(Li_Node *n, int input)
                 /* Its type may have changed since it was lowered */
                 if (!out || !types_compatible(out->type, in->type)) return none;
 
-                /* Pure squares compute their outputs when someone reads them */
+                /* The square is ours while we read it: it may be computing it
+                 * for another branch. Pure squares compute their outputs when
+                 * someone reads them. */
+                sched_lock(sched_get(), src.node);
                 if (s->fn.eval && !s->evaluating) {
+                        int mark      = got_mark();
                         Graph *was    = scope_enter(from->scope);
                         s->evaluating = true;
                         s->fn.eval(s);
                         s->evaluating = false;
                         scope_enter(was);
+                        got_free(mark);
                 }
-                return pin_info(s, PART_OUTPUT, src.pin)->value;
+                Li_Value v = value_dup(pin_info(s, PART_OUTPUT, src.pin)->value);
+                sched_unlock(sched_get(), src.node);
+                Da_append(&got_values, v);
+                return v;
         }
         default: return none;
         }
@@ -5635,13 +5977,77 @@ li_get(Li_Node *n, int input)
 /* Tick chains are plain recursion, this stops loops in the graph */
 #define TICK_DEPTH_MAX 256
 
+/* The branches of the tab shown (see branches.h): every tab has its own, so
+ * one can stop stepping while others run */
+static Sched *sched;
+
+/* A tick from node FROM can get to node TO, through one wire or more */
+static bool
+prog_reach(void *ctx, int from, int to)
+{
+        (void) ctx;
+        static Da(char) seen;
+        static Da(int) todo;
+        seen.count = todo.count = 0;
+        for (int i = 0; i < prog.nodes.count; i++)
+                Da_append(&seen, 0);
+        Da_append(&todo, from);
+        while (todo.count) {
+                Node *x = &prog.nodes.items[todo.items[--todo.count]];
+                for (int k = 0; k < x->square->outputs.count; k++) {
+                        Out o = prog.outs.items[x->outputs + k];
+                        for (int i = o.first; i < o.first + o.count; i++) {
+                                int t = prog.targets.items[i].node;
+                                if (t == to) return true;
+                                if (seen.items[t]) continue;
+                                seen.items[t] = 1;
+                                Da_append(&todo, t);
+                        }
+                }
+        }
+        return false;
+}
+
+static Sched *
+sched_get(void)
+{
+        if (!sched) sched = sched_new((Sched_Hooks) { .reach = prog_reach });
+        return sched;
+}
+
+/* Tick target T: wait at it if it's a merge, make its square ours, run it */
+static void
+tick_target(Target t)
+{
+        Node *to  = &prog.nodes.items[t.node];
+        Square *s = to->square;
+        wires_glow(t.wires, t.wire_count, GetTime());
+        if (!s->fn.tick) return;
+        if (t.pin < 32 && (to->merge & 1u << t.pin) && !sched_merge(sched_get(), t.node, t.pin)) return;
+        int at = sched_at(sched_get(), t.node);
+        /* Stopped (Stop): the rest of the branches end without running */
+        if (!sched_aborted(sched_get())) {
+                int mark   = got_mark();
+                Graph *was = scope_enter(to->scope);
+                s->fn.tick(s, t.pin);
+                scope_enter(was);
+                got_free(mark);
+        }
+        sched_back(sched_get(), at);
+}
+
+static void
+tick_task(void *arg)
+{
+        tick_target(*(Target *) arg);
+}
+
 void
 li_tick(Li_Node *n, int output)
 {
         static bool warned;
-        double now = GetTime();
 
-        if (output >= 0 && output < (int) countof(n->fired)) n->fired[output] = now;
+        if (output >= 0 && output < (int) countof(n->fired)) n->fired[output] = GetTime();
         if (tick_depth >= TICK_DEPTH_MAX) {
                 if (!warned) fprintf(stderr, "tick: more than %d squares deep, is there a loop?\n", TICK_DEPTH_MAX);
                 warned = true;
@@ -5652,32 +6058,96 @@ li_tick(Li_Node *n, int output)
 
         Out o = prog.outs.items[x->outputs + output];
         tick_depth++;
-        for (int i = o.first; i < o.first + o.count; i++) {
-                Target t  = prog.targets.items[i];
-                Node *to  = &prog.nodes.items[t.node];
-                Square *s = to->square;
-                wires_glow(t.wires, t.wire_count, now);
-                if (!s->fn.tick) continue;
-                Graph *was = scope_enter(to->scope);
-                s->fn.tick(s, t.pin);
-                scope_enter(was);
+        if (o.count == 1) {
+                tick_target(prog.targets.items[o.first]);
+        } else if (o.count > 1) {
+                /* A fan-out: a branch each, back when they're all done */
+                assert(o.count > 0);
+                Target ts[o.count];
+                Sched_Task tasks[o.count];
+                for (int i = 0; i < o.count; i++) {
+                        ts[i]    = prog.targets.items[o.first + i];
+                        tasks[i] = (Sched_Task) { tick_task, &ts[i], ts[i].node, ts[i].pin };
+                }
+                sched_fork(sched_get(), tasks, o.count);
         }
         tick_depth--;
 }
 
-/* module_start or module_frame of every node, in order */
+/* A start (or a clock's frame) is a square that runs too: a step */
 static void
+start_task(void *arg)
+{
+        Node *x = &prog.nodes.items[(intptr_t) arg];
+        int at  = sched_at(sched_get(), (int) (intptr_t) arg);
+        if (!sched_aborted(sched_get())) {
+                int mark   = got_mark();
+                Graph *was = scope_enter(x->scope);
+                x->square->fn.start(x->square);
+                scope_enter(was);
+                got_free(mark);
+        }
+        sched_back(sched_get(), at);
+}
+
+static void
+frame_task(void *arg)
+{
+        Node *x = &prog.nodes.items[(intptr_t) arg];
+        int at  = sched_at(sched_get(), (int) (intptr_t) arg);
+        if (!sched_aborted(sched_get())) {
+                int mark   = got_mark();
+                Graph *was = scope_enter(x->scope);
+                x->square->fn.frame(x->square);
+                scope_enter(was);
+                got_free(mark);
+        }
+        sched_back(sched_get(), at);
+}
+
+/* Its start sets it up (random seeds): it has a tick input, others start
+ * it. Starts of squares nothing ticks start chains (entries). */
+static bool
+square_is_ticked(Square *s)
+{
+        Da_foreach(p, s->inputs)
+        {
+                if (p->type == LI_TICK) return true;
+        }
+        return false;
+}
+
+/* module_frame of every node that has it, each a branch, in canvas order.
+ * Or module_start: first the ones that set squares up, then the ones that
+ * start chains, branches. True if it stopped stepping. */
+static bool
 program_each(bool start)
 {
-        for (int i = 0; i < prog.nodes.count; i++) {
-                Node *x               = &prog.nodes.items[i];
-                Square *s             = x->square;
-                void (*fn)(Li_Node *) = start ? s->fn.start : s->fn.frame;
-                if (!fn) continue;
+        assert(prog.nodes.count >= 0);
+        Sched_Task tasks[prog.nodes.count + 1];
+        int n = 0;
+
+        /* Variables used by name, not wired to their var/var, start as it
+         * says too: every var/var says it before anything runs */
+        for (int i = 0; start && i < prog.nodes.count; i++) {
+                Node *x = &prog.nodes.items[i];
+                if (!is_decl(x->square) || !x->square->fn.eval) continue;
                 Graph *was = scope_enter(x->scope);
-                fn(s);
+                x->square->fn.eval(x->square);
                 scope_enter(was);
         }
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Square *s = prog.nodes.items[i].square;
+                if (start ? !s->fn.start : !s->fn.frame) continue;
+                if (start && square_is_ticked(s)) {
+                        Graph *was = scope_enter(prog.nodes.items[i].scope);
+                        s->fn.start(s);
+                        scope_enter(was);
+                        continue;
+                }
+                tasks[n++] = (Sched_Task) { start ? start_task : frame_task, (void *) (intptr_t) i, i, -1 };
+        }
+        return n && sched_run(sched_get(), tasks, n);
 }
 
 /* ---- Compile: the program, as C ---- */
@@ -5699,9 +6169,10 @@ program_each(bool start)
  *   main.c    the nodes, N[i], and the wires as functions: nI_inK gives
  *             input K of node I its value (pulling it from the output it
  *             comes from, or a constant if it's typed), nI_tickK calls the
- *             module_tick of every input output K ticks. li_get and
- *             li_tick are calls to them. Then setup (init, params, options
- *             and state, as they are now), start and frame.
+ *             module_tick of every input output K ticks (through rt_tick,
+ *             with rt_fork if there's more than one: see Branches). li_get
+ *             and li_tick are calls to them. Then setup (init, params,
+ *             options and state, as they are now), start and frame.
  *   Makefile  builds compile.output/NAME with compile.cc, with the runtime
  *             (src/rt, built by `make` to compile.runtime).
  *
@@ -5806,6 +6277,18 @@ c_string(FILE *f, const char *s)
 }
 
 /* V as a C expression */
+/* rt_tick of target T: its node's tick, or nothing if it has none */
+static bool node_has(int i, const char *fn);
+
+static void
+c_tick(FILE *f, Target t)
+{
+        Node *x    = &prog.nodes.items[t.node];
+        bool merge = t.pin < 32 && (x->merge & 1u << t.pin);
+        if (node_has(t.node, "tick"))
+                fprintf(f, "        rt_tick(&N[%d], n%d_tick, %d, %d, %s);\n", t.node, t.node, t.pin, t.node, merge ? "true" : "false");
+}
+
 static void
 c_value(FILE *f, Li_Value v)
 {
@@ -5827,6 +6310,11 @@ c_value(FILE *f, Li_Value v)
                 break;
         case LI_STRING:
                 fprintf(f, "li_string(");
+                c_string(f, v.s);
+                fprintf(f, ")");
+                break;
+        case LI_REF:
+                fprintf(f, "li_var_ref(");
                 c_string(f, v.s);
                 fprintf(f, ")");
                 break;
@@ -5967,7 +6455,7 @@ compile_main(FILE *f, const char *name, const char *from)
                         if (src.kind == SRC_OUTPUT && node_inline(src.node)) {
                                 fprintf(f, "n%d_out%d();", src.node, src.pin);
                         } else if (src.kind == SRC_OUTPUT) {
-                                fprintf(f, "rt_pull(&N[%d], %s, %d);", src.node, node_eval(src.node, eval, sizeof eval), src.pin);
+                                fprintf(f, "rt_pull(&N[%d], %s, %d, %d);", src.node, node_eval(src.node, eval, sizeof eval), src.pin, src.node);
                         } else if (src.kind == SRC_TYPED) {
                                 c_value(f, pin_info(src.square, PART_INPUT, src.pin)->value);
                                 fprintf(f, ";");
@@ -5981,12 +6469,22 @@ compile_main(FILE *f, const char *name, const char *from)
                 for (int k = 0; k < s->outputs.count; k++) {
                         Out o = prog.outs.items[x->outputs + k];
                         if (!o.count) continue;
+                        /* A fan-out: a branch per target, see branches.h */
+                        for (int t = o.first; o.count > 1 && t < o.first + o.count; t++) {
+                                fprintf(f, "static void n%d_tick%d_%d(void *arg)\n{\n        (void) arg;\n", i, k, t - o.first);
+                                c_tick(f, prog.targets.items[t]);
+                                fprintf(f, "}\n");
+                        }
                         fprintf(f, "static void n%d_tick%d(void)", i, k);
                         fprintf(f, *s->outputs.items[k].name ? " /* %s */\n{\n" : "\n{\n", s->outputs.items[k].name);
-                        for (int t = o.first; t < o.first + o.count; t++) {
-                                Target to = prog.targets.items[t];
-                                if (node_has(to.node, "tick"))
-                                        fprintf(f, "        rt_call_tick(&N[%d], n%d_tick, %d);\n", to.node, to.node, to.pin);
+                        if (o.count == 1) {
+                                c_tick(f, prog.targets.items[o.first]);
+                        } else {
+                                fprintf(f, "        static const Sched_Task tasks[] = {\n");
+                                for (int t = o.first; t < o.first + o.count; t++)
+                                        fprintf(f, "                { n%d_tick%d_%d, NULL, %d, %d },\n", i, k, t - o.first,
+                                                prog.targets.items[t].node, prog.targets.items[t].pin);
+                                fprintf(f, "        };\n        rt_fork(tasks, %d);\n", o.count);
                         }
                         fprintf(f, "}\n");
                 }
@@ -6083,17 +6581,54 @@ compile_main(FILE *f, const char *name, const char *from)
         }
         fprintf(f, "        rt_scope(0);\n}\n\n");
 
-        fprintf(f, "static void\nstart(void)\n{\n");
-        for (int i = 0; i < prog.nodes.count; i++)
-                if (node_has(i, "start")) fprintf(f, "        rt_call(&N[%d], n%d_start);\n", i, i);
-        fprintf(f, "}\n\n");
+        /* The ticks between nodes, for merges (see branches.h) */
+        fprintf(f, "const int rt_node_count = %d;\nconst int rt_next_first[] = {", prog.nodes.count);
+        int next = 0;
+        for (int i = 0; i < prog.nodes.count; i++) {
+                fprintf(f, "%s%d", i ? ", " : " ", next);
+                Node *x = &prog.nodes.items[i];
+                for (int k = 0; k < x->square->outputs.count; k++)
+                        next += prog.outs.items[x->outputs + k].count;
+        }
+        fprintf(f, "%s%d };\nconst int rt_next[] = {", prog.nodes.count ? ", " : " ", next);
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Node *x = &prog.nodes.items[i];
+                for (int k = 0; k < x->square->outputs.count; k++) {
+                        Out o = prog.outs.items[x->outputs + k];
+                        for (int t = o.first; t < o.first + o.count; t++)
+                                fprintf(f, " %d,", prog.targets.items[t].node);
+                }
+        }
+        fprintf(f, " -1 };\n\n");
 
-        for (int i = 0; i < prog.nodes.count; i++)
-                frames = frames || node_has(i, "frame");
-        if (frames) {
-                fprintf(f, "static void\nframe(void)\n{\n");
-                for (int i = 0; i < prog.nodes.count; i++)
-                        if (node_has(i, "frame")) fprintf(f, "        rt_call(&N[%d], n%d_frame);\n", i, i);
+        /* The starts, and the clocks of a frame: a branch each, in order */
+        const char *each[] = { "start", "frame" };
+        for (int e = 0; e < 2; e++) {
+                int count = 0;
+                for (int i = 0; i < prog.nodes.count; i++) {
+                        if (!node_has(i, each[e]) || (e == 0 && square_is_ticked(prog.nodes.items[i].square))) continue;
+                        fprintf(f, "static void\n%s_%d(void *arg)\n{\n        (void) arg;\n        rt_start(&N[%d], n%d_%s, %d);\n}\n\n",
+                                each[e], i, i, i, each[e], i);
+                        count++;
+                }
+                if (e == 1) frames = count > 0;
+                if (e == 1 && !frames) break;
+                fprintf(f, "static void\n%s(void)\n{\n", each[e]);
+                /* var/var says what its variable starts as, and squares are
+                 * set up, before the branches start, like Run does */
+                for (int i = 0; e == 0 && i < prog.nodes.count; i++) {
+                        if (is_decl(prog.nodes.items[i].square) && node_has(i, "eval"))
+                                fprintf(f, "        rt_pull(&N[%d], n%d_eval, 0, %d);\n", i, i, i);
+                        if (node_has(i, "start") && square_is_ticked(prog.nodes.items[i].square))
+                                fprintf(f, "        rt_call(&N[%d], n%d_start);\n", i, i);
+                }
+                if (count) {
+                        fprintf(f, "        static const Sched_Task tasks[] = {\n");
+                        for (int i = 0; i < prog.nodes.count; i++)
+                                if (node_has(i, each[e]) && !(e == 0 && square_is_ticked(prog.nodes.items[i].square)))
+                                        fprintf(f, "                { %s_%d, NULL, %d, -1 },\n", each[e], i, i);
+                        fprintf(f, "        };\n        rt_run(tasks, %d);\n", count);
+                }
                 fprintf(f, "}\n\n");
         }
 
@@ -6217,6 +6752,11 @@ compile_canvas(const char *name, char *bin, int size)
         bool ok = true;
         FILE *f;
 
+        const char *bad = decls_check();
+        if (bad) {
+                output_add(TextFormat("compile: the squares of variable %s say different things", bad), true);
+                return false;
+        }
         program_lower();
         file_name(base, sizeof base, name);
         if (!mkdir_p(cfg.compile.output) || !realpath(cfg.compile.output, out)) {
@@ -6282,7 +6822,9 @@ compile_canvas(const char *name, char *bin, int size)
                 if (compiled.items[i].libs && *compiled.items[i].libs) fprintf(f, " %s", compiled.items[i].libs);
         fprintf(f, "\n\n../%s: $(OBJS) $(RT)/liblineit-rt.a\n", base);
         fprintf(f, "\t$(CC) $(CFLAGS) $(OBJS) $(RT)/liblineit-rt.a $(LIBS) -lm -o $@\n\n");
-        fprintf(f, "%%.o: %%.c\n\t$(CC) $(CFLAGS) -MMD -I$(RT)/include -c $< -o $@\n");
+        fprintf(f, "%%.o: %%.c\n\t$(CC) $(CFLAGS) -MMD -MP -I$(RT)/include -c $< -o $@\n");
+        /* A header gone since the last build (a .d still has it): rebuild, not fail */
+        fprintf(f, "%%.h: ;\n");
 
         /* Packages: a copy of their object per square, only the callbacks
          * global, renamed */
@@ -6456,6 +6998,11 @@ history_check(void)
                 free(now);
                 return;
         }
+        /* A step run is in the middle of the squares as they were */
+        if (history.current && stepping) {
+                run_stop();
+                set_status("Stopped stepping: the canvas changed");
+        }
         if (history.current) {
                 if (history.undo.count >= UNDO_MAX) {
                         free(history.undo.items[0]);
@@ -6598,26 +7145,143 @@ bar_load(void)
         }
 }
 
+/* Only squares with module_frame (a clock) start tick chains after the
+ * start. Without them a run is over once the starts are done, like a
+ * compiled program (see Compile). */
+static bool
+program_has_frames(void)
+{
+        for (int i = 0; i < prog.nodes.count; i++) {
+                if (prog.nodes.items[i].square->fn.frame) return true;
+        }
+        return false;
+}
+
+static void
+run_stop(void)
+{
+        running  = false;
+        stepping = false;
+        if (sched) sched_abort(sched);
+}
+
+/* The branches started are done (or stopped, stepping): over, if nothing
+ * starts more */
+static void
+run_check_end(void)
+{
+        if (!sched_busy(sched_get()) && !program_has_frames()) run_stop();
+}
+
+/* A new run: from the declared values of the variables, the starts first
+ * (as branches, see branches.h). False if it can't. */
+static bool
+run_begin(void)
+{
+        const char *bad = decls_check();
+        if (bad) {
+                set_status("The squares of variable %s say different things: make them agree to run", bad);
+                return false;
+        }
+        running = true;
+        vars_reset();
+        if (cfg.output.clear_on_run) output_clear();
+        output_panel.open   = true;
+        output_panel.unseen = 0;
+        program_lower();
+        program_each(true);
+        return true;
+}
+
+/* Run, or Stop. Stepping, it goes on to the end at once. */
+/* The square of the canvas shown that has node X: itself, or the
+ * subgraph square it's inside of */
+static Square *
+node_square(int x)
+{
+        if (x < 0 || x >= prog.nodes.count) return NULL;
+        Square *s = prog.nodes.items[x].square;
+        for (int lv = prog.nodes.items[x].level; lv > 0 && lv < levels.count; lv = levels.items[lv].up)
+                s = levels.items[lv].owner;
+        return s;
+}
+
+/* Stepping, the squares the branches run next: one each */
+#define STEP_MAX 64
+
+static int
+step_squares(Square **out)
+{
+        int nodes[STEP_MAX], n = stepping && sched ? sched_next(sched, nodes, STEP_MAX) : 0, k = 0;
+        for (int i = 0; i < n; i++) {
+                Square *s = node_square(nodes[i]);
+                if (s) out[k++] = s;
+        }
+        return k;
+}
+
+/* S is one of them: it has an outline */
+static bool
+step_next(Square *s)
+{
+        Square *next[STEP_MAX];
+        int n = step_squares(next);
+        for (int i = 0; i < n; i++) {
+                if (next[i] == s) return true;
+        }
+        return false;
+}
+
+/* "print, push" for the bar */
+static const char *
+step_names(void)
+{
+        static char buf[256];
+        Square *next[STEP_MAX];
+        int n = step_squares(next), used = 0;
+        buf[0] = '\0';
+        for (int i = 0; i < n && used < (int) sizeof buf; i++)
+                used += snprintf(buf + used, sizeof buf - used, "%s%s", i ? ", " : "", next[i]->module->label);
+        return n ? buf : NULL;
+}
+
 static void
 bar_run_stop(void)
 {
         if (not_canvas()) return;
-        running = !running;
-        if (!running) return;
-        if (cfg.output.clear_on_run) output_clear();
-
-        /* Before the first frame runs, so entry squares go first */
-        program_lower();
-        program_each(true);
-
-        /* Ticks run to the end at once, so only squares with module_frame
-         * (a clock) start more later. Without them it's over now, like a
-         * compiled program (see Compile). */
-        for (int i = 0; i < prog.nodes.count; i++) {
-                if (prog.nodes.items[i].square->fn.frame) return;
+        sched_step(sched_get(), false);
+        if (stepping) {
+                stepping = false;
+                if (sched_busy(sched)) sched_resume(sched);
+                run_check_end();
+        } else if (running) {
+                run_stop();
+        } else if (run_begin()) {
+                run_check_end();
         }
-        running = false;
-        set_status("Done");
+}
+
+/* Step: the next square of the run, or a new run stopped before its first
+ * one */
+static void
+bar_step(void)
+{
+        if (not_canvas()) return;
+        Sched *sc = sched_get();
+        sched_step(sc, true);
+        if (!running) {
+                stepping = true;
+                if (!run_begin()) stepping = false;
+        } else if (sched_busy(sc)) {
+                stepping = true;
+                sched_resume(sc);
+        } else {
+                /* Between frames: the next one, stopped before its first square */
+                stepping = true;
+                program_lower();
+                program_each(false);
+        }
+        if (running) run_check_end();
 }
 
 static void
@@ -6634,25 +7298,51 @@ output_label(void)
         return output_panel.unseen ? "Output*" : "Output";
 }
 
+/* The run button does the last one chosen in its list, Step at first */
+static enum {
+        ACT_STEP,
+        ACT_RUN,
+        ACT_COMPILE,
+} bar_act;
+
 static const char *
-run_stop_label(void)
+act_label(void)
 {
-        return running ? "Stop" : "Run";
+        switch (bar_act) {
+        case ACT_STEP: return "Step";
+        case ACT_RUN: return running && !stepping ? "Stop" : "Run";
+        case ACT_COMPILE: return "Compile";
+        }
+        return "";
 }
 
+static void
+bar_act_do(void)
+{
+        switch (bar_act) {
+        case ACT_STEP: bar_step(); break;
+        case ACT_RUN: bar_run_stop(); break;
+        case ACT_COMPILE: bar_compile(); break;
+        }
+}
+
+static void act_menu_open(void);
 static void file_menu_open(void);
-enum { BAR_FILE = 3 };
+enum { BAR_ACT  = 1,
+       BAR_FILE = 3 };
 
 /* Buttons at the right of the bar, from right to left. LABEL is used when
- * GET_LABEL is NULL. WIDEST is the longest label it can show. */
+ * GET_LABEL is NULL. WIDEST is the longest label it can show. JOINED ones
+ * touch the one at their left: the arrow of the run button. */
 static const struct {
         const char *label;
         const char *(*get_label)(void);
         const char *widest;
         void (*fn)(void);
+        bool joined;
 } bar_buttons[] = {
-        { .get_label = run_stop_label, .widest = "Stop", .fn = bar_run_stop },
-        { .label = "Compile", .widest = "Compile", .fn = bar_compile },
+        { .label = "v", .widest = "v", .fn = act_menu_open, .joined = true },
+        [BAR_ACT] = { .get_label = act_label, .widest = "Compile", .fn = bar_act_do },
         { .get_label = output_label, .widest = "Output*", .fn = bar_output },
         [BAR_FILE] = { .label = "File", .widest = "File", .fn = file_menu_open },
 };
@@ -6668,7 +7358,7 @@ bar_button_rect(int i)
 
         for (int k = 0; k <= i; k++) {
                 w = measure_text(bar_buttons[k].widest, fs) + 4 * pad;
-                x -= w + pad;
+                x -= w + (k && bar_buttons[k - 1].joined ? 0 : pad);
         }
         return (Rectangle) { x, GetScreenHeight() - cfg.bar.height + pad, w, h };
 }
@@ -6772,10 +7462,10 @@ typedef struct Tab {
         LinkList links;
         Camera2D camera;
         VarList vars, globals;
-        BT *lists, *trees;
         Typeof(history) history;
         Program prog;
-        bool running;
+        bool running, stepping;
+        Sched *sched;     /* its branches, see branches.h */
         const char *path; /* canvas_path: NULL until it's saved somewhere */
         bool settings;    /* the settings tab: its canvas is empty and not shown */
 
@@ -6802,11 +7492,11 @@ tab_swap(Tab *t)
         SWAP(camera, t->camera);
         SWAP(vars, t->vars);
         SWAP(globals, t->globals);
-        SWAP(lists, t->lists);
-        SWAP(trees, t->trees);
         SWAP(history, t->history);
         SWAP(prog, t->prog);
         SWAP(running, t->running);
+        SWAP(stepping, t->stepping);
+        SWAP(sched, t->sched);
         SWAP(canvas_path, t->path);
 }
 
@@ -6989,7 +7679,10 @@ tab_close(int i, bool force)
                 }
                 Da_append(&closed_tabs, c);
         }
-        running = false;
+        running  = false;
+        stepping = false;
+        sched_free(sched);
+        sched = NULL;
         canvas_clear(-1, NULL);
         Da_destroy(&squares);
         Da_destroy(&links);
@@ -7490,6 +8183,36 @@ file_menu_open(void)
                 Da_append(&file_menu, items[i]);
         Rectangle b = bar_button_rect(BAR_FILE);
         menu_open(&file_menu, -1, (Vector2) { b.x, b.y - countof(items) * menu_item_height() });
+}
+
+/* The arrow of the run button: what it does, chosen and done at once */
+static Menu act_menu;
+
+static void
+act_choose(int id, void *arg)
+{
+        (void) id;
+        bar_act = (int) (intptr_t) arg;
+        bar_act_do();
+}
+
+static void
+act_stop(int id, void *arg)
+{
+        (void) id, (void) arg;
+        run_stop();
+}
+
+static void
+act_menu_open(void)
+{
+        act_menu.count = 0;
+        Da_append(&act_menu, ((MenuItem) { .label = "Step", .hint = "one square", .fn = act_choose, .arg = (void *) ACT_STEP }));
+        Da_append(&act_menu, ((MenuItem) { .label = "Run", .hint = stepping ? "to the end" : NULL, .fn = act_choose, .arg = (void *) ACT_RUN }));
+        Da_append(&act_menu, ((MenuItem) { .label = "Compile", .fn = act_choose, .arg = (void *) ACT_COMPILE }));
+        if (running) Da_append(&act_menu, ((MenuItem) { .label = "Stop", .fn = act_stop }));
+        Rectangle b = bar_button_rect(BAR_ACT);
+        menu_open(&act_menu, -1, (Vector2) { b.x, b.y - act_menu.count * menu_item_height() });
 }
 
 /* ---- Settings tab ---- */
@@ -8335,7 +9058,6 @@ subgraph_write(const char *path, PortList *ins, PortList *outs, Rectangle box)
         Da_destroy(&squares);
         Da_destroy(&links);
         var_list_clear(&vars);
-        containers_clear();
         graph_swap(&g);
         return ok;
 }
@@ -9206,8 +9928,6 @@ session_restore(const char *path)
                 Conf_get_bool(conf, &info, "session.output.%d.info", i);
                 if (Conf_get_str(conf, &str, "session.output.%d.text", i) == CONF_OK) output_add(str, info);
         }
-        if (Conf_get_bool(conf, &b, "session.output_open") == CONF_OK) output_panel.open = b;
-        output_panel.unseen = 0;
         if (Conf_get_bool(conf, &b, "session.autosave") == CONF_OK) autosave = b;
 
         int ntabs = 0;
@@ -9260,6 +9980,10 @@ session_restore(const char *path)
                 Conf_get_bool(conf, &b, "session.tabs.%d.running", t);
                 if (b) bar_run_stop();
         }
+
+        /* After the tabs: Run opens it */
+        if (Conf_get_bool(conf, &b, "session.output_open") == CONF_OK) output_panel.open = b;
+        output_panel.unseen = 0;
 
         Conf_close(conf);
         remove(path);
@@ -9450,7 +10174,31 @@ output_tooltip(Square *s, int out, char *buf, int size)
         snprintf(buf, size, "%s %s", type_name(p->value.type), v);
 }
 
-/* What's on the wire or output pin under the mouse */
+/* The type input IN of S expects, and what it gets: from its wire, or
+ * typed in its field */
+static void
+input_tooltip(Square *s, int in, char *buf, int size)
+{
+        PinInfo *p    = pin_info(s, PART_INPUT, in);
+        char got[160] = "", v[128];
+        int l         = link_to(s->id, in);
+
+        if (!p) return;
+        if (l >= 0) {
+                Square *a = square_get(links.items[l].from);
+                if (!link_valid(links.items[l]))
+                        snprintf(got, sizeof got, "its wire carries nothing");
+                else if (a)
+                        output_tooltip(a, links.items[l].from_pin, got, sizeof got);
+        } else if (p->kind == PIN_VALUE && p->value.type != LI_NONE) {
+                li_format(p->value, v, sizeof v);
+                snprintf(got, sizeof got, "typed %s", v);
+        }
+        snprintf(buf, size, "expects %s%s%s", p->type == LI_REF ? "a variable (ref)" : type_name(p->type), *got ? ", gets " : "",
+                 got);
+}
+
+/* What's on the wire or pin under the mouse */
 static void
 draw_tooltip(void)
 {
@@ -9463,6 +10211,8 @@ draw_tooltip(void)
         Hit h = square_hit(world);
         if (h.part == PART_OUTPUT) {
                 output_tooltip(h.square, h.pin, buf, sizeof buf);
+        } else if (h.part == PART_INPUT) {
+                input_tooltip(h.square, h.pin, buf, sizeof buf);
         } else if (h.part == PART_NONE) {
                 int l = link_hit(world);
                 if (l < 0) return;
@@ -9533,12 +10283,17 @@ draw_bar(void)
                           cfg.colors.bar_text);
         }
 
-        /* Status at the left of the buttons */
-        if (GetTime() < status_until) {
+        /* Status at the left of the buttons. Stepping, where it is, while
+         * there's no newer one. */
+        const char *msg = GetTime() < status_until ? status : NULL;
+        if (!msg && stepping)
+                msg = step_names() ? TextFormat("Step: next is %s", step_names()) :
+                                     "Step: next runs a frame";
+        if (msg) {
                 /* Over the stats if they are long: it's the newer thing */
-                float sw = measure_text(status, fs);
+                float sw = measure_text(msg, fs);
                 DrawRectangle(b.x - sw - 24, y + 1, sw + 20, h - 1, cfg.colors.bar);
-                draw_text(status, b.x - sw - 12, y + (h - fs) / 2, fs, cfg.colors.bar_text);
+                draw_text(msg, b.x - sw - 12, y + (h - fs) / 2, fs, cfg.colors.bar_text);
         }
 }
 
@@ -9610,8 +10365,9 @@ main(int argc, char **argv)
                 if (WindowShouldClose() && !ask.open) quit_request();
                 tab_socket_poll();
                 if (!settings_shown()) update_camera();
-                if (!update_ask() && !update_prompt() && !update_field() && !update_panel() && !update_output() && !update_bar() &&
-                    !update_tabs() && !update_menu()) {
+                /* Menus are drawn over everything, so they go first */
+                if (!update_ask() && !update_prompt() && !update_field() && !update_panel() && !update_menu() && !update_output() &&
+                    !update_bar() && !update_tabs()) {
                         update_shortcuts();
                         if (settings_shown())
                                 update_settings();
@@ -9619,6 +10375,7 @@ main(int argc, char **argv)
                                 update_mouse();
                 }
                 run_frame();
+                decls_check();
                 history_check();
                 autosave_tick();
                 hot_reload();
@@ -9650,6 +10407,7 @@ main(int argc, char **argv)
         }
         canvas_clear(-1, NULL);
         history_destroy();
+        sched_free(sched);
         unload_modules();
         unload_fonts();
         output_clear();

@@ -1,0 +1,59 @@
+A,a0,a1,a2,A.
+B,Bm21,B.
+b1,b3
+b2
+C,cf,C.
+x,y
+0,1,2
+0,1,2
+-- 50 squares, 56 links
+0 flow/entry: 
+1 list/push: la [5]
+2 list/push: lb [3]
+3 list/push: lc [3]
+4 flow/loop: 2
+5 string/format: "a2"
+6 list/push: la [5]
+7 list/push: la [5]
+8 list/push: lb1 [2]
+9 list/push: lb2 [1]
+10 list/push: lb1 [2]
+11 list/length: lb1 [2]
+12 list/length: lb2 [1]
+13 string/format: "Bm21"
+14 list/push: lb [3]
+15 list/push: lb [3]
+16 flow/ifelse: false
+17 list/push: lc [3]
+18 list/push: lc [3]
+19 list/push: lc [3]
+20 flow/entry: 
+21 list/push: lx [2]
+22 list/push: lx [2]
+23 flow/loop: 2
+24 list/push: ly1 [3]
+25 list/push: ly2 [3]
+26 var/get: la = ["A", "a0", "a1", "a2", "A."]
+27 string/join: "A,a0,a1,a2,A."
+28 io/print: A,a0,a1,a2,A.
+29 var/get: lb = ["B", "Bm21", "B."]
+30 string/join: "B,Bm21,B."
+31 io/print: B,Bm21,B.
+32 var/get: lb1 = ["b1", "b3"]
+33 string/join: "b1,b3"
+34 io/print: b1,b3
+35 var/get: lb2 = ["b2"]
+36 string/join: "b2"
+37 io/print: b2
+38 var/get: lc = ["C", "cf", "C."]
+39 string/join: "C,cf,C."
+40 io/print: C,cf,C.
+41 var/get: lx = ["x", "y"]
+42 string/join: "x,y"
+43 io/print: x,y
+44 var/get: ly1 = [0, 1, 2]
+45 string/join: "0,1,2"
+46 io/print: 0,1,2
+47 var/get: ly2 = [0, 1, 2]
+48 string/join: "0,1,2"
+49 io/print: 0,1,2

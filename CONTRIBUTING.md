@@ -49,7 +49,8 @@ touch: it names the functions, so you can read the code next to it.
 ```
 src/main.c               the editor: canvas, modules, Run, Compile, tabs, reloads
 src/lineit.h             the module API, documented: all a module includes
-src/value.c              values, variables, lists, trees: the editor's and Compile's
+src/value.c              values, lists, maps, variables: the editor's and Compile's
+src/branches.c              branches: fan-outs, merges, Step; the editor's and Compile's
 src/rt/                  the runtime the programs Compile makes link with
 modules/                 the standard modules (.c), subgraphs (.lua), types (.type.lua)
 examples/, tests/        canvases, each with the .out make test checks it against

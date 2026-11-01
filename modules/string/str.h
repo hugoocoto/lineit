@@ -45,6 +45,8 @@ set_result(Li_Node *n, int output, char *s)
         li_text(n, "\"%s\"", s);
 }
 
+/* A module with its own (split) defines STR_OWN_DESTROY, and frees result */
+#ifndef STR_OWN_DESTROY
 void
 module_destroy(Li_Node *n)
 {
@@ -52,3 +54,4 @@ module_destroy(Li_Node *n)
         free(result);
         result = NULL;
 }
+#endif

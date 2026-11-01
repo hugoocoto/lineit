@@ -136,6 +136,7 @@ to itself, and keeps your own things in `~/.config/lineit`,
 | `make debug`        | without optimizations, with AddressSanitizer and UBSan         |
 | `make test`         | run every canvas in `examples/` and `tests/`, and compile them |
 | `make test-asan`    | the same, with AddressSanitizer and UBSan                      |
+| `make test-tsan`    | the same, with ThreadSanitizer: branches run in parallel       |
 | `make analyze`      | clang's static analyzer                                        |
 | `make format`       | format the C with clang-format (`make check-format` checks)    |
 | `make docs`         | `docs/*.typ` to PDF (needs typst)                              |
@@ -157,7 +158,7 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Drag from an output to an input   | Wire them (drag a plugged input to move its wire)       |
 | Drag from an output to the canvas | Search a module to add there, wired to that output      |
 | Drag a plugged wire to the canvas | Remove it                                               |
-| Double click a square             | Its settings (params)                                   |
+| Click a field low in a square     | Its settings (params); double click shows them too      |
 | Click a field next to an input    | Type a value used while nothing is plugged in           |
 | Drag the canvas, or Shift+click   | Select with a box, or add to the selection              |
 | Right drag / mouse wheel          | Pan / zoom                                              |
@@ -171,11 +172,42 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Ctrl+G                            | Make a subgraph of the selection                        |
 | Ctrl+,                            | Settings, in a tab                                      |
 
-The bar at the bottom has **Run** (it stops on its own when the program is
-done, or runs until Stop if it has a clock), **Compile**, **Output** (what
-the program prints) and **File** (tabs, save, new type, autosave, settings). Editing a
-module's source and running `make` reloads it in the editor while it runs,
-and so does saving `config.lua`.
+The bar at the bottom has the run button, **Output** (what the program
+prints) and **File** (tabs, save, new type, autosave, settings). The run
+button does what was last chosen with its arrow: **Step** (the first time),
+**Run** or **Compile**, and the arrow's list also has **Stop** while a run
+goes on. Run opens the output and stops on its own when the program is
+done, or runs until Stop if it has a clock. Step goes one square at a time:
+the square it runs next has a yellow outline, and the bar says which. Run in
+the middle of stepping goes on to the end; changing the canvas stops it.
+Hovering a pin shows the type it carries or expects, and what's on it.
+Editing a module's source and running `make` reloads it in the editor while
+it runs, and so does saving `config.lua`.
+
+**Branches.** A tick output wired to several inputs starts a branch for each
+of them, and the tick goes on once they're all done. Each entry (and each
+clock, every frame) is a branch too. Branches run in parallel, on threads:
+the order of what they do between them isn't fixed, and a variable two of
+them read and change at once (get, add, set) can lose a change, as in any
+parallel program. Each operation on a variable, list or map is whole, and a
+square runs one tick at a time. Where branches started together meet again
+(a tick input with more than one wire), they wait for each other, and the
+square runs once. The two sides of an `ifelse` meeting again don't wait:
+only one of them runs. Stepping, every branch goes one square per press,
+each with its outline.
+
+**Variables** are squares too. A `var/var` square declares one: its name,
+type (any, int, float, bool, string, list or map), the value it starts with
+when you press Run (lists and maps start empty) and whether it's global to
+the tab. Wire its `var` output to the squares that use it: `var/get` reads
+it, `var/set` changes it, and the `list/` and `map/` squares work on list
+and map variables. Or, without a wire, type the variable's name in their
+`var`, `list` or `map` field (`::name` for a global). Several `var/var`
+squares with the same name are the same variable, so put a copy next to
+each use to keep the wires short. They have
+to say the same type and start, or they're shown in red and Run refuses.
+Each Run starts from the declared values, and a variable inside a subgraph
+is its own, like a local in a C function.
 
 Start with the canvases in `examples/`: each begins with a comment that
 explains it, and `examples/README.md` lists them.

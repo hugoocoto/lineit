@@ -1,0 +1,27 @@
+a,b,c
+10,5
+x
+-- 23 squares, 25 links
+50 flow/entry: 
+51 var/var: l = ["a", "b", "c"]
+52 list/clear: l [3]
+53 list/push: l [3]
+54 list/push: l [3]
+55 list/push: l [3]
+56 var/var: n = 5
+57 flow/entry: 
+58 var/get: n = 5
+59 list/push: seen [2]
+60 var/set: n = 5
+61 var/get: n = 5
+62 list/push: seen [2]
+63 list/push: names [1]
+64 var/get: l = ["a", "b", "c"]
+65 string/join: "a,b,c"
+66 io/print: a,b,c
+67 var/get: seen = [10, 5]
+68 string/join: "10,5"
+69 io/print: 10,5
+70 var/get: names = ["x"]
+71 string/join: "x"
+72 io/print: x

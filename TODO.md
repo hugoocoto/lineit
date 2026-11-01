@@ -1,22 +1,24 @@
 # TODO
 
-## Docker image
+## Bugs
 
-Done: Dockerfile, scripts/docker-entrypoint.sh, the docker and
-docker-publish jobs in CI, the README section. Left:
+- bottom bar overlaps on small screens (web half screen)
+- docker show an error but it works
+- Docs: how to update docker image?
 
-- Check by hand in a real browser, through noVNC: drag a wire, type in a
-  field, Run, Compile, save, and copy and paste through noVNC's clipboard
-  panel (checked with xdotool inside the container, not through the page)
-- After the first push to main: make the ghcr.io/hugoocoto/lineit package
-  public (packages are private when first pushed)
-- arm64 (Apple Silicon): the Dockerfile builds there (RAYLIB=source), but
-  CI only builds amd64, which Docker Desktop runs emulated, slower. An arm
-  runner (ubuntu-24.04-arm) and a multi-arch manifest would fix it.
+## Features
 
-Also possible, later: on Linux, the window straight on the screen (mount
-/tmp/.X11-unix and pass DISPLAY), and on Windows through WSLg. Not instead of
-the browser: on Mac it needs XQuartz.
+- VIM MODE!
+- Modules are weird
+- UI and modules are ugly as fuck - Themes?
+- Edit config from the GUI
+- Proper documentation
+- Fully parallel squares: today a square runs one tick or read at a time
+  (a lock each), so two branches that reach it take turns there. Letting
+  them run it at once needs every module thread-safe (no static buffers,
+  li_data per call...)
+- list/map, list/filter, list/reduce: a list and a function (a subgraph, one
+  item in, one result out). Sequential first; later on every core when the
+  function is pure (no ticks out, no writes to shared variables), reduce as a
+  tree when its operation is associative
 
-Longer term: native Mac and Windows builds. raylib runs on both, but lineit
-uses Linux things: dlopen'd modules, fontconfig, Compile running make and cc.

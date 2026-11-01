@@ -17,11 +17,11 @@ squares = {
         { id = 12, module = "string/upper", x = 400, y = 0, inputs = { { name = "s", type = "string", value = "Hello, World 1!" }, } },
         { id = 13, module = "string/lower", x = 400, y = 100, inputs = { { name = "s", type = "string", value = "Hello, World 1!" }, } },
         { id = 14, module = "flow/entry", x = 400, y = 200 },
-        { id = 15, module = "string/split", x = 500, y = 200, params = { { name = "list", value = "parts" }, }, inputs = { { name = "s", type = "string", value = "a,b,,c" }, { name = "sep", type = "string", value = "," }, } },
-        { id = 16, module = "string/join", x = 600, y = 200, params = { { name = "list", value = "parts" }, }, inputs = { { name = "sep", type = "string", value = " | " }, } },
+        { id = 15, module = "string/split", x = 500, y = 200, inputs = { { name = "s", type = "string", value = "a,b,,c" }, { name = "sep", type = "string", value = "," }, } },
+        { id = 16, module = "string/join", x = 600, y = 200, inputs = { { name = "sep", type = "string", value = " | " }, } },
         { id = 17, module = "io/print", x = 700, y = 200 },
-        { id = 18, module = "string/split", x = 800, y = 200, params = { { name = "list", value = "chars" }, }, inputs = { { name = "s", type = "string", value = "xyz" }, { name = "sep", type = "string", value = "" }, } },
-        { id = 19, module = "string/join", x = 900, y = 200, params = { { name = "list", value = "chars" }, }, inputs = { { name = "sep", type = "string", value = "-" }, } },
+        { id = 18, module = "string/split", x = 800, y = 200, inputs = { { name = "s", type = "string", value = "xyz" }, { name = "sep", type = "string", value = "" }, } },
+        { id = 19, module = "string/join", x = 900, y = 200, inputs = { { name = "sep", type = "string", value = "-" }, } },
         { id = 20, module = "io/print", x = 1000, y = 200 },
         -- wired: upper(concat(format, len))
         { id = 21, module = "string/format", x = 400, y = 400, inputs = { { name = "template", type = "string", value = "len {}" }, } },
@@ -29,11 +29,11 @@ squares = {
 }
 
 links = {
-        { from = 14, from_pin = 0, to = 15, to_pin = 0 },
-        { from = 15, from_pin = 0, to = 17, to_pin = 0 },
+        { from = 14, from_pin = 0, to = 17, to_pin = 0 },
+        { from = 15, from_pin = 0, to = 16, to_pin = 0 },
         { from = 16, from_pin = 0, to = 17, to_pin = 1 },
-        { from = 17, from_pin = 0, to = 18, to_pin = 0 },
-        { from = 18, from_pin = 0, to = 20, to_pin = 0 },
+        { from = 17, from_pin = 0, to = 20, to_pin = 0 },
+        { from = 18, from_pin = 0, to = 19, to_pin = 0 },
         { from = 19, from_pin = 0, to = 20, to_pin = 1 },
         { from = 4, from_pin = 0, to = 21, to_pin = 1 },
         { from = 21, from_pin = 0, to = 22, to_pin = 0 },

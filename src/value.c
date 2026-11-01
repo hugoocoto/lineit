@@ -1,5 +1,6 @@
 /* value.c - see value.h */
-#define _POSIX_C_SOURCE 200809L /* strdup */
+#define _GNU_SOURCE  /* strdup, recursive mutex initializer */
+#include <pthread.h> /* first: bt.h changes the feature macros */
 #define BT_IMPLEMENTATION
 #include "value.h"
 
@@ -7,12 +8,46 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* A copy of V that owns what it points to (strings, records), for whoever
- * keeps it longer than the module that made it: free it with value_drop */
+/* What .p of a LI_LIST and a LI_MAP point to. Each owns its values. */
+typedef struct List {
+        Da(Li_Value) items;
+} List;
+
+/* Sorted by key, found with bsearch */
+typedef struct Entry {
+        char *key;
+        Li_Value value;
+} Entry;
+
+typedef struct Map {
+        Da(Entry) items;
+} Map;
+
+/* A copy of V that owns what it points to (strings, lists, maps, records),
+ * for whoever keeps it longer than the module that made it: free it with
+ * value_drop */
 Li_Value
 value_dup(Li_Value v)
 {
         if (v.type == LI_STRING) return li_string(strdup(v.s ? v.s : ""));
+        if (v.type == LI_LIST && v.p) {
+                List *l = v.p, *c = calloc(1, sizeof *c);
+                Da_foreach(it, l->items)
+                {
+                        Da_append(&c->items, value_dup(*it));
+                }
+                v.p = c;
+                return v;
+        }
+        if (v.type == LI_MAP && v.p) {
+                Map *m = v.p, *c = calloc(1, sizeof *c);
+                Da_foreach(e, m->items)
+                {
+                        Da_append(&c->items, ((Entry) { strdup(e->key), value_dup(e->value) }));
+                }
+                v.p = c;
+                return v;
+        }
         if (type_is_record(v.type) && v.p) {
                 Record *r = v.p;
                 Record *c = malloc(sizeof *c + r->count * sizeof *c->fields);
@@ -28,13 +63,44 @@ value_dup(Li_Value v)
 void
 value_drop(Li_Value v)
 {
-        if (v.type == LI_STRING) free((char *) v.s);
-        if (type_is_record(v.type) && v.p) {
+        if (v.type == LI_STRING) {
+                free((char *) v.s);
+        } else if (v.type == LI_LIST && v.p) {
+                List *l = v.p;
+                Da_foreach(it, l->items)
+                {
+                        value_drop(*it);
+                }
+                Da_destroy(&l->items);
+                free(l);
+        } else if (v.type == LI_MAP && v.p) {
+                Map *m = v.p;
+                Da_foreach(e, m->items)
+                {
+                        free(e->key);
+                        value_drop(e->value);
+                }
+                Da_destroy(&m->items);
+                free(m);
+        } else if (type_is_record(v.type) && v.p) {
                 Record *r = v.p;
                 for (int i = 0; i < r->count; i++)
                         value_drop(r->fields[i]);
                 free(r);
         }
+}
+
+Li_Value
+li_copy(Li_Value v)
+{
+        return value_dup(v);
+}
+
+void
+li_drop(Li_Value *v)
+{
+        value_drop(*v);
+        *v = (Li_Value) { .type = LI_NONE };
 }
 
 bool
@@ -45,8 +111,25 @@ value_equal(Li_Value a, Li_Value b)
         case LI_BOOL: return a.b == b.b;
         case LI_INT: return a.i == b.i;
         case LI_FLOAT: return a.f == b.f;
-        case LI_STRING: return !strcmp(a.s ? a.s : "", b.s ? b.s : "");
+        case LI_STRING:
+        case LI_REF: return !strcmp(a.s ? a.s : "", b.s ? b.s : "");
         case LI_PTR: return a.p == b.p;
+        case LI_LIST: {
+                long n = li_list_len(a);
+                if (n != li_list_len(b)) return false;
+                for (long i = 0; i < n; i++)
+                        if (!value_equal(li_list_get(a, i), li_list_get(b, i))) return false;
+                return true;
+        }
+        case LI_MAP: {
+                long n = li_map_len(a);
+                if (n != li_map_len(b)) return false;
+                for (long i = 0; i < n; i++) {
+                        const char *k = li_map_key(a, i);
+                        if (!li_map_has(b, k) || !value_equal(li_map_get(a, k), li_map_get(b, k))) return false;
+                }
+                return true;
+        }
         default: break;
         }
         if (!type_is_record(a.type)) return true;
@@ -71,67 +154,152 @@ record_format(Record *r, char *buf, int size)
         return n;
 }
 
+/* [1, "a"] and {a: 1, b: [2]}. Strings inside are quoted, so "1" isn't 1. */
+static int
+item_format(Li_Value v, char *buf, int size)
+{
+        if (v.type == LI_STRING) return snprintf(buf, size, "\"%s\"", v.s ? v.s : "");
+        return li_format(v, buf, size);
+}
+
+static int
+list_format(Li_Value v, char *buf, int size)
+{
+        int n = snprintf(buf, size, "[");
+        for (long i = 0; i < li_list_len(v) && n < size; i++) {
+                if (i) n += snprintf(buf + n, size - n, ", ");
+                if (n < size) n += item_format(li_list_get(v, i), buf + n, size - n);
+        }
+        if (n < size) n += snprintf(buf + n, size - n, "]");
+        return n;
+}
+
+static int
+map_format(Li_Value v, char *buf, int size)
+{
+        int n = snprintf(buf, size, "{");
+        for (long i = 0; i < li_map_len(v) && n < size; i++) {
+                const char *k = li_map_key(v, i);
+                n += snprintf(buf + n, size - n, "%s%s: ", i ? ", " : "", k);
+                if (n < size) n += item_format(li_map_get(v, k), buf + n, size - n);
+        }
+        if (n < size) n += snprintf(buf + n, size - n, "}");
+        return n;
+}
+
 /* Variables, by name. Modules can't share globals (each square has its own
  * copy), so they live here. Like in C, they are local to the canvas they
  * are in: a subgraph square has its own (see Subgraphs), the canvas of a
- * tab its own. Globals (li_global_*) are shared by all of them in the tab. */
-VarList vars;    /* of the canvas running: the tab's, or a subgraph's */
+ * tab its own. Names that start with "::" are globals, shared by all of
+ * them in the tab. */
+VarList vars;    /* the canvas's: the tab's, or a subgraph's while it's being made */
 VarList globals; /* of the tab */
 
-static Var *
-var_find(VarList *l, const char *name)
+/* Where the thread is: the locals of the subgraph square it runs a square
+ * of (NULL: vars). Each thread has its own, branches run in parallel. */
+static _Thread_local VarList *here;
+
+void
+value_locals(VarList *l)
 {
+        here = l;
+}
+
+/* Branches run in parallel: one at a time in here. Recursive, so a
+ * li_var_update callback can read another variable. */
+static pthread_mutex_t lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+
+#define GLOBAL "::"
+
+/* The variable NAME, made if CREATE and it isn't there. With the lock. */
+static Var *
+var_find(const char *name, bool create)
+{
+        VarList *l = here ? here : &vars;
+        if (!name) name = "";
+        if (!strncmp(name, GLOBAL, strlen(GLOBAL))) {
+                l = &globals;
+                name += strlen(GLOBAL);
+        }
         Da_foreach(v, *l)
         {
                 if (strcmp(v->name, name) == 0) return v;
         }
-        return NULL;
+        if (!create) return NULL;
+        Da_append(l, ((Var) { .name = strdup(name), .type = LI_ANY }));
+        return &l->items[l->count - 1];
 }
 
-static void
-var_set(VarList *l, const char *name, Li_Value value)
+/* FN on the value of NAME, in place, with the lock: nobody else touches it
+ * meanwhile. Never set, it's LI_NONE. */
+void
+li_var_update(const char *name, void (*fn)(Li_Value *value, void *ctx), void *ctx)
 {
-        Var *v = var_find(l, name ? name : "");
-        if (!v) {
-                Da_append(l, (Var) { .name = strdup(name ? name : "") });
-                v = &l->items[l->count - 1];
-        }
-
-        /* Copied: the module's strings and records may not live long */
-        Li_Value old = v->value;
-        v->value     = value_dup(value);
-        value_drop(old);
-}
-
-static Li_Value
-var_get(VarList *l, const char *name)
-{
-        Var *v = var_find(l, name ? name : "");
-        return v ? v->value : (Li_Value) { .type = LI_NONE };
+        pthread_mutex_lock(&lock);
+        Var *v = var_find(name, true);
+        v->set = true;
+        fn(&v->value, ctx);
+        pthread_mutex_unlock(&lock);
 }
 
 void
 li_var_set(const char *name, Li_Value value)
 {
-        var_set(&vars, name, value);
+        /* Copied first: the module's strings and lists may not live long,
+         * and VALUE may be in the variable */
+        Li_Value c = value_dup(value);
+        pthread_mutex_lock(&lock);
+        Var *v       = var_find(name, true);
+        Li_Value old = v->value;
+        v->value     = c;
+        v->set       = true;
+        pthread_mutex_unlock(&lock);
+        value_drop(old);
 }
 
 Li_Value
 li_var_get(const char *name)
 {
-        return var_get(&vars, name);
+        pthread_mutex_lock(&lock);
+        Var *v     = var_find(name, false);
+        Li_Value c = v ? value_dup(v->value) : (Li_Value) { .type = LI_NONE };
+        pthread_mutex_unlock(&lock);
+        return c;
+}
+
+bool
+li_var_has(const char *name)
+{
+        pthread_mutex_lock(&lock);
+        Var *v   = var_find(name, false);
+        bool has = v && v->set;
+        pthread_mutex_unlock(&lock);
+        return has;
 }
 
 void
-li_global_set(const char *name, Li_Value value)
+li_var_declare(const char *name, Li_Type type, Li_Value start)
 {
-        var_set(&globals, name, value);
+        pthread_mutex_lock(&lock);
+        Var *v = var_find(name, true);
+        if (!(v->set && v->declared && v->type == type && value_equal(v->start, start))) {
+                value_drop(v->start);
+                v->start    = value_dup(start);
+                v->type     = type;
+                v->declared = true;
+                li_var_set(name, start);
+        }
+        pthread_mutex_unlock(&lock);
 }
 
-Li_Value
-li_global_get(const char *name)
+Li_Type
+li_var_type(const char *name)
 {
-        return var_get(&globals, name);
+        pthread_mutex_lock(&lock);
+        Var *v    = var_find(name, false);
+        Li_Type t = v && v->declared ? v->type : LI_ANY;
+        pthread_mutex_unlock(&lock);
+        return t;
 }
 
 void
@@ -141,6 +309,7 @@ var_list_clear(VarList *l)
         {
                 free(v->name);
                 value_drop(v->value);
+                value_drop(v->start);
         }
         Da_destroy(l);
 }
@@ -153,61 +322,22 @@ vars_clear(void)
         var_list_clear(&globals);
 }
 
-/* ---- Lists (Da) and trees (bt.h), shared by every square, by name ---- */
-
-/* A value that owns its string */
-typedef struct Stored {
-        Li_Value value; /* a copy it owns (value_dup) */
-} Stored;
-
-static void
-stored_set(Stored *st, Li_Value value)
-{
-        Li_Value old = st->value;
-        st->value    = value_dup(value);
-        value_drop(old);
-}
-
-static void
-stored_free(Stored *st)
-{
-        value_drop(st->value);
-        *st = (Stored) { 0 };
-}
-
-typedef struct List {
-        Da(Stored) items;
-        Stored popped; /* what li_list_pop returned, alive until the next pop */
-} List;
-
-/* String keys to Stored *, in order */
-typedef struct Tree {
-        BT map;
-        long count;
-} Tree;
-
-/* Roots on the heap, not here: nodes point to their parent, and tabs move
- * these pointers around (see Tabs) */
-BT *lists; /* name -> List * */
-BT *trees; /* name -> Tree * */
-
-/* *ROOT, made if it isn't yet */
-static BT *
-bt_root(BT **root)
-{
-        if (!*root) *root = calloc(1, sizeof **root);
-        return *root;
-}
+/* ---- Lists ---- */
 
 static List *
-list_find(const char *name, bool create)
+list_of(Li_Value v)
 {
-        List *l = bt_get(bt_root(&lists), name ? name : "");
-        if (!l && create) {
-                l = calloc(1, sizeof *l);
-                bt_add(bt_root(&lists), name ? name : "", l);
-        }
-        return l;
+        return v.type == LI_LIST ? v.p : NULL;
+}
+
+/* *V as a list: an empty one if it isn't */
+static List *
+list_make(Li_Value *v)
+{
+        if (v->type == LI_LIST && v->p) return v->p;
+        value_drop(*v);
+        *v = (Li_Value) { .type = LI_LIST, .p = calloc(1, sizeof(List)) };
+        return v->p;
 }
 
 /* Negative indices count from the end. -1 if out of range. */
@@ -220,182 +350,173 @@ list_index(List *l, long i)
 }
 
 long
-li_list_len(const char *list)
+li_list_len(Li_Value list)
 {
-        List *l = list_find(list, false);
+        List *l = list_of(list);
         return l ? l->items.count : 0;
 }
 
-void
-li_list_push(const char *list, Li_Value value)
-{
-        List *l = list_find(list, true);
-        Da_append(&l->items, (Stored) { 0 });
-        stored_set(&l->items.items[l->items.count - 1], value);
-}
-
 Li_Value
-li_list_pop(const char *list)
+li_list_get(Li_Value list, long index)
 {
-        List *l = list_find(list, false);
-        if (!l || !l->items.count) return (Li_Value) { .type = LI_NONE };
-
-        /* The popped item keeps its string until the next pop */
-        stored_free(&l->popped);
-        l->popped = l->items.items[--l->items.count];
-        return l->popped.value;
-}
-
-Li_Value
-li_list_get(const char *list, long index)
-{
-        List *l = list_find(list, false);
+        List *l = list_of(list);
         long i  = list_index(l, index);
-        return i < 0 ? (Li_Value) { .type = LI_NONE } : l->items.items[i].value;
+        return i < 0 ? (Li_Value) { .type = LI_NONE } : l->items.items[i];
+}
+
+void
+li_list_push(Li_Value *list, Li_Value value)
+{
+        /* First: VALUE may be in *LIST, and making it one would free it */
+        Li_Value c = value_dup(value);
+        List *l    = list_make(list);
+        Da_append(&l->items, c);
+}
+
+Li_Value
+li_list_pop(Li_Value *list)
+{
+        List *l = list_of(*list);
+        if (!l || !l->items.count) return (Li_Value) { .type = LI_NONE };
+        return l->items.items[--l->items.count];
 }
 
 bool
-li_list_set(const char *list, long index, Li_Value value)
+li_list_set(Li_Value *list, long index, Li_Value value)
 {
-        List *l = list_find(list, false);
+        List *l = list_of(*list);
         long i  = list_index(l, index);
         if (i < 0) return false;
-        stored_set(&l->items.items[i], value);
+        Li_Value old      = l->items.items[i];
+        l->items.items[i] = value_dup(value);
+        value_drop(old);
         return true;
 }
 
 bool
-li_list_remove(const char *list, long index)
+li_list_remove(Li_Value *list, long index)
 {
-        List *l = list_find(list, false);
+        List *l = list_of(*list);
         long i  = list_index(l, index);
         if (i < 0) return false;
-        stored_free(&l->items.items[i]);
+        value_drop(l->items.items[i]);
         Da_remove(&l->items, i);
         return true;
 }
 
 void
-li_list_clear(const char *list)
+li_list_clear(Li_Value *list)
 {
-        List *l = list_find(list, false);
-        if (!l) return;
-        Da_foreach(st, l->items)
+        List *l = list_make(list);
+        Da_foreach(it, l->items)
         {
-                stored_free(st);
+                value_drop(*it);
         }
         l->items.count = 0;
 }
 
-static Tree *
-tree_find(const char *name, bool create)
+/* ---- Maps ---- */
+
+static Map *
+map_of(Li_Value v)
 {
-        Tree *t = bt_get(bt_root(&trees), name ? name : "");
-        if (!t && create) {
-                t = calloc(1, sizeof *t);
-                bt_add(bt_root(&trees), name ? name : "", t);
-        }
-        return t;
+        return v.type == LI_MAP ? v.p : NULL;
 }
 
-void
-li_tree_set(const char *tree, const char *key, Li_Value value)
+static Map *
+map_make(Li_Value *v)
 {
-        Tree *t    = tree_find(tree, true);
-        Stored *st = bt_get(&t->map, key ? key : "");
-        if (!st) {
-                st = calloc(1, sizeof *st);
-                bt_add(&t->map, key ? key : "", st);
-                t->count++;
-        }
-        stored_set(st, value);
+        if (v->type == LI_MAP && v->p) return v->p;
+        value_drop(*v);
+        *v = (Li_Value) { .type = LI_MAP, .p = calloc(1, sizeof(Map)) };
+        return v->p;
 }
 
-Li_Value
-li_tree_get(const char *tree, const char *key)
+static int
+entry_cmp(const void *key, const void *e)
 {
-        Tree *t    = tree_find(tree, false);
-        Stored *st = t ? bt_get(&t->map, key ? key : "") : NULL;
-        return st ? st->value : (Li_Value) { .type = LI_NONE };
+        return strcmp(key, ((const Entry *) e)->key);
 }
 
-bool
-li_tree_has(const char *tree, const char *key)
+/* The entry of KEY, NULL if it has none */
+static Entry *
+map_find(Map *m, const char *key)
 {
-        Tree *t = tree_find(tree, false);
-        return t && bt_get(&t->map, key ? key : "");
-}
-
-void
-li_tree_del(const char *tree, const char *key)
-{
-        Tree *t    = tree_find(tree, false);
-        Stored *st = t ? bt_get(&t->map, key ? key : "") : NULL;
-        if (!st) return;
-        stored_free(st);
-        free(st);
-        bt_del(&t->map, key ? key : "");
-        t->count--;
+        if (!m || !m->items.count) return NULL;
+        return bsearch(key ? key : "", m->items.items, m->items.count, sizeof(Entry), entry_cmp);
 }
 
 long
-li_tree_len(const char *tree)
+li_map_len(Li_Value map)
 {
-        Tree *t = tree_find(tree, false);
-        return t ? t->count : 0;
+        Map *m = map_of(map);
+        return m ? m->items.count : 0;
+}
+
+Li_Value
+li_map_get(Li_Value map, const char *key)
+{
+        Entry *e = map_find(map_of(map), key);
+        return e ? e->value : (Li_Value) { .type = LI_NONE };
+}
+
+bool
+li_map_has(Li_Value map, const char *key)
+{
+        return map_find(map_of(map), key) != NULL;
+}
+
+const char *
+li_map_key(Li_Value map, long index)
+{
+        Map *m = map_of(map);
+        return m && index >= 0 && index < m->items.count ? m->items.items[index].key : NULL;
 }
 
 void
-li_tree_keys(const char *tree, const char *list)
+li_map_set(Li_Value *map, const char *key, Li_Value value)
 {
-        Tree *t = tree_find(tree, false);
-        BT *it;
-
-        li_list_clear(list);
-        if (!t) return;
-        for_bt_each(it, &t->map)
-        {
-                li_list_push(list, li_string(it->key));
+        /* What *MAP was is freed last: VALUE may be in it */
+        Li_Value was = { .type = LI_NONE };
+        if (!map_of(*map)) {
+                was  = *map;
+                *map = (Li_Value) { .type = LI_MAP, .p = calloc(1, sizeof(Map)) };
         }
+        Map *m = map->p;
+        if (!key) key = "";
+        Entry *e = map_find(m, key);
+        if (e) {
+                value_drop(e->value);
+                e->value = value_dup(value);
+                value_drop(was);
+                return;
+        }
+        /* In its place: after the keys before it */
+        int at = 0;
+        while (at < m->items.count && strcmp(m->items.items[at].key, key) < 0)
+                at++;
+        Da_append(&m->items, ((Entry) { 0 }));
+        memmove(&m->items.items[at + 1], &m->items.items[at], (m->items.count - 1 - at) * sizeof(Entry));
+        m->items.items[at] = (Entry) { strdup(key), value_dup(value) };
+        value_drop(was);
 }
 
 void
-containers_clear(void)
+li_map_del(Li_Value *map, const char *key)
 {
-        BT *it, *e;
+        Map *m   = map_of(*map);
+        Entry *e = map_find(m, key);
+        if (!e) return;
+        free(e->key);
+        value_drop(e->value);
+        Da_remove(&m->items, e - m->items.items);
+}
 
-        for_bt_each(it, bt_root(&lists))
-        {
-                List *l = it->value;
-                Da_foreach(st, l->items)
-                {
-                        stored_free(st);
-                }
-                Da_destroy(&l->items);
-                stored_free(&l->popped);
-                free(l);
-                it->value = NULL; /* bt_destroy reads it */
-        }
-        bt_destroy(lists);
-        free(lists);
-        lists = NULL;
-
-        for_bt_each(it, bt_root(&trees))
-        {
-                Tree *t = it->value;
-                for_bt_each(e, &t->map)
-                {
-                        stored_free(e->value);
-                        free(e->value);
-                        e->value = NULL;
-                }
-                bt_destroy(&t->map);
-                free(t);
-                it->value = NULL;
-        }
-        bt_destroy(trees);
-        free(trees);
-        trees = NULL;
+void
+li_map_clear(Li_Value *map)
+{
+        if (map->type == LI_MAP) li_drop(map);
+        map_make(map);
 }
 
 int
@@ -408,6 +529,9 @@ li_format(Li_Value v, char *buf, int size)
         case LI_STRING: return snprintf(buf, size, "%s", v.s ? v.s : "");
         case LI_PTR: return snprintf(buf, size, "%p", v.p);
         case LI_TICK: return snprintf(buf, size, "tick");
+        case LI_LIST: return list_format(v, buf, size);
+        case LI_MAP: return map_format(v, buf, size);
+        case LI_REF: return snprintf(buf, size, "%s", v.s ? v.s : "");
         default:
                 if (type_is_record(v.type)) return v.p ? record_format(v.p, buf, size) : snprintf(buf, size, "-");
                 return snprintf(buf, size, "-");
