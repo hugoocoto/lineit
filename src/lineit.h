@@ -311,12 +311,16 @@ unsigned char *li_bytes_data(Li_Value v); /* NULL if V isn't bytes */
    records, by value) has a C layout, as C lays a struct out: li_c_size is
    its size, 0 if it has none. li_c_write puts record V in MEM (its strings
    are pointers to V's, valid while V is), li_c_read makes a record from
-   MEM: yours. li_c_members is its fields as C sees them, nested ones
-   flattened: what libffi needs to pass one by value. li_type_named finds a
-   custom type by its name ("geo/point") or its last part ("point"). */
+   MEM: yours. li_c_members is its fields as C sees them, in order (-1 if
+   it has no C layout): what libffi needs to pass one by value.
+   li_type_named finds a custom type by its name ("geo/point") or its last
+   part ("point"). */
 typedef struct Li_C_Member {
         int offset, size;
-        char kind; /* 'i' signed integer, 'u' unsigned, 'f' floating point, 'p' pointer */
+        /* 'i' signed integer, 'u' unsigned (and bool), 'f' floating point,
+           'p' pointer (and string), 'r' a record by value, of TYPE */
+        char kind;
+        Li_Type type;
 } Li_C_Member;
 
 size_t li_c_size(Li_Type t);

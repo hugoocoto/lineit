@@ -1,6 +1,7 @@
 /* What's at "ptr" + "offset" bytes, as "type": an out-parameter a C
- * function filled, a field of a struct, a string in a buffer. Pure: read
- * when needed. */
+ * function filled, a field of a struct, a string in a buffer. "ptr" can be
+ * bytes too: then nothing (LI_NONE) past their end. Pure: read when
+ * needed. */
 #include "mem.h"
 
 enum { IN_PTR,
@@ -19,5 +20,6 @@ module_init(Li_Node *n)
 void
 module_eval(Li_Node *n)
 {
-        li_set(n, 0, mem_read(mem_at(li_get(n, IN_PTR), li_get(n, IN_OFFSET)), (int) li_get(n, IN_TYPE).i));
+        int type = (int) li_get(n, IN_TYPE).i;
+        li_set(n, 0, mem_read(mem_at(li_get(n, IN_PTR), li_get(n, IN_OFFSET), type), type));
 }

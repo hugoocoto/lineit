@@ -109,7 +109,7 @@ $(CONFIG)/modules/%.so: modules/%.c src/lineit.h $(MODULES_H)
 
 # What a module links with, if it needs more: ffi/call calls C functions
 # with libffi (see modules/ffi/call.c)
-$(CONFIG)/modules/ffi/call.so: MODULE_LIBS = $(shell pkg-config --libs libffi) -ldl
+$(CONFIG)/modules/ffi/%.so: MODULE_LIBS = $(shell pkg-config --libs libffi) -ldl
 
 # Kept: made only through a pattern rule, make would remove them after
 .PRECIOUS: $(CONFIG)/modules/%.so
@@ -154,8 +154,14 @@ build/modules/string/reverse.li: $(wildcard examples/package/* examples/package/
 RUN_TESTS = $(CONFIG)/run_tests
 TEST_EXTRACT = $(CONFIG)/test_extract
 TESTS = $(wildcard examples/*.lua tests/*.lua)
+# What tests/ffi_types.lua calls that libc has none of
+FFI_TEST_LIB = build/libffitest.so
 
-test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
+$(FFI_TEST_LIB): tests/lib/ffitest.c
+	@mkdir -p $(@D)
+	$(CC) $(WARN) $(CFLAGS) -fPIC -shared $< $(LDFLAGS:-pie=) -lm -o $@
+
+test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
 	./$(RUN_TESTS) $(TESTS)
 	./$(RUN_TESTS) -c $(TESTS)
 	./$(RUN_TESTS) -s $(TESTS)
@@ -164,7 +170,7 @@ test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
 # The same, with the editor built with AddressSanitizer and UBSan: any
 # memory error, leak or undefined behavior fails it
 
-test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
+test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
 	./build/run_tests_asan $(TESTS)
 	./build/run_tests_asan -c $(TESTS)
 	./build/run_tests_asan -s $(TESTS)
@@ -177,7 +183,7 @@ build/%_asan: tools/%.c $(SRC) src/lineit.h
 # The same with ThreadSanitizer: branches run in parallel (see
 # src/branches.h), and any data race between them fails it. The modules
 # aren't built with it: races inside one aren't seen.
-test-tsan: build/run_tests_tsan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
+test-tsan: build/run_tests_tsan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
 	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan $(TESTS)
 	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan -s $(TESTS)
 
@@ -185,7 +191,7 @@ build/%_tsan: tools/%.c $(SRC) src/lineit.h
 	@mkdir -p $(dir $@)
 	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
-test-update: $(RUN_TESTS) $(MODULES) $(GRAPHS) $(PACKAGES)
+test-update: $(RUN_TESTS) $(MODULES) $(GRAPHS) $(PACKAGES) $(FFI_TEST_LIB)
 	./$(RUN_TESTS) -u $(TESTS)
 
 # Make subgraph on example canvases, see tools/test_extract.c

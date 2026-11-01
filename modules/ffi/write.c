@@ -24,6 +24,9 @@ void
 module_tick(Li_Node *n, int input)
 {
         (void) input;
-        mem_write(mem_at(li_get(n, IN_PTR), li_get(n, IN_OFFSET)), (int) li_get(n, IN_TYPE).i, li_get(n, IN_VALUE));
+        int type   = (int) li_get(n, IN_TYPE).i;
+        Li_Value p = li_get(n, IN_PTR);
+        /* Bytes on a wire are a copy: writing in them would change nothing */
+        if (p.type == LI_PTR) mem_write(mem_at(p, li_get(n, IN_OFFSET), type), type, li_get(n, IN_VALUE));
         li_tick(n, 0);
 }

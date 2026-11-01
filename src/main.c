@@ -630,7 +630,7 @@ setting_read(Conf conf, const Setting *s, const char *path)
         case SET_BOOL: return conf_bool(conf, s->val, path);
         case SET_COLOR: return conf_color(conf, s->val, path);
         case SET_STR: {
-                const char **cur = s->val, *str;
+                const char **cur = s->val, *str = NULL;
                 if (!conf_str(conf, &str, path)) return false;
                 /* Read already from the config, if it isn't the default */
                 if (*cur != *(const char **) setting_in(s, &cfg_defaults)) free((char *) *cur);
@@ -1554,6 +1554,8 @@ types_compatible(Li_Type out, Li_Type in)
          * other way (0 is false) */
         if ((out == LI_INT && in == LI_FLOAT) || (out == LI_BOOL && in == LI_INT) || (out == LI_INT && in == LI_BOOL))
                 return true;
+        /* Bytes are a buffer: where a ptr goes, their data does (ffi/) */
+        if (out == LI_BYTES && in == LI_PTR) return true;
         return out == in || out == LI_ANY || in == LI_ANY;
 }
 
@@ -2167,6 +2169,8 @@ update_field(void)
         }
         if (changed) field_edit.error = false;
 
+        /* Applied above (Enter, Tab): there's no field to click away from */
+        if (!field_edit.square) return false;
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
                 Vector2 world = GetScreenToWorld2D(GetMousePosition(), camera);
                 Square *s     = field_edit.square;

@@ -37,11 +37,44 @@ mem_int(Li_Value v)
                                                              0;
 }
 
-/* The pointer of input IN plus OFFSET, NULL if it has none */
-static inline char *
-mem_at(Li_Value ptr, Li_Value offset)
+/* Bytes TYPE takes, at least: a string, its '\0' */
+static inline long
+mem_size(int type)
 {
-        return ptr.type == LI_PTR && ptr.p ? (char *) ptr.p + mem_int(offset) : NULL;
+        static const unsigned char sizes[] = {
+                [T_INT]    = sizeof(int),
+                [T_UINT]   = sizeof(unsigned),
+                [T_CHAR]   = 1,
+                [T_UCHAR]  = 1,
+                [T_SHORT]  = sizeof(short),
+                [T_USHORT] = sizeof(short),
+                [T_LONG]   = sizeof(long),
+                [T_ULONG]  = sizeof(long),
+                [T_I8]     = 1,
+                [T_U8]     = 1,
+                [T_I16]    = 2,
+                [T_U16]    = 2,
+                [T_I32]    = 4,
+                [T_U32]    = 4,
+                [T_I64]    = 8,
+                [T_U64]    = 8,
+                [T_FLOAT]  = sizeof(float),
+                [T_DOUBLE] = sizeof(double),
+                [T_STRING] = 1,
+                [T_PTR]    = sizeof(void *),
+        };
+        return type >= 0 && type <= T_PTR ? sizes[type] : 1;
+}
+
+/* The pointer PTR (a ptr, or bytes) plus OFFSET, NULL if it has none. In
+ * bytes, NULL too if a TYPE there wouldn't fit: they know their size. */
+static inline char *
+mem_at(Li_Value ptr, Li_Value offset, int type)
+{
+        long off = mem_int(offset);
+        if (ptr.type == LI_PTR) return ptr.p ? (char *) ptr.p + off : NULL;
+        if (ptr.type != LI_BYTES || off < 0 || off + mem_size(type) > (long) li_bytes_size(ptr)) return NULL;
+        return (char *) li_bytes_data(ptr) + off;
 }
 
 static inline Li_Value

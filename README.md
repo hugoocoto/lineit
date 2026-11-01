@@ -218,11 +218,26 @@ floats, `const char *` strings, and other pointers `ptr` values, passed
 along. A variadic one says this call's types after the dots:
 `int snprintf(char *buf, size_t n, const char *fmt, ..., int, double)`. It
 runs on each tick, or, with `pure` on, when its result is read (`sin`,
-`strlen`). `ffi/alloc`, `ffi/read`, `ffi/write` and `ffi/free` handle the
-memory pointers point to: buffers, out-parameters, struct fields. Wrap the
-calls you use in subgraphs to get squares of your own. It's C: a wrong
-prototype or pointer crashes lineit. Compiled programs call them the same
-way, and link with libffi.
+`strlen`).
+
+C's structs are custom types whose fields have a C form (`int8` to
+`uint64`, `float32`, `float64`, `int`, `float`, `bool`, `string`, `ptr`
+and other such types): `ffi/div_t` and `ffi/tm` come with lineit, and
+`types/point` is one too. Pass one by value (`div_t div(int, int)`) or by
+pointer: `time_t timegm(tm *t)` takes a `tm` in, and gives back as an
+output the `tm` that C changed. An argument `T name[N]` is an
+out-parameter. The square makes it, zeroed, and it comes out as a string
+(`char buf[64]`), as bytes (`uint8_t buf[16]`), as one `T`, or as a list.
+`bytes` is a buffer that is a value, and it goes wherever a `ptr` does.
+`ffi/callback` makes a C function out of squares, for a C function that
+takes one (`qsort`'s comparator): its outputs are the call's arguments,
+and what you wire to `result` is what it returns. `ffi/alloc`, `ffi/read`,
+`ffi/write` and `ffi/free` handle the memory pointers point to.
+`tests/ffi_types.lua` uses them all.
+
+Wrap the calls you use in subgraphs to get squares of your own. It's C: a
+wrong prototype or pointer crashes lineit. Compiled programs call them the
+same way, and link with libffi.
 
 Start with the canvases in `examples/`: each begins with a comment that
 explains it, and `examples/README.md` lists them.

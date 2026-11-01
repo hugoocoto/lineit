@@ -733,73 +733,68 @@ li_c_write(Li_Type t, Li_Value v, void *mem)
         return true;
 }
 
+/* Field I of record type T, read from MEM: owned */
+static Li_Value
+c_read_field(Li_Type t, int i, const char *mem)
+{
+        char kind   = 0;
+        size_t size = 0, off = 0;
+        Li_Type rec   = LI_NONE;
+        const char *p = mem;
+        if (!c_at(t, i, &kind, &size, &off, &rec)) return (Li_Value) { .type = LI_NONE };
+        p += off;
+        switch (kind) {
+        case 'i':
+                if (size == 1) return li_int(*(const int8_t *) p);
+                if (size == 2) return li_int(*(const int16_t *) p);
+                if (size == 4) return li_int(*(const int32_t *) p);
+                return li_int((long) *(const int64_t *) p);
+        case 'u':
+                if (size == 1) return li_int(*(const uint8_t *) p);
+                if (size == 2) return li_int(*(const uint16_t *) p);
+                if (size == 4) return li_int((long) *(const uint32_t *) p);
+                return li_int((long) *(const uint64_t *) p);
+        case 'f': return li_float(size == 4 ? *(const float *) p : *(const double *) p);
+        case 'b': return li_bool(*(const bool *) p);
+        case 's': {
+                const char *str = *(const char *const *) p;
+                return str ? li_string(strdup(str)) : (Li_Value) { .type = LI_NONE };
+        }
+        case 'p': return li_ptr(*(void *const *) p);
+        case 'r': return li_c_read(rec, p);
+        default: return (Li_Value) { .type = LI_NONE };
+        }
+}
+
 Li_Value
 li_c_read(Li_Type t, const void *mem)
 {
         int n = type_field_count(t);
         if (!li_c_size(t) || n <= 0) return (Li_Value) { .type = LI_NONE };
-        Record *r = malloc(sizeof *r + n * sizeof *r->fields);
-        r->type   = t;
-        r->count  = n;
-        for (int i = 0; i < n; i++) {
-                char kind;
-                size_t size, off;
-                Li_Type rec;
-                const char *p = (const char *) mem;
-                c_at(t, i, &kind, &size, &off, &rec);
-                p += off;
-                Li_Value f = { .type = LI_NONE };
-                switch (kind) {
-                case 'i':
-                        f = li_int(size == 1 ? *(const int8_t *) p : size == 2 ? *(const int16_t *) p :
-                                                                     size == 4 ? *(const int32_t *) p :
-                                                                                 (long) *(const int64_t *) p);
-                        break;
-                case 'u':
-                        f = li_int(size == 1 ? *(const uint8_t *) p : size == 2 ? *(const uint16_t *) p :
-                                                                      size == 4 ? (long) *(const uint32_t *) p :
-                                                                                  (long) *(const uint64_t *) p);
-                        break;
-                case 'f': f = li_float(size == 4 ? *(const float *) p : *(const double *) p); break;
-                case 'b': f = li_bool(*(const bool *) p); break;
-                case 's': {
-                        const char *str = *(const char *const *) p;
-                        f               = str ? li_string(strdup(str)) : (Li_Value) { .type = LI_NONE };
-                        break;
-                }
-                case 'p': f = li_ptr(*(void *const *) p); break;
-                case 'r': f = li_c_read(rec, p); break;
-                }
-                r->fields[i] = f;
-        }
+        Record *r = calloc(1, sizeof *r + n * sizeof *r->fields);
+        if (!r) return (Li_Value) { .type = LI_NONE };
+        r->type  = t;
+        r->count = n;
+        for (int i = 0; i < n; i++)
+                r->fields[i] = c_read_field(t, i, mem);
         return (Li_Value) { .type = t, .p = r };
-}
-
-static int
-c_members(Li_Type t, size_t base, Li_C_Member *out, int max, int n)
-{
-        for (int i = 0; i < type_field_count(t); i++) {
-                char kind;
-                size_t size, off;
-                Li_Type rec;
-                if (!c_at(t, i, &kind, &size, &off, &rec)) return -1;
-                if (kind == 'r') {
-                        n = c_members(rec, base + off, out, max, n);
-                        if (n < 0) return -1;
-                        continue;
-                }
-                if (n >= max) return -1;
-                out[n++] = (Li_C_Member) { (int) (base + off), (int) size,
-                                           kind == 'b' ? 'u' : kind == 's' ? 'p' :
-                                                                             kind };
-        }
-        return n;
 }
 
 int
 li_c_members(Li_Type t, Li_C_Member *out, int max)
 {
-        return li_c_size(t) ? c_members(t, 0, out, max, 0) : -1;
+        int n = type_field_count(t);
+        if (!li_c_size(t) || n > max) return -1;
+        for (int i = 0; i < n; i++) {
+                char kind;
+                size_t size, off;
+                Li_Type rec;
+                if (!c_at(t, i, &kind, &size, &off, &rec)) return -1;
+                if (kind == 'b') kind = 'u';
+                if (kind == 's') kind = 'p';
+                out[i] = (Li_C_Member) { (int) off, (int) size, kind, kind == 'r' ? rec : LI_NONE };
+        }
+        return n;
 }
 
 Li_Type

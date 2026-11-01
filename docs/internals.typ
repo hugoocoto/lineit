@@ -601,9 +601,30 @@ wires to pins that aren't there after (`links_check`), and an input said
 again with the same name and type keeps its typed value (`Li_Node.was`).
 A module whose compiled copies link with more says so in `module_libs`
 (`-lffi -ldl`): Compile adds it to the program's link, and `make` links
-`ffi/call.so` with it (`MODULE_LIBS`), which the AppImage bundles. The
-memory squares (`ffi/alloc`, `read`, `write`, `free`) work on `LI_PTR`
-values.
+the `ffi/` modules with it (`MODULE_LIBS`), which the AppImage bundles.
+The memory squares (`ffi/alloc`, `read`, `write`, `free`) work on `LI_PTR`
+values, and `ffi/read` on `LI_BYTES` too, within their size.
+
+The parser is `modules/ffi/proto.h`, shared with `ffi/callback`. A word it
+doesn't know as a C type is looked up as a custom type (`li_type_named`).
+If it has a C layout (`li_c_size`, from `c_layout` in `src/value.c`:
+fields in order, each aligned to its size), it's a record by value
+(`K_REC`, a libffi struct built by `rec_ffi` from `li_c_members`, nested
+records as structs of their own) or behind a pointer (`K_RECP`). After
+`ffi_prep_cif` the sizes libffi gave the structs are checked against
+lineit's. `value_put` turns a lineit value into C: records are written in
+memory of their own with `li_c_write`, and read back with `li_c_read`
+after the call when C could have changed them. `T name[N]` (`K_OUT`) is
+memory of its own too, with no input. Compiled programs know each field's
+type (`Rt_Type.field_types`), so they lay records out the same way.
+
+`ffi/callback` makes a libffi closure (`ffi_prep_closure_loc`) for the
+cif of its prototype, with its square as user data. When C calls it,
+`handler` keeps the arguments, then reads its `result` input. That pulls
+the pure squares wired to it, and those read the arguments from its
+outputs (`module_eval`). It's like any read of a pure square: the
+square's lock is per branch and counted, so a read from inside the
+`ffi/call` that C is running doesn't wait on itself.
 
 = Variables, lists and maps <sec-vars>
 

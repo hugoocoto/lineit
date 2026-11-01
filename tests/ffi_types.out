@@ -1,0 +1,59 @@
+1706788800
+{sec: 0, min: 0, hour: 12, mday: 1, mon: 1, year: 124, wday: 4,
+Thursday 01 February 2024, 12:00 GMT
+1 2 3 4
+{x: 3, y: 6}
+-- 53 squares, 64 links
+0 flow/entry: 
+1 ffi/call: div()
+2 io/display: {quot: 3, rem: 2}
+3 types/make_point: {x: 1, y: 2}
+4 types/make_point: {x: 3, y: 6}
+5 ffi/call: mid()
+6 io/display: {x: 2, y: 4}
+7 types/make_segment: {from: {x: 1, y: 2}, to: {x: 3, y: 6}}
+8 ffi/call: length()
+9 io/display: 4.47214
+10 ffi/call: twice()
+11 io/display: 2199023255552
+12 ffi/call: half()
+13 io/display: 1.5
+14 ffi/call: count_from()
+15 io/display: [5, 6, 7]
+16 ffi/call: bytes_from()
+17 io/display: 4 bytes
+18 ffi/read: 
+19 io/display: 66
+20 ffi/read: 
+21 io/display: -
+22 ffi/call: snprintf()
+23 io/display: n=42
+24 ffi/callback: f
+25 math/multiply: 9
+26 ffi/call: sum_of()
+27 io/display: 14
+28 ffi/make_tm: {sec: 0, min: 0, hour: 12, mday: 32, mon: 0, year: 124, wday: 0
+29 ffi/call: timegm
+30 io/print: 1706788800
+31 io/print: {sec: 0, min: 0, hour: 12, mday: 1, mon: 1, year: 124, wday: 4,
+32 ffi/call: strftime()
+33 io/print: Thursday 01 February 2024, 12:00 GMT
+34 ffi/alloc: 16 bytes
+35 ffi/write: 
+36 ffi/write: 
+37 ffi/write: 
+38 ffi/write: 
+39 ffi/callback: cmp
+40 ffi/read: 
+41 ffi/read: 
+42 math/subtract: -1
+43 ffi/call: qsort
+44 ffi/call: snprintf()
+45 ffi/read: 
+46 ffi/read: 
+47 ffi/read: 
+48 ffi/read: 
+49 io/print: 1 2 3 4
+50 ffi/free: 
+51 ffi/call: scale
+52 io/print: {x: 3, y: 6}
