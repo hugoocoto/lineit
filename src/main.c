@@ -6609,6 +6609,15 @@ bar_run_stop(void)
         /* Before the first frame runs, so entry squares go first */
         program_lower();
         program_each(true);
+
+        /* Ticks run to the end at once, so only squares with module_frame
+         * (a clock) start more later. Without them it's over now, like a
+         * compiled program (see Compile). */
+        for (int i = 0; i < prog.nodes.count; i++) {
+                if (prog.nodes.items[i].square->fn.frame) return;
+        }
+        running = false;
+        set_status("Done");
 }
 
 static void
@@ -9398,12 +9407,14 @@ draw_output(void)
         draw_text("Clear", c.x + 8, c.y + (c.height - fs) / 2, fs, cfg.colors.bar_text);
         DrawLine(r.x, h.y + h.height, r.x + r.width, h.y + h.height, cfg.colors.bar_border);
 
-        /* Newest at the bottom */
+        /* From the top, first line first. When they don't all fit, the
+         * newest ones (or as far up as it's scrolled) */
         BeginScissorMode(r.x, h.y + h.height, r.width, r.height - h.height);
-        int last = output_panel.lines.count - 1 - output_panel.scroll;
-        for (int k = 0; k < n && last - k >= 0; k++) {
-                OutputLine *l = &output_panel.lines.items[last - k];
-                float y       = r.y + r.height - 4 - (k + 1) * lh;
+        int last  = output_panel.lines.count - 1 - output_panel.scroll;
+        int first = Max(0, last - n + 1);
+        for (int k = first; k <= last; k++) {
+                OutputLine *l = &output_panel.lines.items[k];
+                float y       = h.y + h.height + 2 + (k - first) * lh;
                 draw_text(l->text, r.x + 10, y + 2, fs, l->info ? cfg.colors.name : cfg.colors.output_text);
         }
         EndScissorMode();

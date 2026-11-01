@@ -171,8 +171,9 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Ctrl+G                            | Make a subgraph of the selection                        |
 | Ctrl+,                            | Settings, in a tab                                      |
 
-The bar at the bottom has **Run**, **Compile**, **Output** (what the program
-prints) and **File** (tabs, save, new type, autosave, settings). Editing a
+The bar at the bottom has **Run** (it stops on its own when the program is
+done, or runs until Stop if it has a clock), **Compile**, **Output** (what
+the program prints) and **File** (tabs, save, new type, autosave, settings). Editing a
 module's source and running `make` reloads it in the editor while it runs,
 and so does saving `config.lua`.
 

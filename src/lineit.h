@@ -26,7 +26,9 @@
 
      void module_frame(Li_Node *n);
         Called once per frame while running (Run in the bar). Use it to
-        start tick chains (a clock).
+        start tick chains (a clock). Ticks run to the end at once, so a
+        canvas with no square that has module_frame stops right after
+        module_start; with one it runs until Stop.
 
      void module_start(Li_Node *n);
         Run was pressed in the bar. Called once, before the first

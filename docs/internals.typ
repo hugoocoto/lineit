@@ -514,8 +514,11 @@ Every frame of the editor, `run_frame`:
 
 Pressing Run sets `running`, clears the output panel if
 `output.clear_on_run` says so, lowers the canvas and calls `module_start` of
-every node once, before the first frame, so entry squares go first. Stop
-only clears `running`: the squares keep their state.
+every node once, before the first frame, so entry squares go first. Ticks
+run to the end at once (they are calls), so if no node has `module_frame`
+nothing can happen after that: the run is over, and `running` is cleared
+right away, as a compiled program ends after start. With one (a clock) it
+runs until Stop. Stop only clears `running`: the squares keep their state.
 
 = Variables, lists and trees <sec-vars>
 
