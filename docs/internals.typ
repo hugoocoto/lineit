@@ -1048,8 +1048,8 @@ frame.
 
 Every half second, `hot_reload` checks three things.
 
-*The config.* If `config.lua` changed, it is read again from the defaults,
-so keys that were removed go back to them. Colors, sizes and fonts change
+*The config.* If `config.lua` or `settings.lua` changed, they are read
+again from the defaults, so keys that were removed go back to them. Colors, sizes and fonts change
 at once. The window size and the module and save paths are only read at
 start. If it doesn't load, the old config stays.
 
@@ -1154,7 +1154,26 @@ optional: a missing key keeps its default, a key with the wrong type is
 reported and also keeps it. Colors are `{ r, g, b }` or `{ r, g, b, a }`,
 and pin colors are per type name (`colors.types.int`).
 
-The sections are `window`, `canvas`, `colors`, `font`, `modules` (where they
+Every key is a `Setting` in one table, `settings`: its key, type, where it
+goes in `cfg`, its section and subsection, a description, the range a
+number can have, and whether it's only read at start. `load_config` reads
+them all from it, and the settings tab (File > Settings) shows them in its
+order. After the config, `load_config` reads `settings.lua`, in the same
+folder, written by the settings tab with what it changed: it wins, and the
+config itself is never written. A change in the tab writes it
+(`settings_write`, the keys nested in tables like the config's) and calls
+`config_reload`.
+
+The colors are a `Colors`. `theme` is read first: one of the built-in
+`themes`, or one of the config's `themes` list (`{ name, base, colors }`,
+its base with its colors over it). Then the `colors.*` of the config and of
+`settings.lua` change some of them.
+
+The settings tab is a `Tab` with `settings` set: its canvas is empty and
+isn't shown, `draw_settings` draws instead, and only the shortcuts of the
+tabs work there, the rest of the keys go to its search box.
+
+The sections are `theme`, `themes`, `window`, `canvas`, `colors`, `font`, `modules` (where they
 are loaded from, where the user's go, where their sources are for Compile,
 and the cache for packages), `save`, `output`, `compile` (output folder,
 runtime, compiler, flags, objcopy) and `menu`. The paths are commented out

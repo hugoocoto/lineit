@@ -3,6 +3,8 @@
 -- tree, or, installed, ~/.config/lineit/config.lua: copy this file there.
 -- Colors are { r, g, b } or { r, g, b, a }, each in 0..255.
 -- Any key can be removed; the built-in default is used instead.
+-- File > Settings (Ctrl+,) changes them too: it writes what it changes to
+-- settings.lua, next to this file, read after it, so what's there wins.
 
 window = {
         width = 1280,
@@ -12,16 +14,16 @@ window = {
 }
 
 canvas = {
-        grid_step = 32,   -- world units between grid lines
-        grid_major = 8,   -- every N lines is drawn as a major line
+        grid_step = 32, -- world units between grid lines
+        grid_major = 8, -- every N lines is drawn as a major line
         zoom_min = 0.1,
         zoom_max = 8.0,
-        zoom_speed = 0.2, -- zoom change per wheel step (logarithmic)
-        square_size = 64,       -- minimum side, squares grow with their pins
-        pin_spacing = 24,       -- distance between pins on the same side
+        zoom_speed = 0.2,          -- zoom change per wheel step (logarithmic)
+        square_size = 64,          -- minimum side, squares grow with their pins
+        pin_spacing = 24,          -- distance between pins on the same side
         pin_font_size = 14,
-        name_font_size = 16,    -- module name below the square
-        pin_radius = 7,     -- input/output circles
+        name_font_size = 16,       -- module name below the square
+        pin_radius = 7,            -- input/output circles
         wire_thickness = 3,
         wire_curve_distance = 200, -- shorter wires curve less (straight when very close)
         field_width = 56,          -- fields where input values are typed
@@ -35,7 +37,7 @@ bar = {
 
 font = {
         -- fontconfig name (see `fc-list`), e.g. "Iosevka NFM:bold", or a .ttf/.otf path.
-        -- Only .ttf/.otf work: plain "Iosevka" is installed as .ttc, use the Nerd Font one.
+        -- Only .ttf/.otf work.
         name = "Iosevka NFM",
         spacing = 0,
 }
@@ -53,15 +55,15 @@ modules = {
 }
 
 save = {
-        path = "canvas.lua", -- Save/Load (Ctrl+S/Ctrl+O) use this file, `lineit -f file` overrides it
-        autosave = false,          -- save tabs with changes on their own (File > Autosave toggles it)
-        autosave_interval = 30,    -- seconds between autosaves
+        path = "canvas.lua",    -- Save/Load (Ctrl+S/Ctrl+O) use this file, `lineit -f file` overrides it
+        autosave = false,       -- save tabs with changes on their own (File > Autosave toggles it)
+        autosave_interval = 30, -- seconds between autosaves
 }
 
 output = {
-        height = 200,           -- of the panel, toggled with Output in the bar
+        height = 200,         -- of the panel, toggled with Output in the bar
         font_size = 16,
-        lines = 2000,           -- kept, older ones are dropped
+        lines = 2000,         -- kept, older ones are dropped
         clear_on_run = false, -- empty it when Run is pressed
 }
 
@@ -70,7 +72,7 @@ compile = {
         -- runtime = "build/rt", -- what programs are built with, `make` builds it
         cc = "cc",
         cflags = "-O2",
-        objcopy = "objcopy",    -- gives each square of a package its own copy of it (llvm-objcopy works too)
+        objcopy = "objcopy", -- gives each square of a package its own copy of it (llvm-objcopy works too)
 }
 
 menu = {
@@ -78,38 +80,48 @@ menu = {
         padding = 8,
 }
 
+-- The colors are a theme's, and the ones set in colors below. Built in:
+-- "dark", "light", "nord" and "gruvbox". Your own go in themes: their base
+-- (dark if none) with the colors they set, the keys of colors below.
+theme = "dark"
+
+-- themes = {
+--         { name = "paper", base = "light", colors = { bg = { 255, 250, 240 }, square = { 250, 190, 110 } } },
+-- }
+
+-- Set here, they win over the theme's. All of them, with dark's colors:
 colors = {
-        bg = { 24, 24, 27 },
-        grid = { 39, 39, 42 },
-        grid_major = { 63, 63, 70 },
-        bar = { 15, 15, 17 },
-        bar_border = { 63, 63, 70 },
-        bar_text = { 161, 161, 170 },
-        square = { 102, 191, 255 },
-        square_border = { 15, 15, 17 },
-        square_text = { 15, 15, 17 },
-        name = { 161, 161, 170 },
-        pin_hover = { 250, 204, 21 },
-        selection = { 250, 204, 21 }, -- border of selected squares and the selection box
-        flash = { 253, 224, 71 },     -- glow of wires and squares when a tick goes through
-        output = { 20, 20, 23 },      -- output panel
-        output_text = { 228, 228, 231 },
-        error = { 239, 68, 68 },      -- wires between incompatible types
-        error_text = { 255, 255, 255 },
-        field = { 244, 244, 245 },    -- text field of editable squares (constants)
-        menu = { 39, 39, 42 },
-        menu_border = { 63, 63, 70 },
-        menu_hover = { 63, 63, 70 },
-        menu_text = { 228, 228, 231 },
+        -- bg = { 24, 24, 27 },
+        -- grid = { 39, 39, 42 },
+        -- grid_major = { 63, 63, 70 },
+        -- bar = { 15, 15, 17 },
+        -- bar_border = { 63, 63, 70 },
+        -- bar_text = { 161, 161, 170 },
+        -- square = { 102, 191, 255 },
+        -- square_border = { 15, 15, 17 },
+        -- square_text = { 15, 15, 17 },
+        -- name = { 161, 161, 170 },
+        -- pin_hover = { 250, 204, 21 },
+        -- selection = { 250, 204, 21 }, -- border of selected squares and the selection box
+        -- flash = { 253, 224, 71 },     -- glow of wires and squares when a tick goes through
+        -- output = { 20, 20, 23 },      -- output panel
+        -- output_text = { 228, 228, 231 },
+        -- error = { 239, 68, 68 },      -- wires between incompatible types
+        -- error_text = { 255, 255, 255 },
+        -- field = { 244, 244, 245 },    -- text field of editable squares (constants)
+        -- menu = { 39, 39, 42 },
+        -- menu_border = { 63, 63, 70 },
+        -- menu_hover = { 63, 63, 70 },
+        -- menu_text = { 228, 228, 231 },
         -- pins and wires, by type
-        types = {
-                none = { 113, 113, 122 },
-                tick = { 228, 228, 231 },
-                any = { 161, 161, 170 },
-                bool = { 248, 113, 113 },
-                int = { 74, 222, 128 },
-                float = { 190, 242, 100 },
-                string = { 244, 114, 182 },
-                ptr = { 192, 132, 252 },
-        },
+        -- types = {
+                -- none = { 113, 113, 122 },
+                -- tick = { 228, 228, 231 },
+                -- any = { 161, 161, 170 },
+                -- bool = { 248, 113, 113 },
+                -- int = { 74, 222, 128 },
+                -- float = { 190, 242, 100 },
+                -- string = { 244, 114, 182 },
+                -- ptr = { 192, 132, 252 },
+        -- },
 }

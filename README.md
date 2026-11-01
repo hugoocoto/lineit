@@ -169,11 +169,12 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Ctrl+T, Ctrl+Shift+T, Ctrl+W      | New tab, reopen closed tab, close tab                   |
 | Ctrl+Tab, Ctrl+PageUp/PageDown    | Next / previous tab                                     |
 | Ctrl+G                            | Make a subgraph of the selection                        |
+| Ctrl+,                            | Settings, in a tab                                      |
 
 The bar at the bottom has **Run**, **Compile**, **Output** (what the program
-prints) and **File** (tabs, save, new type, autosave). Editing a module's
-source and running `make` reloads it in the editor while it runs, and so
-does saving `config.lua`.
+prints) and **File** (tabs, save, new type, autosave, settings). Editing a
+module's source and running `make` reloads it in the editor while it runs,
+and so does saving `config.lua`.
 
 Start with the canvases in `examples/`: each begins with a comment that
 explains it, and `examples/README.md` lists them.
@@ -223,10 +224,22 @@ use the ones you trust.
 
 # Configuration
 
-`config.lua` has every setting, commented: window, canvas sizes, colors,
-fonts, where modules and saves go, the output panel and how to compile.
-Delete a key to use its default. Saving it applies the changes while lineit
-runs, except the window size and the modules and save paths, read at start.
+`config.lua` has every setting, commented: window, canvas sizes, theme and
+colors, fonts, where modules and saves go, the output panel and how to
+compile. Delete a key to use its default. Saving it applies the changes
+while lineit runs, except the window size and the modules and save paths,
+read at start.
+
+**File > Settings** (Ctrl+,) opens them all in a tab: type to search, the
+list on the left goes to a section, and each one says what it does and
+where its value comes from. A change applies at once, and is saved to
+`settings.lua`, next to `config.lua`: lineit reads it after the config, so
+what's there wins, and never rewrites your `config.lua`. **Reset** takes a
+setting out of `settings.lua`.
+
+The colors come from a theme, `theme = "dark"`: `dark`, `light`, `nord`,
+`gruvbox`, or your own, in `themes` (an example is in `config.lua`). The
+colors set in `colors` change the theme's.
 
 lineit reads the one given with `-c`, or else the `config.lua` next to it in
 its source tree, or, installed, `~/.config/lineit/config.lua`

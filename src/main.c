@@ -74,6 +74,34 @@ static const char *type_names[LI_TYPE_COUNT] = {
         [LI_PTR]    = "ptr",
 };
 
+/* The colors of the editor: a theme gives them all, and colors.* in the
+ * config changes some (see Themes) */
+typedef struct Colors {
+        Color bg;
+        Color grid;
+        Color grid_major;
+        Color bar;
+        Color bar_border;
+        Color bar_text;
+        Color square;
+        Color square_border;
+        Color square_text;
+        Color name;
+        Color pin_hover;
+        Color selection;
+        Color flash;
+        Color output;
+        Color output_text;
+        Color error;
+        Color error_text;
+        Color field;
+        Color types[LI_TYPE_COUNT]; /* pins and wires */
+        Color menu;
+        Color menu_border;
+        Color menu_hover;
+        Color menu_text;
+} Colors;
+
 /* Default values, overwritten by the config file */
 static struct {
         struct {
@@ -134,31 +162,8 @@ static struct {
                 const char *cflags;
                 const char *objcopy; /* copies the object of a package per square */
         } compile;
-        struct {
-                Color bg;
-                Color grid;
-                Color grid_major;
-                Color bar;
-                Color bar_border;
-                Color bar_text;
-                Color square;
-                Color square_border;
-                Color square_text;
-                Color name;
-                Color pin_hover;
-                Color selection;
-                Color flash;
-                Color output;
-                Color output_text;
-                Color error;
-                Color error_text;
-                Color field;
-                Color types[LI_TYPE_COUNT]; /* pins and wires */
-                Color menu;
-                Color menu_border;
-                Color menu_hover;
-                Color menu_text;
-        } colors;
+        const char *theme; /* the colors, see Themes */
+        Colors colors;
 } cfg = {
         .window = { .width = 1280, .height = 720, .fps = 60, .title = "lineit" },
         .canvas = {
@@ -184,7 +189,90 @@ static struct {
         .save    = { .path = "canvas.lua", .autosave = false, .autosave_interval = 30 },
         .output  = { .height = 200, .font_size = 16, .lines = 2000, .clear_on_run = false },
         .compile = { .output = "build/bin", .runtime = "build/rt", .cc = "cc", .cflags = "-O2", .objcopy = "objcopy" },
-        .colors  = {
+        .theme   = "dark", /* its colors are put in config_start */
+};
+
+/* cfg as it was before reading the config, to read it again from scratch */
+static Typeof(cfg) cfg_defaults;
+
+/* Report a bad value. Undefined keys are fine: the default is kept. True if
+ * it was set. */
+static bool
+conf_check(int err, const char *path)
+{
+        if (err == CONF_OK || err == CONF_UNDEF) return err == CONF_OK;
+        fprintf(stderr, "config: invalid value for %s, using default\n", path);
+        return false;
+}
+
+static bool
+conf_int(Conf conf, int *val, const char *path)
+{
+        return conf_check(Conf_get_int(conf, val, "%s", path), path);
+}
+
+static bool
+conf_float(Conf conf, float *val, const char *path)
+{
+        double d;
+        int err = Conf_get_num(conf, &d, "%s", path);
+        if (err == CONF_OK) *val = d;
+        return conf_check(err, path);
+}
+
+static bool
+conf_bool(Conf conf, bool *val, const char *path)
+{
+        int b;
+        int err = Conf_get_bool(conf, &b, "%s", path);
+        if (err == CONF_OK) *val = b;
+        return conf_check(err, path);
+}
+
+/* Strings are owned by Lua, so they are duplicated. */
+static bool
+conf_str(Conf conf, const char **val, const char *path)
+{
+        const char *str;
+        int err = Conf_get_str(conf, &str, "%s", path);
+        if (err == CONF_OK) *val = strdup(str);
+        return conf_check(err, path);
+}
+
+/* Colors are written as { r, g, b } or { r, g, b, a } */
+static bool
+conf_color(Conf conf, Color *val, const char *path)
+{
+        int len = 0, c[4] = { 0, 0, 0, 255 };
+        int err = Conf_get_len(conf, &len, "%s", path);
+
+        if (err == CONF_OK && len != 3 && len != 4) err = CONF_INVALID;
+        for (int i = 0; err == CONF_OK && i < len; i++) {
+                err = Conf_get_int(conf, &c[i], "%s.%d", path, i + 1);
+                if (err == CONF_OK && (c[i] < 0 || c[i] > 255)) err = CONF_INVALID;
+        }
+        if (err == CONF_OK) *val = (Color) { c[0], c[1], c[2], c[3] };
+        return conf_check(err, path);
+}
+
+/* ---- Themes ---- */
+
+/* The built-in ones, the first is the default. theme = "NAME" in the config
+ * picks one, or one of the config's own:
+ *
+ *   themes = {
+ *           { name = "mine", base = "light", colors = { bg = { 255, 250, 240 }, types = { int = { 0, 128, 0 } } } },
+ *   }
+ *
+ * which is its base (dark if it has none) with the colors it sets. Then
+ * colors.* in the config changes the ones it sets, whatever the theme. */
+static const struct {
+        const char *name;
+        Colors colors;
+} themes[] = {
+        {
+        "dark",
+        {
         .bg            = { 24, 24, 27, 255 },
         .grid          = { 39, 39, 42, 255 },
         .grid_major    = { 63, 63, 70, 255 },
@@ -218,67 +306,365 @@ static struct {
         .menu_hover  = { 63, 63, 70, 255 },
         .menu_text   = { 228, 228, 231, 255 },
         },
+        },
+        {
+        "light",
+        {
+        .bg            = { 250, 250, 250, 255 },
+        .grid          = { 234, 234, 237, 255 },
+        .grid_major    = { 212, 212, 216, 255 },
+        .bar           = { 244, 244, 245, 255 },
+        .bar_border    = { 212, 212, 216, 255 },
+        .bar_text      = { 82, 82, 91, 255 },
+        .square        = { 96, 165, 250, 255 },
+        .square_border = { 39, 39, 42, 255 },
+        .square_text   = { 9, 9, 11, 255 },
+        .name          = { 82, 82, 91, 255 },
+        .pin_hover     = { 234, 88, 12, 255 },
+        .selection     = { 234, 88, 12, 255 },
+        .flash         = { 245, 158, 11, 255 },
+        .output        = { 244, 244, 245, 255 },
+        .output_text   = { 39, 39, 42, 255 },
+        .error         = { 220, 38, 38, 255 },
+        .error_text    = { 255, 255, 255, 255 },
+        .field         = { 255, 255, 255, 255 },
+        .types         = {
+        [LI_NONE]   = { 161, 161, 170, 255 },
+        [LI_TICK]   = { 63, 63, 70, 255 },
+        [LI_ANY]    = { 113, 113, 122, 255 },
+        [LI_BOOL]   = { 220, 38, 38, 255 },
+        [LI_INT]    = { 22, 163, 74, 255 },
+        [LI_FLOAT]  = { 101, 163, 13, 255 },
+        [LI_STRING] = { 219, 39, 119, 255 },
+        [LI_PTR]    = { 147, 51, 234, 255 },
+        },
+        .menu        = { 255, 255, 255, 255 },
+        .menu_border = { 212, 212, 216, 255 },
+        .menu_hover  = { 228, 228, 231, 255 },
+        .menu_text   = { 24, 24, 27, 255 },
+        },
+        },
+        {
+        "nord",
+        {
+        .bg            = { 46, 52, 64, 255 },
+        .grid          = { 59, 66, 82, 255 },
+        .grid_major    = { 67, 76, 94, 255 },
+        .bar           = { 36, 41, 51, 255 },
+        .bar_border    = { 67, 76, 94, 255 },
+        .bar_text      = { 173, 181, 196, 255 },
+        .square        = { 136, 192, 208, 255 },
+        .square_border = { 36, 41, 51, 255 },
+        .square_text   = { 46, 52, 64, 255 },
+        .name          = { 173, 181, 196, 255 },
+        .pin_hover     = { 235, 203, 139, 255 },
+        .selection     = { 235, 203, 139, 255 },
+        .flash         = { 235, 203, 139, 255 },
+        .output        = { 41, 46, 57, 255 },
+        .output_text   = { 229, 233, 240, 255 },
+        .error         = { 191, 97, 106, 255 },
+        .error_text    = { 236, 239, 244, 255 },
+        .field         = { 236, 239, 244, 255 },
+        .types         = {
+        [LI_NONE]   = { 97, 110, 136, 255 },
+        [LI_TICK]   = { 229, 233, 240, 255 },
+        [LI_ANY]    = { 129, 161, 193, 255 },
+        [LI_BOOL]   = { 191, 97, 106, 255 },
+        [LI_INT]    = { 163, 190, 140, 255 },
+        [LI_FLOAT]  = { 143, 188, 187, 255 },
+        [LI_STRING] = { 180, 142, 173, 255 },
+        [LI_PTR]    = { 208, 135, 112, 255 },
+        },
+        .menu        = { 59, 66, 82, 255 },
+        .menu_border = { 76, 86, 106, 255 },
+        .menu_hover  = { 76, 86, 106, 255 },
+        .menu_text   = { 236, 239, 244, 255 },
+        },
+        },
+        {
+        "gruvbox",
+        {
+        .bg            = { 40, 40, 40, 255 },
+        .grid          = { 50, 48, 47, 255 },
+        .grid_major    = { 80, 73, 69, 255 },
+        .bar           = { 29, 32, 33, 255 },
+        .bar_border    = { 80, 73, 69, 255 },
+        .bar_text      = { 168, 153, 132, 255 },
+        .square        = { 131, 165, 152, 255 },
+        .square_border = { 29, 32, 33, 255 },
+        .square_text   = { 29, 32, 33, 255 },
+        .name          = { 168, 153, 132, 255 },
+        .pin_hover     = { 250, 189, 47, 255 },
+        .selection     = { 250, 189, 47, 255 },
+        .flash         = { 254, 128, 25, 255 },
+        .output        = { 32, 32, 32, 255 },
+        .output_text   = { 235, 219, 178, 255 },
+        .error         = { 251, 73, 52, 255 },
+        .error_text    = { 251, 241, 199, 255 },
+        .field         = { 251, 241, 199, 255 },
+        .types         = {
+        [LI_NONE]   = { 124, 111, 100, 255 },
+        [LI_TICK]   = { 235, 219, 178, 255 },
+        [LI_ANY]    = { 168, 153, 132, 255 },
+        [LI_BOOL]   = { 251, 73, 52, 255 },
+        [LI_INT]    = { 184, 187, 38, 255 },
+        [LI_FLOAT]  = { 142, 192, 124, 255 },
+        [LI_STRING] = { 211, 134, 155, 255 },
+        [LI_PTR]    = { 254, 128, 25, 255 },
+        },
+        .menu        = { 60, 56, 54, 255 },
+        .menu_border = { 80, 73, 69, 255 },
+        .menu_hover  = { 80, 73, 69, 255 },
+        .menu_text   = { 235, 219, 178, 255 },
+        },
+        },
 };
 
-/* cfg as it was before reading the config, to read it again from scratch */
-static Typeof(cfg) cfg_defaults;
+/* Names of the config's own themes, for Settings */
+static Da(char *) user_themes;
 
-/* Report a bad value. Undefined keys are fine: the default is kept. */
-static void
-conf_check(int err, const char *path)
+/* ---- Settings: the keys of the config ---- */
+
+typedef enum SettingType {
+        SET_INT,
+        SET_FLOAT,
+        SET_BOOL,
+        SET_STR,
+        SET_COLOR,
+} SettingType;
+
+/* One key of the config, read into VAL. The settings tab (File > Settings)
+ * shows them in this order, under SECTION and SUB. */
+typedef struct Setting {
+        const char *key; /* "canvas.grid_step" */
+        SettingType type;
+        void *val; /* in cfg */
+        const char *section, *sub;
+        const char *help;
+        float min, max; /* numbers out of [min, max] aren't taken from Settings, if max > min */
+        bool start;     /* only read at start: a change waits for the next one */
+        bool empty;     /* an empty string is fine */
+} Setting;
+
+/* The key is the field of cfg */
+#define SETTING(field, t, sec, sub_, help_, ...) \
+        { .key = #field, .type = t, .val = &cfg.field, .section = sec, .sub = sub_, .help = help_, __VA_ARGS__ }
+#define TYPE_COLOR(t, name) \
+        { .key = "colors.types." name, .type = SET_COLOR, .val = &cfg.colors.types[t], .section = "Colors", .sub = "Types", .help = "Pins and wires of type " name }
+
+static const Setting settings[] = {
+        /* First: load_config reads it before the colors */
+        SETTING(theme, SET_STR, "Appearance", "Theme", "dark, light, nord, gruvbox, or one of themes in the config"),
+        SETTING(font.name, SET_STR, "Appearance", "Font", "fontconfig name (see fc-list) or a .ttf/.otf path; only .ttf/.otf work"),
+        SETTING(font.spacing, SET_INT, "Appearance", "Font", "Extra pixels between letters", .min = -10, .max = 50),
+
+        SETTING(window.width, SET_INT, "Interface", "Window", "Width when it opens", .min = 200, .max = 16384, .start = true),
+        SETTING(window.height, SET_INT, "Interface", "Window", "Height when it opens", .min = 150, .max = 16384, .start = true),
+        SETTING(window.fps, SET_INT, "Interface", "Window", "Frames per second", .min = 1, .max = 1000),
+        SETTING(window.title, SET_STR, "Interface", "Window", "After the name of the tab shown", .empty = true),
+        SETTING(bar.height, SET_INT, "Interface", "Bar", "Of the bar and the tab strip", .min = 12, .max = 200),
+        SETTING(bar.font_size, SET_INT, "Interface", "Bar", "Text of the bar and the tabs", .min = 6, .max = 120),
+        SETTING(menu.font_size, SET_INT, "Interface", "Menus", "Text of menus, panels and Settings", .min = 6, .max = 120),
+        SETTING(menu.padding, SET_INT, "Interface", "Menus", "Space around the text of menus", .min = 0, .max = 100),
+        SETTING(output.height, SET_INT, "Interface", "Output", "Of the panel, toggled with Output in the bar", .min = 40, .max = 4000),
+        SETTING(output.font_size, SET_INT, "Interface", "Output", "Text of the output panel", .min = 6, .max = 120),
+        SETTING(output.lines, SET_INT, "Interface", "Output", "Kept, older ones are dropped", .min = 1, .max = 1000000),
+        SETTING(output.clear_on_run, SET_BOOL, "Interface", "Output", "Empty it when Run is pressed"),
+
+        SETTING(canvas.grid_step, SET_FLOAT, "Canvas", "Grid", "World units between grid lines", .min = 4, .max = 1000),
+        SETTING(canvas.grid_major, SET_INT, "Canvas", "Grid", "Every N lines is drawn as a major line", .min = 1, .max = 1000),
+        SETTING(canvas.zoom_min, SET_FLOAT, "Canvas", "Zoom", "Furthest out", .min = 0.01f, .max = 1),
+        SETTING(canvas.zoom_max, SET_FLOAT, "Canvas", "Zoom", "Closest in", .min = 1, .max = 32),
+        SETTING(canvas.zoom_speed, SET_FLOAT, "Canvas", "Zoom", "Zoom change per wheel step (logarithmic)", .min = 0.01f, .max = 2),
+        SETTING(canvas.square_size, SET_FLOAT, "Canvas", "Squares", "Minimum side, squares grow with their pins", .min = 8, .max = 1000),
+        SETTING(canvas.pin_spacing, SET_FLOAT, "Canvas", "Squares", "Distance between pins on the same side", .min = 4, .max = 500),
+        SETTING(canvas.pin_radius, SET_FLOAT, "Canvas", "Squares", "Input and output circles", .min = 1, .max = 100),
+        SETTING(canvas.pin_font_size, SET_INT, "Canvas", "Squares", "Names of the pins", .min = 4, .max = 120),
+        SETTING(canvas.name_font_size, SET_INT, "Canvas", "Squares", "Module name below the square", .min = 4, .max = 120),
+        SETTING(canvas.field_width, SET_FLOAT, "Canvas", "Squares", "Fields where input values are typed", .min = 8, .max = 1000),
+        SETTING(canvas.wire_thickness, SET_FLOAT, "Canvas", "Wires", "In world units", .min = 0.5f, .max = 50),
+        SETTING(canvas.wire_curve_distance, SET_FLOAT, "Canvas", "Wires", "Shorter wires curve less (straight when very close)", .min = 1, .max = 10000),
+        SETTING(canvas.flash_time, SET_FLOAT, "Canvas", "Wires", "Seconds wires and squares glow after a tick (0: off)", .min = 0, .max = 10),
+
+        SETTING(save.path, SET_STR, "Files", "Saving", "Opened at start, lineit -f FILE overrides it", .start = true),
+        SETTING(save.autosave, SET_BOOL, "Files", "Saving", "Save tabs with changes on their own (File > Autosave toggles it)"),
+        SETTING(save.autosave_interval, SET_FLOAT, "Files", "Saving", "Seconds between autosaves", .min = 1, .max = 86400),
+        SETTING(modules.path, SET_STR, "Files", "Modules", "Every .so, subgraph, type and package here is loaded", .start = true),
+        SETTING(modules.user, SET_STR, "Files", "Modules", "Loaded too, your own: Make subgraph and New type write here"),
+        SETTING(modules.source, SET_STR, "Files", "Modules", "The C of the modules in path, for Compile"),
+        SETTING(modules.cache, SET_STR, "Files", "Modules", "Packages not built for this machine are built here"),
+
+        SETTING(compile.cc, SET_STR, "Compile", "Compiler", "C compiler"),
+        SETTING(compile.cflags, SET_STR, "Compile", "Compiler", "Its flags", .empty = true),
+        SETTING(compile.objcopy, SET_STR, "Compile", "Compiler", "Gives each square of a package its own copy (llvm-objcopy works too)"),
+        SETTING(compile.output, SET_STR, "Compile", "Paths", "Programs go here, their C in NAME.build/"),
+        SETTING(compile.runtime, SET_STR, "Compile", "Paths", "What programs are built with, make builds it"),
+
+        SETTING(colors.bg, SET_COLOR, "Colors", "Canvas", "Background"),
+        SETTING(colors.grid, SET_COLOR, "Colors", "Canvas", "Grid lines"),
+        SETTING(colors.grid_major, SET_COLOR, "Colors", "Canvas", "Every grid_major lines"),
+        SETTING(colors.square, SET_COLOR, "Colors", "Canvas", "Squares"),
+        SETTING(colors.square_border, SET_COLOR, "Colors", "Canvas", "Their border"),
+        SETTING(colors.square_text, SET_COLOR, "Colors", "Canvas", "Text on squares and in fields"),
+        SETTING(colors.name, SET_COLOR, "Colors", "Canvas", "Module names, hints"),
+        SETTING(colors.field, SET_COLOR, "Colors", "Canvas", "Fields where values are typed"),
+        SETTING(colors.pin_hover, SET_COLOR, "Colors", "Canvas", "Pin under the mouse, field being typed"),
+        SETTING(colors.selection, SET_COLOR, "Colors", "Canvas", "Border of selected squares and the selection box"),
+        SETTING(colors.flash, SET_COLOR, "Colors", "Canvas", "Glow of wires and squares when a tick goes through"),
+        SETTING(colors.error, SET_COLOR, "Colors", "Canvas", "Wires between incompatible types, wrong values"),
+        SETTING(colors.error_text, SET_COLOR, "Colors", "Canvas", "Text on errors"),
+        SETTING(colors.bar, SET_COLOR, "Colors", "Bar and menus", "Bar and tab strip"),
+        SETTING(colors.bar_border, SET_COLOR, "Colors", "Bar and menus", "Their border"),
+        SETTING(colors.bar_text, SET_COLOR, "Colors", "Bar and menus", "Their text"),
+        SETTING(colors.menu, SET_COLOR, "Colors", "Bar and menus", "Menus, panels, buttons"),
+        SETTING(colors.menu_border, SET_COLOR, "Colors", "Bar and menus", "Their border"),
+        SETTING(colors.menu_hover, SET_COLOR, "Colors", "Bar and menus", "Entry under the mouse"),
+        SETTING(colors.menu_text, SET_COLOR, "Colors", "Bar and menus", "Their text"),
+        SETTING(colors.output, SET_COLOR, "Colors", "Output", "Output panel"),
+        SETTING(colors.output_text, SET_COLOR, "Colors", "Output", "Its text"),
+        TYPE_COLOR(LI_NONE, "none"),
+        TYPE_COLOR(LI_TICK, "tick"),
+        TYPE_COLOR(LI_ANY, "any"),
+        TYPE_COLOR(LI_BOOL, "bool"),
+        TYPE_COLOR(LI_INT, "int"),
+        TYPE_COLOR(LI_FLOAT, "float"),
+        TYPE_COLOR(LI_STRING, "string"),
+        TYPE_COLOR(LI_PTR, "ptr"),
+};
+#undef SETTING
+#undef TYPE_COLOR
+
+/* Where the value of each setting comes from, for Settings */
+enum { FROM_DEFAULT,
+       FROM_THEME,
+       FROM_CONFIG,
+       FROM_SETTINGS };
+static char setting_from[countof(settings)];
+
+/* settings.lua, next to the config: what Settings changes, read after the
+ * config so it wins. lineit writes it, the config is never touched. */
+static char settings_path[PATH_MAX];
+static char *setting_over[countof(settings)]; /* the value it has there, as Lua; NULL if none */
+
+/* S in BASE, a whole cfg: cfg_defaults, or an old one */
+static void *
+setting_in(const Setting *s, void *base)
 {
-        if (err == CONF_OK || err == CONF_UNDEF) return;
-        fprintf(stderr, "config: invalid value for %s, using default\n", path);
+        return (char *) base + ((char *) s->val - (char *) &cfg);
 }
 
-static void
-conf_int(Conf conf, int *val, const char *path)
+static size_t
+setting_size(const Setting *s)
 {
-        conf_check(Conf_get_int(conf, val, "%s", path), path);
+        switch (s->type) {
+        case SET_INT: return sizeof(int);
+        case SET_FLOAT: return sizeof(float);
+        case SET_BOOL: return sizeof(bool);
+        case SET_STR: return sizeof(const char *);
+        case SET_COLOR: return sizeof(Color);
+        }
+        return 0;
 }
 
-static void
-conf_float(Conf conf, float *val, const char *path)
+static void lua_quote(FILE *f, const char *s);
+
+/* VAL, of the type of S, as Lua. Must be freed. */
+static char *
+setting_lua(const Setting *s, const void *val)
 {
-        double d;
-        int err = Conf_get_num(conf, &d, "%s", path);
-        if (err == CONF_OK) *val = d;
-        conf_check(err, path);
+        char *buf  = NULL;
+        size_t len = 0;
+        FILE *f    = open_memstream(&buf, &len);
+        if (!f) return NULL;
+        switch (s->type) {
+        case SET_INT: fprintf(f, "%d", *(const int *) val); break;
+        case SET_FLOAT: fprintf(f, "%g", *(const float *) val); break;
+        case SET_BOOL: fprintf(f, "%s", *(const bool *) val ? "true" : "false"); break;
+        case SET_STR: lua_quote(f, *(const char *const *) val); break;
+        case SET_COLOR: {
+                Color c = *(const Color *) val;
+                if (c.a == 255)
+                        fprintf(f, "{ %d, %d, %d }", c.r, c.g, c.b);
+                else
+                        fprintf(f, "{ %d, %d, %d, %d }", c.r, c.g, c.b, c.a);
+                break;
+        }
+        }
+        fclose(f);
+        return buf;
 }
 
-static void
-conf_bool(Conf conf, bool *val, const char *path)
+/* S from CONF at PATH, into its place in cfg. True if CONF has it. */
+static bool
+setting_read(Conf conf, const Setting *s, const char *path)
 {
-        int b;
-        int err = Conf_get_bool(conf, &b, "%s", path);
-        if (err == CONF_OK) *val = b;
-        conf_check(err, path);
+        switch (s->type) {
+        case SET_INT: return conf_int(conf, s->val, path);
+        case SET_FLOAT: return conf_float(conf, s->val, path);
+        case SET_BOOL: return conf_bool(conf, s->val, path);
+        case SET_COLOR: return conf_color(conf, s->val, path);
+        case SET_STR: {
+                const char **cur = s->val, *str;
+                if (!conf_str(conf, &str, path)) return false;
+                /* Read already from the config, if it isn't the default */
+                if (*cur != *(const char **) setting_in(s, &cfg_defaults)) free((char *) *cur);
+                *cur = str;
+                return true;
+        }
+        }
+        return false;
 }
 
-/* Strings are owned by Lua, so they are duplicated. */
+/* Colors of theme NAME into OUT: a built-in one, or one of the themes list
+ * of CONF (NULL: none). False if there's none called that. */
+static bool
+theme_colors(Conf conf, const char *name, Colors *out, int depth)
+{
+        const char *str, *base = themes[0].name;
+        int n = 0;
+
+        for (int i = 0; i < countof(themes); i++) {
+                if (strcmp(themes[i].name, name)) continue;
+                *out = themes[i].colors;
+                return true;
+        }
+        /* A base of a base... up to some, not forever if they loop */
+        if (!conf || depth > 8 || Conf_get_len(conf, &n, "themes") != CONF_OK) return false;
+        for (int t = 1; t <= n; t++) {
+                if (Conf_get_str(conf, &str, "themes.%d.name", t) != CONF_OK || strcmp(str, name)) continue;
+                Conf_get_str(conf, &base, "themes.%d.base", t);
+                if (!theme_colors(conf, base, out, depth + 1)) {
+                        fprintf(stderr, "config: theme %s: no theme called %s to start from\n", name, base);
+                        *out = themes[0].colors;
+                }
+                for (int i = 0; i < countof(settings); i++) {
+                        const Setting *s = &settings[i];
+                        if (s->type != SET_COLOR) continue;
+                        char path[128];
+                        snprintf(path, sizeof path, "themes.%d.%s", t, s->key);
+                        conf_color(conf, (Color *) ((char *) out + ((char *) s->val - (char *) &cfg.colors)), path);
+                }
+                return true;
+        }
+        return false;
+}
+
+/* The names in the themes list of CONF, for Settings */
 static void
-conf_str(Conf conf, const char **val, const char *path)
+user_themes_read(Conf conf)
 {
         const char *str;
-        int err = Conf_get_str(conf, &str, "%s", path);
-        if (err == CONF_OK) *val = strdup(str);
-        conf_check(err, path);
-}
+        int n = 0;
 
-/* Colors are written as { r, g, b } or { r, g, b, a } */
-static void
-conf_color(Conf conf, Color *val, const char *path)
-{
-        int len = 0, c[4] = { 0, 0, 0, 255 };
-        int err = Conf_get_len(conf, &len, "%s", path);
-
-        if (err == CONF_OK && len != 3 && len != 4) err = CONF_INVALID;
-        for (int i = 0; err == CONF_OK && i < len; i++) {
-                err = Conf_get_int(conf, &c[i], "%s.%d", path, i + 1);
-                if (err == CONF_OK && (c[i] < 0 || c[i] > 255)) err = CONF_INVALID;
+        Da_foreach(t, user_themes)
+        {
+                free(*t);
         }
-        if (err == CONF_OK) *val = (Color) { c[0], c[1], c[2], c[3] };
-        conf_check(err, path);
+        user_themes.count = 0;
+        if (!conf || Conf_get_len(conf, &n, "themes") != CONF_OK) return;
+        for (int t = 1; t <= n; t++) {
+                if (Conf_get_str(conf, &str, "themes.%d.name", t) == CONF_OK) Da_append(&user_themes, strdup(str));
+        }
 }
 
 /* ---- Paths ---- */
@@ -361,7 +747,18 @@ paths_default(void)
         cfg.compile.runtime = runtime;
 }
 
-static bool load_config(const char *path);
+static bool load_config(const char *path, bool required);
+
+/* settings.lua in the folder of the config at PATH */
+static void
+settings_path_set(const char *path)
+{
+        const char *slash = strrchr(path, '/');
+        if (slash)
+                snprintf(settings_path, sizeof settings_path, "%.*s/settings.lua", (int) (slash - path + 1) - 1, path);
+        else
+                snprintf(settings_path, sizeof settings_path, "settings.lua");
+}
 
 /* Paths and the config at start: the one given with -c (GIVEN), or the
  * default, which may not be there. Returns its path. */
@@ -369,100 +766,56 @@ static const char *
 config_start(const char *given)
 {
         paths_default();
+        cfg.colors       = themes[0].colors;
         cfg_defaults     = cfg;
         const char *path = given ? given : config_default;
-        if (given || FileExists(path)) load_config(path);
+        settings_path_set(path);
+        load_config(path, given != NULL);
         return path;
 }
 
-/* Returns false if PATH can't be read (missing, or not valid Lua) */
+/* The config at PATH, and settings.lua over it. Either can be missing (but
+ * not PATH if REQUIRED). Returns false if PATH can't be read: missing, or
+ * not valid Lua. */
 static bool
-load_config(const char *path)
+load_config(const char *path, bool required)
 {
-        Conf conf;
+        Conf conf = NULL, over = NULL;
+        bool ok = true;
 
-        if (Conf_open(&conf, path) != CONF_OK) {
+        if ((required || FileExists(path)) && Conf_open(&conf, path) != CONF_OK) {
                 fprintf(stderr, "config: could not load %s, using defaults\n", path);
-                return false;
+                conf = NULL;
+                ok   = false;
+        }
+        if (FileExists(settings_path) && Conf_open(&over, settings_path) != CONF_OK) {
+                fprintf(stderr, "config: could not load %s, ignoring it\n", settings_path);
+                over = NULL;
         }
 
-        conf_int(conf, &cfg.window.width, "window.width");
-        conf_int(conf, &cfg.window.height, "window.height");
-        conf_int(conf, &cfg.window.fps, "window.fps");
-        conf_str(conf, &cfg.window.title, "window.title");
+        /* The theme first: the colors set after change some of it */
+        if (conf) setting_read(conf, &settings[0], settings[0].key);
+        if (over) setting_read(over, &settings[0], settings[0].key);
+        if (!theme_colors(conf, cfg.theme, &cfg.colors, 0)) {
+                fprintf(stderr, "config: no theme called %s, using %s\n", cfg.theme, themes[0].name);
+                cfg.colors = themes[0].colors;
+        }
+        user_themes_read(conf);
 
-        conf_float(conf, &cfg.canvas.grid_step, "canvas.grid_step");
-        conf_int(conf, &cfg.canvas.grid_major, "canvas.grid_major");
-        conf_float(conf, &cfg.canvas.zoom_min, "canvas.zoom_min");
-        conf_float(conf, &cfg.canvas.zoom_max, "canvas.zoom_max");
-        conf_float(conf, &cfg.canvas.zoom_speed, "canvas.zoom_speed");
-        conf_float(conf, &cfg.canvas.square_size, "canvas.square_size");
-        conf_float(conf, &cfg.canvas.pin_spacing, "canvas.pin_spacing");
-        conf_int(conf, &cfg.canvas.pin_font_size, "canvas.pin_font_size");
-        conf_int(conf, &cfg.canvas.name_font_size, "canvas.name_font_size");
-        conf_float(conf, &cfg.canvas.pin_radius, "canvas.pin_radius");
-        conf_float(conf, &cfg.canvas.wire_thickness, "canvas.wire_thickness");
-        conf_float(conf, &cfg.canvas.wire_curve_distance, "canvas.wire_curve_distance");
-        conf_float(conf, &cfg.canvas.field_width, "canvas.field_width");
-        conf_float(conf, &cfg.canvas.flash_time, "canvas.flash_time");
-
-        conf_int(conf, &cfg.bar.height, "bar.height");
-        conf_int(conf, &cfg.bar.font_size, "bar.font_size");
-
-        conf_int(conf, &cfg.menu.font_size, "menu.font_size");
-        conf_int(conf, &cfg.menu.padding, "menu.padding");
-
-        conf_str(conf, &cfg.font.name, "font.name");
-        conf_int(conf, &cfg.font.spacing, "font.spacing");
-
-        conf_str(conf, &cfg.modules.path, "modules.path");
-        conf_str(conf, &cfg.modules.user, "modules.user");
-        conf_str(conf, &cfg.modules.source, "modules.source");
-        conf_str(conf, &cfg.modules.cache, "modules.cache");
-        conf_str(conf, &cfg.save.path, "save.path");
-        conf_bool(conf, &cfg.save.autosave, "save.autosave");
-        conf_float(conf, &cfg.save.autosave_interval, "save.autosave_interval");
-
-        conf_int(conf, &cfg.output.height, "output.height");
-        conf_int(conf, &cfg.output.font_size, "output.font_size");
-        conf_int(conf, &cfg.output.lines, "output.lines");
-        conf_bool(conf, &cfg.output.clear_on_run, "output.clear_on_run");
-
-        conf_str(conf, &cfg.compile.output, "compile.output");
-        conf_str(conf, &cfg.compile.runtime, "compile.runtime");
-        conf_str(conf, &cfg.compile.cc, "compile.cc");
-        conf_str(conf, &cfg.compile.cflags, "compile.cflags");
-        conf_str(conf, &cfg.compile.objcopy, "compile.objcopy");
-
-        conf_color(conf, &cfg.colors.bg, "colors.bg");
-        conf_color(conf, &cfg.colors.grid, "colors.grid");
-        conf_color(conf, &cfg.colors.grid_major, "colors.grid_major");
-        conf_color(conf, &cfg.colors.bar, "colors.bar");
-        conf_color(conf, &cfg.colors.bar_border, "colors.bar_border");
-        conf_color(conf, &cfg.colors.bar_text, "colors.bar_text");
-        conf_color(conf, &cfg.colors.square, "colors.square");
-        conf_color(conf, &cfg.colors.square_border, "colors.square_border");
-        conf_color(conf, &cfg.colors.square_text, "colors.square_text");
-        conf_color(conf, &cfg.colors.name, "colors.name");
-        conf_color(conf, &cfg.colors.pin_hover, "colors.pin_hover");
-        conf_color(conf, &cfg.colors.selection, "colors.selection");
-        conf_color(conf, &cfg.colors.flash, "colors.flash");
-        conf_color(conf, &cfg.colors.output, "colors.output");
-        conf_color(conf, &cfg.colors.output_text, "colors.output_text");
-        conf_color(conf, &cfg.colors.error, "colors.error");
-        conf_color(conf, &cfg.colors.error_text, "colors.error_text");
-        conf_color(conf, &cfg.colors.field, "colors.field");
-        conf_color(conf, &cfg.colors.menu, "colors.menu");
-        conf_color(conf, &cfg.colors.menu_border, "colors.menu_border");
-        conf_color(conf, &cfg.colors.menu_hover, "colors.menu_hover");
-        conf_color(conf, &cfg.colors.menu_text, "colors.menu_text");
-        for (int i = 0; i < LI_TYPE_COUNT; i++) {
-                char key[64];
-                snprintf(key, sizeof key, "colors.types.%s", type_names[i]);
-                conf_color(conf, &cfg.colors.types[i], key);
+        for (int i = 0; i < countof(settings); i++) {
+                const Setting *s = &settings[i];
+                setting_from[i]  = s->type == SET_COLOR ? FROM_THEME : FROM_DEFAULT;
+                free(setting_over[i]);
+                setting_over[i] = NULL;
+                if (conf && setting_read(conf, s, s->key)) setting_from[i] = FROM_CONFIG;
+                if (over && setting_read(over, s, s->key)) {
+                        setting_from[i] = FROM_SETTINGS;
+                        setting_over[i] = setting_lua(s, s->val);
+                }
         }
 
-        Conf_close(conf);
+        if (conf) Conf_close(conf);
+        if (over) Conf_close(over);
 
         if (cfg.canvas.grid_step <= 0) cfg.canvas.grid_step = 32.0f;
         if (cfg.canvas.grid_major <= 0) cfg.canvas.grid_major = 1;
@@ -470,7 +823,7 @@ load_config(const char *path)
         if (cfg.canvas.pin_spacing <= 0) cfg.canvas.pin_spacing = 24.0f;
         if (cfg.output.lines < 1) cfg.output.lines = 1;
         if (cfg.save.autosave_interval < 1) cfg.save.autosave_interval = 1;
-        return true;
+        return ok;
 }
 
 /* ---- Versions ---- */
@@ -686,6 +1039,9 @@ static void menu_subgraph(int id, void *arg);
 static void type_edit(int id, void *arg);
 static void tabs_run_background(void);
 static bool prompt_is_open(void);
+static bool settings_shown(void);
+static bool not_canvas(void);
+static void settings_open(void);
 
 typedef struct MenuItem MenuItem;
 
@@ -3430,7 +3786,7 @@ update_menu(void)
         }
 
         /* A right click that did not move (not a pan) opens the menu */
-        if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT) &&
+        if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT) && !settings_shown() &&
             Vector2Distance(mouse, menu.right_press) < 4.0f &&
             CheckCollisionPointRec(mouse, canvas_rect())) {
                 Hit h = square_hit(GetScreenToWorld2D(mouse, camera));
@@ -5966,6 +6322,7 @@ bar_compile(void)
 {
         char bin[PATH_MAX];
         const char *name = canvas_path ? GetFileNameWithoutExt(canvas_path) : "canvas";
+        if (not_canvas()) return;
         if (compile_canvas(name, bin, sizeof bin)) {
                 set_status("Compiled %s", bin); /* to the output too */
         } else {
@@ -6214,6 +6571,7 @@ static void tab_mark_saved(void);
 static void
 bar_save(void)
 {
+        if (not_canvas()) return;
         if (!canvas_path) {
                 file_save_as(); /* never saved: ask where */
         } else if (canvas_save(canvas_path)) {
@@ -6228,6 +6586,7 @@ static void
 bar_load(void)
 {
         char why[128];
+        if (not_canvas()) return;
         if (canvas_path && FileExists(canvas_path) && !canvas_check(canvas_path, why, sizeof why)) {
                 set_status("Can't load %s: %s", canvas_path, why);
         } else if (canvas_path && canvas_read_file(canvas_path, READ_LOAD)) {
@@ -6242,6 +6601,7 @@ bar_load(void)
 static void
 bar_run_stop(void)
 {
+        if (not_canvas()) return;
         running = !running;
         if (!running) return;
         if (cfg.output.clear_on_run) output_clear();
@@ -6322,7 +6682,7 @@ update_bar(void)
 /* ---- Hot reload ---- */
 
 static const char *config_path;
-static long long config_mtime;
+static long long config_mtime, settings_mtime;
 
 /* Free S, a string of cfg read with conf_str, unless it's still KEEP or
  * the default (a literal) */
@@ -6332,27 +6692,31 @@ str_drop(const char *s, const char *keep, const char *def)
         if (s && s != keep && s != def) free((char *) s);
 }
 
-/* Read the config again from the defaults, so removed keys go back to
- * them. Colors, sizes and fonts change at once. */
+static void tab_title(void);
+
+/* Read the config (and settings.lua) again from the defaults, so removed
+ * keys go back to them. Colors, sizes and fonts change at once. */
 static void
 config_reload(void)
 {
         Typeof(cfg) prev = cfg;
 
         cfg = cfg_defaults;
-        if (!load_config(config_path)) {
+        if (!load_config(config_path, false)) {
                 cfg = prev;
                 set_status("Could not load %s, keeping the old config", config_path);
                 return;
         }
 
-        /* These are only used at start */
-        str_drop(cfg.modules.path, prev.modules.path, cfg_defaults.modules.path);
-        str_drop(cfg.save.path, prev.save.path, cfg_defaults.save.path);
-        cfg.window.width  = prev.window.width;
-        cfg.window.height = prev.window.height;
-        cfg.modules.path  = prev.modules.path;
-        cfg.save.path     = prev.save.path;
+        /* Some are only used at start: they keep what they had */
+        for (int i = 0; i < countof(settings); i++) {
+                const Setting *s = &settings[i];
+                if (!s->start) continue;
+                if (s->type == SET_STR)
+                        str_drop(*(const char **) s->val, *(const char **) setting_in(s, &prev),
+                                 *(const char **) setting_in(s, &cfg_defaults));
+                memcpy(s->val, setting_in(s, &prev), setting_size(s));
+        }
 
         bool fonts = strcmp(cfg.font.name, prev.font.name) || cfg.font.spacing != prev.font.spacing ||
                      cfg.bar.font_size != prev.bar.font_size || cfg.menu.font_size != prev.menu.font_size ||
@@ -6363,7 +6727,7 @@ config_reload(void)
                 unload_fonts();
                 load_font();
         }
-        if (strcmp(cfg.window.title, prev.window.title)) SetWindowTitle(cfg.window.title);
+        if (strcmp(cfg.window.title, prev.window.title)) tab_title();
         if (cfg.window.fps != prev.window.fps) SetTargetFPS(cfg.window.fps);
         if (cfg.save.autosave != prev.save.autosave) autosave = cfg.save.autosave;
         camera.zoom = Clamp(camera.zoom, cfg.canvas.zoom_min, cfg.canvas.zoom_max);
@@ -6374,20 +6738,16 @@ config_reload(void)
                 (*sp)->side = 0;
         }
         /* The old strings, now that nothing uses them */
-        str_drop(prev.window.title, cfg.window.title, cfg_defaults.window.title);
-        str_drop(prev.font.name, cfg.font.name, cfg_defaults.font.name);
-        str_drop(prev.modules.user, cfg.modules.user, cfg_defaults.modules.user);
-        str_drop(prev.modules.source, cfg.modules.source, cfg_defaults.modules.source);
-        str_drop(prev.modules.cache, cfg.modules.cache, cfg_defaults.modules.cache);
-        str_drop(prev.compile.output, cfg.compile.output, cfg_defaults.compile.output);
-        str_drop(prev.compile.runtime, cfg.compile.runtime, cfg_defaults.compile.runtime);
-        str_drop(prev.compile.cc, cfg.compile.cc, cfg_defaults.compile.cc);
-        str_drop(prev.compile.cflags, cfg.compile.cflags, cfg_defaults.compile.cflags);
-        str_drop(prev.compile.objcopy, cfg.compile.objcopy, cfg_defaults.compile.objcopy);
+        for (int i = 0; i < countof(settings); i++) {
+                const Setting *s = &settings[i];
+                if (s->type != SET_STR || s->start) continue;
+                str_drop(*(const char **) setting_in(s, &prev), *(const char **) s->val,
+                         *(const char **) setting_in(s, &cfg_defaults));
+        }
         set_status("Reloaded %s", config_path);
 }
 
-/* Every half second: the config file, and the modules */
+/* Every half second: the config, settings.lua, the modules and lineit */
 /* ---- Tabs ---- */
 
 /* Each tab is a canvas file and everything that goes with it: squares,
@@ -6408,6 +6768,7 @@ typedef struct Tab {
         Program prog;
         bool running;
         const char *path; /* canvas_path: NULL until it's saved somewhere */
+        bool settings;    /* the settings tab: its canvas is empty and not shown */
 
         char *saved; /* canvas_text(0) when it was last loaded or saved, to see changes */
 } Tab;
@@ -6451,6 +6812,7 @@ tab_visit(int i)
 static const char *
 tab_name(int i)
 {
+        if (tabs.items[i]->settings) return "Settings";
         const char *path = i == tab_cur ? canvas_path : tabs.items[i]->path;
         return path ? GetFileName(path) : "untitled";
 }
@@ -6461,7 +6823,7 @@ tab_dirty(int i)
 {
         Tab *t          = tabs.items[i];
         const char *now = i == tab_cur ? history.current : t->history.current;
-        return t->saved && now && strcmp(t->saved, now) != 0;
+        return !t->settings && t->saved && now && strcmp(t->saved, now) != 0;
 }
 
 /* What the tab shown has now is what's saved */
@@ -6482,10 +6844,13 @@ tab_title(void)
         SetWindowTitle(TextFormat("%s - %s", tab_name(tab_cur), cfg.window.title));
 }
 
+static void settings_edit_end(void);
+
 static void
 tab_switch(int i)
 {
         if (i == tab_cur || i < 0 || i >= tabs.count) return;
+        settings_edit_end();
         panel_close();
         field_edit.square = NULL;
         drag.kind         = DRAG_NONE;
@@ -6515,12 +6880,14 @@ canvas_start(void)
 }
 
 /* A new tab, shown. Its path is PATH (copied), and what's there is loaded
- * if there is something; if not, it's a new canvas (canvas_start). */
+ * if there is something; if not, it's a new canvas (canvas_start). Or the
+ * settings tab, if SETTINGS. */
 static void
-tab_new(const char *path)
+tab_add(const char *path, bool is_settings)
 {
-        Tab *t    = calloc(1, sizeof *t);
-        t->camera = (Camera2D) { .zoom = 1.0f };
+        Tab *t      = calloc(1, sizeof *t);
+        t->camera   = (Camera2D) { .zoom = 1.0f };
+        t->settings = is_settings;
         Da_append(&tabs, t);
         /* The first one is the globals already */
         if (tabs.count > 1) tab_switch(tabs.count - 1);
@@ -6534,10 +6901,16 @@ tab_new(const char *path)
         } else if (path && FileExists(path) && GetFileLength(path) > 0 && !canvas_read_file(path, READ_LOAD)) {
                 set_status("Could not load %s", path);
         }
-        if (!squares.count) canvas_start();
+        if (!squares.count && !is_settings) canvas_start();
         history_reset();
         tab_mark_saved(); /* with the entry: a new canvas has no changes yet */
         tab_title();
+}
+
+static void
+tab_new(const char *path)
+{
+        tab_add(path, false);
 }
 
 static void ask_close_tab(int i);
@@ -6669,7 +7042,7 @@ tab_open(const char *path)
                 }
         }
 
-        Tab *blank = tabs.count && !canvas_path && !tab_dirty(tab_cur) ? tabs.items[tab_cur] : NULL;
+        Tab *blank = tabs.count && !canvas_path && !tab_dirty(tab_cur) && !settings_shown() ? tabs.items[tab_cur] : NULL;
         tab_new(known ? want : path);
         for (int i = 0; blank && i < tabs.count; i++) {
                 if (tabs.items[i] == blank) tab_close(i, true);
@@ -6700,7 +7073,7 @@ tab_reopen(void)
                 }
         }
 
-        Tab *blank = tabs.count && !canvas_path && !tab_dirty(tab_cur) ? tabs.items[tab_cur] : NULL;
+        Tab *blank = tabs.count && !canvas_path && !tab_dirty(tab_cur) && !settings_shown() ? tabs.items[tab_cur] : NULL;
         tab_new(NULL);
         canvas_read_text(c.canvas, READ_LOAD);
         free((char *) canvas_path);
@@ -7043,6 +7416,7 @@ file_open(void)
 static void
 file_save_as(void)
 {
+        if (not_canvas()) return;
         prompt_open("Save as", canvas_path ? canvas_path : file_dir(), file_save_as_done);
 }
 
@@ -7073,6 +7447,7 @@ FILE_ITEM(bar_save)
 FILE_ITEM(file_save_as)
 FILE_ITEM(bar_load)
 FILE_ITEM(file_close)
+FILE_ITEM(settings_open)
 #undef FILE_ITEM
 
 static Menu file_menu;
@@ -7098,6 +7473,7 @@ file_menu_open(void)
                 { .label = "Revert to saved", .fn = bar_load_item },
                 { .label = "New type...", .fn = type_new_ask_item },
                 { .label = "Autosave", .hint = autosave ? "on" : "off", .fn = autosave_toggle },
+                { .label = "Settings", .hint = "Ctrl+,", .fn = settings_open_item },
                 { .label = "Close tab", .hint = "Ctrl+W", .fn = file_close_item },
         };
         file_menu.count = 0;
@@ -7105,6 +7481,710 @@ file_menu_open(void)
                 Da_append(&file_menu, items[i]);
         Rectangle b = bar_button_rect(BAR_FILE);
         menu_open(&file_menu, -1, (Vector2) { b.x, b.y - countof(items) * menu_item_height() });
+}
+
+/* ---- Settings tab ---- */
+
+/* File > Settings: every key of the config (see Settings), in a tab. Typing
+ * searches them, the list on the left goes to a section. A value changed is
+ * written to settings.lua and applied at once; Reset takes it out of there. */
+
+static struct {
+        TextInput search; /* typing goes here while no value is */
+        int field;        /* setting being typed, -1 if none */
+        TextInput text;
+        bool error;   /* what's typed isn't valid */
+        float scroll; /* of the list, pixels down */
+} settings_ui = { .field = -1 };
+
+static bool
+settings_shown(void)
+{
+        return tabs.count && tabs.items[tab_cur]->settings;
+}
+
+/* Run, Compile, Save... are for canvases */
+static bool
+not_canvas(void)
+{
+        if (!settings_shown()) return false;
+        set_status("Settings apply and are saved as they change");
+        return true;
+}
+
+/* The settings tab, or a new one */
+static void
+settings_open(void)
+{
+        for (int i = 0; i < tabs.count; i++) {
+                if (!tabs.items[i]->settings) continue;
+                tab_switch(i);
+                return;
+        }
+        tab_add(NULL, true);
+        settings_ui.scroll = 0;
+}
+
+/* "grid_step" for canvas.grid_step, as "Grid step" */
+static void
+setting_label(const Setting *s, char *buf, int size)
+{
+        const char *dot = strrchr(s->key, '.');
+        snprintf(buf, size, "%s", dot ? dot + 1 : s->key);
+        for (char *p = buf; *p; p++) {
+                if (*p == '_') *p = ' ';
+        }
+        buf[0] = toupper((unsigned char) buf[0]);
+}
+
+/* The value of setting I as it's typed. A setting read at start shows what
+ * it will have, from settings.lua. */
+static void
+setting_text(int i, char *buf, int size)
+{
+        const Setting *s = &settings[i];
+        const char *over = setting_over[i];
+
+        if (s->start && over && s->type == SET_STR) {
+                /* The Lua string, unquoted */
+                int n = 0;
+                for (const char *p = over + 1; *p && *p != '"' && n < size - 1; p++)
+                        buf[n++] = *p == '\\' && p[1] ? *++p : *p;
+                buf[n] = '\0';
+                return;
+        }
+        if (s->start && over) {
+                snprintf(buf, size, "%s", over);
+                return;
+        }
+        switch (s->type) {
+        case SET_INT: snprintf(buf, size, "%d", *(int *) s->val); break;
+        case SET_FLOAT: snprintf(buf, size, "%g", *(float *) s->val); break;
+        case SET_BOOL: snprintf(buf, size, "%s", *(bool *) s->val ? "on" : "off"); break;
+        case SET_STR: snprintf(buf, size, "%s", *(const char **) s->val); break;
+        case SET_COLOR: {
+                Color c = *(Color *) s->val;
+                if (c.a == 255)
+                        snprintf(buf, size, "%d, %d, %d", c.r, c.g, c.b);
+                else
+                        snprintf(buf, size, "%d, %d, %d, %d", c.r, c.g, c.b, c.a);
+                break;
+        }
+        }
+}
+
+/* "r, g, b", "r g b a", "{ r, g, b }", "#rrggbb" or "#rrggbbaa" */
+static bool
+color_parse(const char *text, Color *c)
+{
+        int v[4] = { 0, 0, 0, 255 }, n = 0;
+        char *end;
+
+        while (isspace((unsigned char) *text))
+                text++;
+        if (*text == '#') {
+                int len = 0;
+                while (isxdigit((unsigned char) text[1 + len]))
+                        len++;
+                if ((len != 6 && len != 8) || text[1 + len]) return false;
+                for (n = 0; n < len / 2; n++) {
+                        char hex[3] = { text[1 + 2 * n], text[2 + 2 * n], '\0' };
+                        v[n]        = (int) strtol(hex, NULL, 16);
+                }
+        } else {
+                const char *p = text;
+                for (n = 0; n < 4; n++) {
+                        while (*p == ' ' || *p == ',' || *p == '{')
+                                p++;
+                        if (!isdigit((unsigned char) *p)) break;
+                        long x = strtol(p, &end, 10);
+                        if (x > 255) return false;
+                        v[n] = (int) x;
+                        p    = end;
+                }
+                while (*p == ' ' || *p == ',' || *p == '}')
+                        p++;
+                if (*p || n < 3) return false;
+        }
+        *c = (Color) { v[0], v[1], v[2], v[3] };
+        return true;
+}
+
+/* A value of any type of setting */
+typedef union SettingValue {
+        int i;
+        float f;
+        bool b;
+        const char *s;
+        Color c;
+} SettingValue;
+
+/* TEXT as a value of S. False if it isn't one, or it's out of its range. */
+static bool
+setting_parse(const Setting *s, const char *text, SettingValue *v)
+{
+        char *end;
+        bool limits = s->max > s->min;
+
+        switch (s->type) {
+        case SET_INT: {
+                long n = strtol(text, &end, 10);
+                if (end == text || *end || (limits && (n < s->min || n > s->max))) return false;
+                v->i = (int) n;
+                return true;
+        }
+        case SET_FLOAT: {
+                double d = strtod(text, &end);
+                if (end == text || *end || !isfinite(d) || (limits && (d < s->min || d > s->max))) return false;
+                v->f = (float) d;
+                return true;
+        }
+        case SET_STR: v->s = text; return *text || s->empty;
+        case SET_COLOR: return color_parse(text, &v->c);
+        case SET_BOOL: return false; /* toggled, not typed */
+        }
+        return false;
+}
+
+static int
+setting_key_cmp(const void *a, const void *b)
+{
+        return strcmp(settings[*(const int *) a].key, settings[*(const int *) b].key);
+}
+
+/* settings.lua, from setting_over: nested tables like the config's */
+static bool
+settings_write(void)
+{
+        int order[countof(settings)], n = 0;
+        char tmp[PATH_MAX + 8], open[4][64];
+        int depth = 0;
+
+        for (int i = 0; i < countof(settings); i++) {
+                if (setting_over[i]) order[n++] = i;
+        }
+        /* Sorted, the keys of a table are together */
+        qsort(order, n, sizeof *order, setting_key_cmp);
+
+        if (strchr(settings_path, '/') && !mkdir_p(GetDirectoryPath(settings_path))) return false;
+        snprintf(tmp, sizeof tmp, "%s.tmp", settings_path);
+        FILE *f = fopen(tmp, "w");
+        if (!f) return false;
+        fprintf(f, "-- What File > Settings in lineit changed. lineit writes it, and reads it\n"
+                   "-- after %s: what's here wins. Remove a key to use the config's again.\n\n",
+                GetFileName(config_path));
+
+        for (int k = 0; k < n; k++) {
+                char key[128], *parts[5], *save = NULL;
+                int np = 0;
+                snprintf(key, sizeof key, "%s", settings[order[k]].key);
+                for (char *t = strtok_r(key, ".", &save); t && np < 5; t = strtok_r(NULL, ".", &save))
+                        parts[np++] = t;
+
+                /* Close the tables it isn't in, open the ones it is */
+                int same = 0;
+                while (same < depth && same < np - 1 && !strcmp(open[same], parts[same]))
+                        same++;
+                while (depth > same) {
+                        depth--;
+                        fprintf(f, "%*s}%s\n", depth * 8, "", depth ? "," : "");
+                }
+                while (depth < np - 1 && depth < countof(open)) {
+                        fprintf(f, "%*s%s = {\n", depth * 8, "", parts[depth]);
+                        snprintf(open[depth], sizeof open[depth], "%s", parts[depth]);
+                        depth++;
+                }
+                fprintf(f, "%*s%s = %s%s\n", depth * 8, "", parts[np - 1], setting_over[order[k]], depth ? "," : "");
+        }
+        while (depth > 0) {
+                depth--;
+                fprintf(f, "%*s}%s\n", depth * 8, "", depth ? "," : "");
+        }
+        if (fclose(f) != 0 || rename(tmp, settings_path) != 0) {
+                remove(tmp);
+                return false;
+        }
+        return true;
+}
+
+/* Setting I is VAL (its type) in settings.lua from now on, or isn't there
+ * if VAL is NULL. It applies now. */
+static void
+settings_change(int i, const SettingValue *val)
+{
+        const Setting *s = &settings[i];
+        char *lua        = val ? setting_lua(s, val) : NULL;
+
+        if (val && !lua) return;
+        free(setting_over[i]);
+        setting_over[i] = lua;
+        if (!settings_write()) {
+                set_status("Could not write %s", settings_path);
+                return;
+        }
+        /* Said now: the reload makes setting_over again */
+        char said[256];
+        if (!val)
+                snprintf(said, sizeof said, "%s: reset%s", s->key, s->start ? ", from the next start" : "");
+        else
+                snprintf(said, sizeof said, "%s = %s%s", s->key, lua, s->start ? ", from the next start" : "");
+        settings_mtime = file_mtime(settings_path);
+        config_reload();
+        set_status("%s", said);
+}
+
+/* Apply what's typed. On error it stays open. */
+static bool
+settings_edit_apply(void)
+{
+        SettingValue v;
+        int i = settings_ui.field;
+
+        if (i < 0) return true;
+        if (!setting_parse(&settings[i], settings_ui.text.buf, &v)) {
+                settings_ui.error = true;
+                return false;
+        }
+        settings_ui.field = -1;
+        settings_change(i, &v);
+        return true;
+}
+
+/* Leaving the tab: what's typed is applied if it's valid */
+static void
+settings_edit_end(void)
+{
+        if (!settings_edit_apply()) settings_ui.field = -1;
+}
+
+static void
+settings_edit(int i)
+{
+        char buf[256];
+        setting_text(i, buf, sizeof buf);
+        text_input_set(&settings_ui.text, buf);
+        settings_ui.field = i;
+        settings_ui.error = false;
+}
+
+/* The theme list, opened by clicking its value */
+static Menu theme_menu;
+
+static void
+theme_choose(int id, void *arg)
+{
+        (void) id;
+        SettingValue v = { .s = arg };
+        settings_change(0, &v);
+}
+
+static void
+theme_menu_open(Rectangle at)
+{
+        theme_menu.count = 0;
+        for (int i = 0; i < countof(themes); i++)
+                Da_append(&theme_menu, ((MenuItem) { .label = themes[i].name, .fn = theme_choose, .arg = (void *) themes[i].name }));
+        Da_foreach(t, user_themes)
+        {
+                Da_append(&theme_menu, ((MenuItem) { .label = *t, .hint = "config", .fn = theme_choose, .arg = *t }));
+        }
+        menu_open(&theme_menu, -1, (Vector2) { at.x, at.y + at.height });
+}
+
+/* What the tab shows, from the top of the list: section and subsection
+ * titles, and the settings that match the search */
+typedef enum RowKind {
+        ROW_SECTION,
+        ROW_SUB,
+        ROW_SETTING,
+} RowKind;
+
+typedef struct SettingsRow {
+        RowKind kind;
+        int i;      /* the setting, or the first one under the title */
+        float y, h; /* in the list, before the scroll */
+} SettingsRow;
+
+typedef struct SettingsLayout {
+        Rectangle nav;    /* sections, on the left (no width if narrow) */
+        Rectangle search; /* above the list */
+        Rectangle list;   /* where it scrolls */
+        float x, w;       /* the column of the list */
+        float pad, fs, small;
+        SettingsRow rows[3 * countof(settings)];
+        int count;
+        float height; /* of all the rows */
+} SettingsLayout;
+
+static bool
+setting_matches(const Setting *s, const char *q)
+{
+        char label[64];
+        if (!*q) return true;
+        setting_label(s, label, sizeof label);
+        /* Not the titles: "int" would find all of Interface */
+        return find_icase(s->key, q) >= 0 || find_icase(label, q) >= 0 || find_icase(s->help, q) >= 0;
+}
+
+static void
+settings_layout(SettingsLayout *l)
+{
+        Rectangle a = canvas_rect();
+        l->fs       = cfg.menu.font_size;
+        l->small    = roundf(cfg.menu.font_size * 0.8f);
+        l->pad      = Max(cfg.menu.padding, 4);
+
+        float nav_w = a.width >= 720 ? fminf(240, a.width * 0.25f) : 0;
+        l->nav      = (Rectangle) { a.x, a.y, nav_w, a.height };
+        l->w        = fminf(a.width - nav_w - 4 * l->pad, 960);
+        l->x        = a.x + nav_w + fmaxf(2 * l->pad, (a.width - nav_w - l->w) / 2);
+        l->search   = (Rectangle) { l->x, a.y + 2 * l->pad, l->w, menu_item_height() };
+        float top   = l->search.y + l->search.height + l->pad;
+        l->list     = (Rectangle) { a.x + nav_w, top, a.width - nav_w, fmaxf(0, a.y + a.height - top) };
+
+        const char *section = NULL, *sub = NULL;
+        float y  = 0;
+        l->count = 0;
+        for (int i = 0; i < countof(settings); i++) {
+                const Setting *s = &settings[i];
+                if (!setting_matches(s, settings_ui.search.buf)) continue;
+                if (!section || strcmp(section, s->section)) {
+                        float h             = l->fs * 1.4f + 3 * l->pad;
+                        l->rows[l->count++] = (SettingsRow) { ROW_SECTION, i, y, h };
+                        y += h;
+                        section = s->section;
+                        sub     = NULL;
+                }
+                if (!sub || strcmp(sub, s->sub)) {
+                        float h             = l->fs + 2 * l->pad;
+                        l->rows[l->count++] = (SettingsRow) { ROW_SUB, i, y, h };
+                        y += h;
+                        sub = s->sub;
+                }
+                float h             = l->fs + 2 * l->small + 4 * l->pad;
+                l->rows[l->count++] = (SettingsRow) { ROW_SETTING, i, y, h };
+                y += h;
+        }
+        l->height = y;
+}
+
+/* Row R on the screen */
+static Rectangle
+settings_row_rect(const SettingsLayout *l, const SettingsRow *r)
+{
+        return (Rectangle) { l->x, l->list.y + r->y - settings_ui.scroll, l->w, r->h };
+}
+
+/* Where the value of a setting in ROW is, and its Reset button */
+static Rectangle
+settings_value_rect(const SettingsLayout *l, Rectangle row)
+{
+        float w = fminf(300, l->w * 0.4f), h = menu_item_height();
+        return (Rectangle) { row.x + row.width - w, row.y + (row.height - h) / 2, w, h };
+}
+
+static Rectangle
+settings_reset_rect(const SettingsLayout *l, Rectangle row)
+{
+        Rectangle v = settings_value_rect(l, row);
+        float w     = measure_text("Reset", l->small) + 2 * l->pad;
+        return (Rectangle) { v.x - w - l->pad, v.y, w, v.height };
+}
+
+/* A color has its swatch at the left of the field */
+static Rectangle
+settings_field_rect(const SettingsLayout *l, const Setting *s, Rectangle row)
+{
+        Rectangle v = settings_value_rect(l, row);
+        if (s->type != SET_COLOR) return v;
+        return (Rectangle) { v.x + v.height + l->pad, v.y, v.width - v.height - l->pad, v.height };
+}
+
+/* Entries of the list on the left, one per title row. False past the last. */
+static bool
+settings_nav_rect(const SettingsLayout *l, int k, Rectangle *r)
+{
+        float y = l->nav.y + l->pad;
+        for (int j = 0; j < l->count; j++) {
+                const SettingsRow *row = &l->rows[j];
+                if (row->kind == ROW_SETTING) continue;
+                float h = (row->kind == ROW_SECTION ? l->fs : l->small) + 1.2f * l->pad;
+                if (j == k) {
+                        *r = (Rectangle) { l->nav.x, y, l->nav.width, h };
+                        return true;
+                }
+                y += h;
+        }
+        return false;
+}
+
+/* The title shown at the top: the section or subsection being read */
+static int
+settings_current(const SettingsLayout *l)
+{
+        int cur = -1;
+        for (int j = 0; j < l->count; j++) {
+                if (l->rows[j].kind != ROW_SETTING && l->rows[j].y <= settings_ui.scroll + 1) cur = j;
+        }
+        return cur;
+}
+
+static void
+update_settings(void)
+{
+        static SettingsLayout l;
+        bool changed  = false;
+        Vector2 mouse = GetMousePosition();
+
+        settings_layout(&l);
+
+        /* Typing goes to the value being typed, or else to the search */
+        if (settings_ui.field >= 0) {
+                switch (text_input_update(&settings_ui.text, &changed)) {
+                case TEXT_DONE:
+                case TEXT_NEXT: settings_edit_apply(); break;
+                case TEXT_CANCEL: settings_ui.field = -1; break;
+                case TEXT_TYPING: break;
+                }
+                if (changed) settings_ui.error = false;
+        } else {
+                TextResult tr = text_input_update(&settings_ui.search, &changed);
+                if (tr == TEXT_CANCEL && settings_ui.search.len) text_input_set(&settings_ui.search, "");
+                if (changed || tr == TEXT_CANCEL) {
+                        settings_ui.scroll = 0;
+                        settings_layout(&l);
+                }
+        }
+
+        float wheel = GetMouseWheelMove();
+        if (wheel && CheckCollisionPointRec(mouse, l.list)) settings_ui.scroll -= wheel * 3 * (l.fs + 2 * l.small);
+        settings_ui.scroll = Clamp(settings_ui.scroll, 0, fmaxf(0, l.height - l.list.height + 2 * l.pad));
+
+        if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) return;
+
+        /* Clicking away from the value being typed applies it, if it's valid */
+        int typing = settings_ui.field;
+        for (int j = 0; typing >= 0 && j < l.count; j++) {
+                if (l.rows[j].kind != ROW_SETTING || l.rows[j].i != typing) continue;
+                Rectangle f = settings_field_rect(&l, &settings[typing], settings_row_rect(&l, &l.rows[j]));
+                if (CheckCollisionPointRec(mouse, f)) return;
+        }
+        settings_edit_end();
+
+        for (int j = 0; j < l.count; j++) {
+                Rectangle n;
+                if (settings_nav_rect(&l, j, &n) && CheckCollisionPointRec(mouse, n)) {
+                        settings_ui.scroll = l.rows[j].y;
+                        return;
+                }
+        }
+
+        if (!CheckCollisionPointRec(mouse, l.list)) return;
+        for (int j = 0; j < l.count; j++) {
+                const SettingsRow *r = &l.rows[j];
+                Rectangle row        = settings_row_rect(&l, r);
+                if (r->kind != ROW_SETTING || !CheckCollisionPointRec(mouse, row)) continue;
+
+                const Setting *s = &settings[r->i];
+                if (setting_over[r->i] && CheckCollisionPointRec(mouse, settings_reset_rect(&l, row))) {
+                        settings_change(r->i, NULL);
+                } else if (CheckCollisionPointRec(mouse, settings_value_rect(&l, row))) {
+                        if (s->type == SET_BOOL) {
+                                SettingValue v = { .b = !*(bool *) s->val };
+                                settings_change(r->i, &v);
+                        } else if (s->val == &cfg.theme) {
+                                theme_menu_open(settings_value_rect(&l, row));
+                        } else {
+                                settings_edit(r->i);
+                        }
+                }
+                return;
+        }
+}
+
+/* TEXT cut with "..." to fit in W */
+static const char *
+text_fit(const char *text, float size, float w)
+{
+        static char buf[256];
+        if (measure_text(text, size) <= w) return text;
+        int n = snprintf(buf, sizeof buf, "%s", text);
+        if (n >= (int) sizeof buf) n = sizeof buf - 1;
+        while (n > 0) {
+                strcpy(buf + --n, "...");
+                if (measure_text(buf, size) <= w) break;
+        }
+        return buf;
+}
+
+static void
+draw_settings_value(const SettingsLayout *l, int i, Rectangle row)
+{
+        const Setting *s = &settings[i];
+        Rectangle v      = settings_value_rect(l, row);
+        Rectangle f      = settings_field_rect(l, s, row);
+        bool typing      = settings_ui.field == i;
+        bool hover       = CheckCollisionPointRec(GetMousePosition(), v);
+        float fs         = l->fs;
+        char buf[256];
+
+        if (s->type == SET_BOOL) {
+                /* A switch at the right */
+                bool on = *(bool *) s->val;
+                float h = v.height * 0.7f, w = 2 * h;
+                Rectangle t = { v.x + v.width - w, v.y + (v.height - h) / 2, w, h };
+                DrawRectangleRounded(t, 1.0f, 12, on ? cfg.colors.square : cfg.colors.menu_border);
+                DrawCircle(on ? t.x + w - h / 2 : t.x + h / 2, t.y + h / 2, h / 2 - 3, cfg.colors.field);
+                const char *label = on ? "on" : "off";
+                draw_text(label, t.x - measure_text(label, l->small) - l->pad, v.y + (v.height - l->small) / 2, l->small,
+                          cfg.colors.name);
+                return;
+        }
+
+        if (s->type == SET_COLOR) {
+                Rectangle sw = { v.x, v.y, v.height, v.height };
+                DrawRectangleRec(sw, *(Color *) s->val);
+                DrawRectangleLinesEx(sw, 1.0f, cfg.colors.menu_border);
+        }
+
+        if (typing)
+                snprintf(buf, sizeof buf, "%s%s", settings_ui.text.buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "");
+        else
+                setting_text(i, buf, sizeof buf);
+
+        Color border = settings_ui.error && typing ? cfg.colors.error :
+                       typing                      ? cfg.colors.pin_hover :
+                       hover                       ? cfg.colors.name :
+                                                     cfg.colors.menu_border;
+        DrawRectangleRec(f, cfg.colors.field);
+        DrawRectangleLinesEx(f, typing ? 2.0f : 1.0f, border);
+
+        float room = f.width - 2 * l->pad;
+        if (s->val == &cfg.theme) {
+                /* It opens a list: an arrow down at the right */
+                float a = fs * 0.5f, ax = f.x + f.width - l->pad - a, ay = f.y + f.height / 2;
+                DrawTriangle((Vector2) { ax, ay - a / 3 }, (Vector2) { ax + a / 2, ay + a / 3 }, (Vector2) { ax + a, ay - a / 3 },
+                             cfg.colors.square_text);
+                room -= a + l->pad;
+        }
+        /* The end of it while it's typed, its start if not */
+        float tw = measure_text(buf, fs);
+        if (typing && tw > room) {
+                Rectangle clip = GetCollisionRec(f, l->list);
+                BeginScissorMode(clip.x, clip.y, clip.width, clip.height);
+                draw_text(buf, f.x + l->pad - (tw - room), f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
+                BeginScissorMode(l->list.x, l->list.y, l->list.width, l->list.height);
+        } else {
+                draw_text(text_fit(buf, fs, room), f.x + l->pad, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
+        }
+}
+
+static void
+draw_settings(void)
+{
+        static SettingsLayout l;
+        Vector2 mouse = GetMousePosition();
+        float pad, fs, small;
+
+        settings_layout(&l);
+        pad = l.pad, fs = l.fs, small = l.small;
+
+        /* Sections on the left, the one being read marked */
+        if (l.nav.width > 0) {
+                int cur = settings_current(&l);
+                DrawRectangleRec(l.nav, cfg.colors.bar);
+                DrawLine(l.nav.x + l.nav.width, l.nav.y, l.nav.x + l.nav.width, l.nav.y + l.nav.height, cfg.colors.bar_border);
+                BeginScissorMode(l.nav.x, l.nav.y, l.nav.width, l.nav.height);
+                for (int j = 0; j < l.count; j++) {
+                        Rectangle n;
+                        if (!settings_nav_rect(&l, j, &n)) continue;
+                        const SettingsRow *r = &l.rows[j];
+                        const Setting *s     = &settings[r->i];
+                        bool section         = r->kind == ROW_SECTION;
+                        if (j == cur)
+                                DrawRectangleRec(n, cfg.colors.menu);
+                        else if (CheckCollisionPointRec(mouse, n))
+                                DrawRectangleRec(n, Fade(cfg.colors.menu, 0.5f));
+                        if (j == cur) DrawRectangle(n.x, n.y, 3, n.height, cfg.colors.square);
+                        float size = section ? fs : small, x = n.x + (section ? 2 : 4) * pad;
+                        draw_text(text_fit(section ? s->section : s->sub, size, n.x + n.width - x - pad), x,
+                                  n.y + (n.height - size) / 2, size, section || j == cur ? cfg.colors.menu_text : cfg.colors.name);
+                }
+                EndScissorMode();
+        }
+
+        /* The search box: typing goes there while no value is typed */
+        Rectangle sb   = l.search;
+        bool searching = settings_ui.field < 0;
+        DrawRectangleRec(sb, cfg.colors.field);
+        DrawRectangleLinesEx(sb, searching ? 2.0f : 1.0f, searching ? cfg.colors.square : cfg.colors.menu_border);
+        if (settings_ui.search.len)
+                draw_text(TextFormat("%s%s", settings_ui.search.buf, searching && fmod(GetTime(), 1.0) < 0.5 ? "_" : ""),
+                          sb.x + pad, sb.y + (sb.height - fs) / 2, fs, cfg.colors.square_text);
+        else
+                draw_text(searching && fmod(GetTime(), 1.0) < 0.5 ? "_ Type to search settings" : "  Type to search settings",
+                          sb.x + pad, sb.y + (sb.height - fs) / 2, fs, Fade(cfg.colors.square_text, 0.5f));
+
+        BeginScissorMode(l.list.x, l.list.y, l.list.width, l.list.height);
+        for (int j = 0; j < l.count; j++) {
+                const SettingsRow *r = &l.rows[j];
+                Rectangle row        = settings_row_rect(&l, r);
+                const Setting *s     = &settings[r->i];
+                if (row.y + row.height < l.list.y || row.y > l.list.y + l.list.height) continue;
+
+                if (r->kind == ROW_SECTION) {
+                        float size = roundf(fs * 1.4f);
+                        draw_text(s->section, row.x, row.y + 2 * pad, size, cfg.colors.menu_text);
+                        DrawLine(row.x, row.y + row.height - 1, row.x + row.width, row.y + row.height - 1, cfg.colors.bar_border);
+                        continue;
+                }
+                if (r->kind == ROW_SUB) {
+                        draw_text(s->sub, row.x, row.y + pad, fs, cfg.colors.square);
+                        continue;
+                }
+
+                if (CheckCollisionPointRec(mouse, row) && CheckCollisionPointRec(mouse, l.list))
+                        DrawRectangleRec((Rectangle) { row.x - pad, row.y, row.width + 2 * pad, row.height },
+                                         Fade(cfg.colors.menu, 0.5f));
+
+                /* Name, what it does, and its key and where its value is from */
+                char label[64];
+                const char *from[] = {
+                        [FROM_DEFAULT]  = "default",
+                        [FROM_THEME]    = "from the theme",
+                        [FROM_CONFIG]   = TextFormat("set in %s", GetFileName(config_path)),
+                        [FROM_SETTINGS] = "set here",
+                };
+                setting_label(s, label, sizeof label);
+                Rectangle reset = settings_reset_rect(&l, row);
+                float room      = reset.x - row.x - pad;
+                float y         = row.y + 2 * pad;
+                draw_text(text_fit(label, fs, room), row.x, y, fs, cfg.colors.menu_text);
+                draw_text(text_fit(s->help, small, room), row.x, y + fs + pad / 2, small, cfg.colors.name);
+                draw_text(text_fit(TextFormat("%s  -  %s%s", s->key, from[(int) setting_from[r->i]],
+                                              s->start ? ", read at start" : ""),
+                                   small, room),
+                          row.x, y + fs + small + pad, small, Fade(cfg.colors.name, 0.7f));
+
+                if (setting_over[r->i]) {
+                        bool hover = CheckCollisionPointRec(mouse, reset);
+                        if (hover) DrawRectangleRec(reset, cfg.colors.menu_hover);
+                        DrawRectangleLinesEx(reset, 1.0f, cfg.colors.menu_border);
+                        draw_text("Reset", reset.x + pad, reset.y + (reset.height - small) / 2, small, cfg.colors.menu_text);
+                }
+                draw_settings_value(&l, r->i, row);
+        }
+        EndScissorMode();
+
+        if (!l.count)
+                draw_text("No setting matches that", l.x, l.list.y + 2 * pad, fs, cfg.colors.name);
+
+        /* Where the view is, if it doesn't all fit */
+        if (l.height > l.list.height) {
+                float h = fmaxf(24, l.list.height * l.list.height / l.height);
+                float y = l.list.y + (l.list.height - h) * settings_ui.scroll / fmaxf(1, l.height - l.list.height + 2 * pad);
+                DrawRectangleRounded((Rectangle) { l.list.x + l.list.width - 8, y, 5, h }, 1.0f, 6, cfg.colors.menu_border);
+        }
 }
 
 /* ---- Make subgraph: the selection becomes a module ---- */
@@ -7976,6 +9056,7 @@ session_write(const char *path)
                 tab_visit(i);
                 char *canvas = canvas_text(WRITE_CAMERA | WRITE_STATE);
                 fprintf(f, "        {\n");
+                if (tabs.items[i]->settings) fprintf(f, "        settings = true,\n");
                 if (canvas_path) {
                         fprintf(f, "        path = ");
                         lua_quote(f, canvas_path);
@@ -8125,6 +9206,20 @@ session_restore(const char *path)
         Conf_get_int(conf, &active, "session.active");
         for (int t = 1; t <= ntabs; t++) {
                 char key[64];
+                b = 0;
+                Conf_get_bool(conf, &b, "session.tabs.%d.settings", t);
+                if (b && t > 1) {
+                        tab_add(NULL, true);
+                        continue;
+                }
+                if (b) {
+                        /* The first one, made as a canvas */
+                        tabs.items[tab_cur]->settings = true;
+                        canvas_clear(-1, NULL);
+                        history_reset();
+                        tab_mark_saved();
+                        continue;
+                }
                 if (t > 1) tab_new(NULL);
 
                 if (Conf_get_str(conf, &str, "session.tabs.%d.canvas", t) == CONF_OK) {
@@ -8171,13 +9266,27 @@ hot_reload(void)
         if (GetTime() - last < 0.5) return;
         last = GetTime();
 
-        long long mtime = file_mtime(config_path);
-        if (mtime != config_mtime) {
-                config_mtime = mtime;
-                if (mtime >= 0) config_reload();
+        long long mtime = file_mtime(config_path), smtime = file_mtime(settings_path);
+        if (mtime != config_mtime || smtime != settings_mtime) {
+                bool there     = mtime >= 0 || (smtime >= 0 && config_mtime < 0);
+                config_mtime   = mtime;
+                settings_mtime = smtime;
+                if (there) config_reload();
         }
         modules_scan(true);
         exe_reload();
+}
+
+/* Ctrl+key for the tabs, in every tab */
+static void
+shortcuts_tabs(bool shift)
+{
+        if (key_pressed(KEY_O)) file_open();
+        if (key_pressed(KEY_T)) shift ? tab_reopen() : file_new();
+        if (key_pressed(KEY_W)) file_close();
+        if (key_pressed(KEY_COMMA)) settings_open();
+        if (key_pressed(KEY_TAB) || key_pressed(KEY_PAGE_DOWN) || key_pressed(KEY_PAGE_UP))
+                file_next_tab(shift || key_pressed(KEY_PAGE_UP) ? -1 : 1);
 }
 
 /* Keys that act on the whole canvas. Only when no menu is open and nothing
@@ -8188,6 +9297,11 @@ update_shortcuts(void)
         bool ctrl  = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
         bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
 
+        /* The settings tab types in its search box: only the keys of the tabs */
+        if (settings_shown()) {
+                if (ctrl) shortcuts_tabs(shift);
+                return;
+        }
         if (editing_text()) return;
 
         if (!ctrl) {
@@ -8198,12 +9312,8 @@ update_shortcuts(void)
 
         if (key_pressed(KEY_S) && !shift) bar_save();
         if (key_pressed(KEY_S) && shift) file_save_as();
-        if (key_pressed(KEY_O)) file_open();
-        if (key_pressed(KEY_T)) shift ? tab_reopen() : file_new();
         if (key_pressed(KEY_G)) subgraph_ask();
-        if (key_pressed(KEY_W)) file_close();
-        if (key_pressed(KEY_TAB) || key_pressed(KEY_PAGE_DOWN) || key_pressed(KEY_PAGE_UP))
-                file_next_tab(shift || key_pressed(KEY_PAGE_UP) ? -1 : 1);
+        shortcuts_tabs(shift);
         if (key_pressed(KEY_Z) && !shift) history_step(true);
         if (key_pressed(KEY_Y) || (key_pressed(KEY_Z) && shift)) history_step(false);
         if (key_pressed(KEY_A)) select_all(true);
@@ -8465,9 +9575,10 @@ main(int argc, char **argv)
                 f_file = f_tab; /* none running: this one */
         }
 
-        config_path  = config_start(f_config);
-        config_mtime = file_mtime(config_path);
-        autosave     = cfg.save.autosave;
+        config_path    = config_start(f_config);
+        config_mtime   = file_mtime(config_path);
+        settings_mtime = file_mtime(settings_path);
+        autosave       = cfg.save.autosave;
         exe_watch();
         if (f_restore) session_window(f_restore);
         init_raylib();
@@ -8487,11 +9598,14 @@ main(int argc, char **argv)
                 keys_poll();
                 if (WindowShouldClose() && !ask.open) quit_request();
                 tab_socket_poll();
-                update_camera();
+                if (!settings_shown()) update_camera();
                 if (!update_ask() && !update_prompt() && !update_field() && !update_panel() && !update_output() && !update_bar() &&
                     !update_tabs() && !update_menu()) {
                         update_shortcuts();
-                        update_mouse();
+                        if (settings_shown())
+                                update_settings();
+                        else
+                                update_mouse();
                 }
                 run_frame();
                 history_check();
@@ -8500,9 +9614,13 @@ main(int argc, char **argv)
 
                 BeginDrawing();
                 ClearBackground(cfg.colors.bg);
-                draw_canvas();
-                draw_tooltip();
-                draw_panel();
+                if (settings_shown()) {
+                        draw_settings();
+                } else {
+                        draw_canvas();
+                        draw_tooltip();
+                        draw_panel();
+                }
                 draw_output();
                 draw_tabs();
                 draw_bar();

@@ -3,3 +3,6 @@ lineit
 docs/**/*.pdf
 /*.tar.gz
 /*.AppImage
+/settings.lua
+/settings.lua.tmp
+.cache/
