@@ -22,6 +22,9 @@ typedef struct Record {
 /* Given by whoever links this */
 bool type_is_record(Li_Type t);
 const char *type_field_name(Li_Type t, int field); /* "?" if there's none */
+int type_field_count(Li_Type t);
+const char *type_field_type(Li_Type t, int field); /* its type, by name: "int32", "geo/point" */
+Li_Type type_named(const char *name);              /* by name or last part, LI_NONE if none (or two) */
 
 /* A copy of V that owns what it points to (strings, lists, maps, records),
  * for whoever keeps it longer than the module that made it: free it with
@@ -29,6 +32,7 @@ const char *type_field_name(Li_Type t, int field); /* "?" if there's none */
 Li_Value value_dup(Li_Value v);
 void value_drop(Li_Value v);
 bool value_equal(Li_Value a, Li_Value b);
+Li_Value value_widen(Li_Value v, Li_Type t); /* for an input of type T: int to float, bool to int... */
 
 /* Variables, by name: li_var_* */
 typedef struct Var {

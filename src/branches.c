@@ -542,7 +542,8 @@ sched_fork(Sched *s, const Sched_Task *tasks, int n)
         Branch *made[n];
         for (int i = 0; i < n; i++)
                 made[i] = branch_new(s, tasks[i], g);
-        p->kids = g;
+        p->kids  = g;
+        p->state = JOIN; /* from now: its thread runs the first child, not it */
         pthread_mutex_unlock(&s->m);
         /* The first on this thread: it would only wait for them meanwhile */
         for (int i = 1; i < n; i++)
@@ -552,7 +553,8 @@ sched_fork(Sched *s, const Sched_Task *tasks, int n)
 
         pthread_mutex_lock(&s->m);
         WAIT_WHILE(s, p, JOIN, g->alive > 0);
-        p->kids = NULL;
+        p->state = RUN;
+        p->kids  = NULL;
         for (int i = 0; i < s->groups.count; i++) {
                 if (s->groups.items[i] != g) continue;
                 Da_remove(&s->groups, i);

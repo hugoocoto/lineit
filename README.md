@@ -103,9 +103,9 @@ which also needs `libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev`.
 The rest are system packages. On Debian or Ubuntu:
 
     sudo apt install build-essential pkg-config liblua5.1-0-dev lua5.1 \
-        libfontconfig1-dev libx11-dev zlib1g-dev libssl-dev zip
+        libfontconfig1-dev libx11-dev zlib1g-dev libssl-dev libffi-dev zip
 
-On Arch: `base-devel lua51 fontconfig libx11 zlib openssl zip`. `zip` and
+On Arch: `base-devel lua51 fontconfig libx11 zlib openssl libffi zip`. `zip` and
 `lua5.1` are only needed to make packages (see Packages). LuaJIT works
 instead of Lua 5.1: `make LUA=luajit`.
 
@@ -134,7 +134,7 @@ to itself, and keeps your own things in `~/.config/lineit`,
 | `make`              | the editor, the modules and the runtime of Compile             |
 | `make WERROR=1`     | the same, failing on any warning, like CI                      |
 | `make debug`        | without optimizations, with AddressSanitizer and UBSan         |
-| `make test`         | run every canvas in `examples/` and `tests/`, and compile them |
+| `make test`         | run every canvas in `examples/` and `tests/`, compile and step them |
 | `make test-asan`    | the same, with AddressSanitizer and UBSan                      |
 | `make test-tsan`    | the same, with ThreadSanitizer: branches run in parallel       |
 | `make analyze`      | clang's static analyzer                                        |
@@ -208,6 +208,21 @@ each use to keep the wires short. They have
 to say the same type and start, or they're shown in red and Run refuses.
 Each Run starts from the declared values, and a variable inside a subgraph
 is its own, like a local in a C function.
+
+**Calling C.** `ffi/call` calls a function of any C library, by its
+prototype, with no module to write: set `lib` (`m` for libm, `c`, a path to
+a `.so`, or nothing for what lineit has loaded) and `fn`, like
+`double pow(double x, double y)`, and the square takes its shape: an input
+per argument and its `result`. Integers are ints, `float` and `double`
+floats, `const char *` strings, and other pointers `ptr` values, passed
+along. A variadic one says this call's types after the dots:
+`int snprintf(char *buf, size_t n, const char *fmt, ..., int, double)`. It
+runs on each tick, or, with `pure` on, when its result is read (`sin`,
+`strlen`). `ffi/alloc`, `ffi/read`, `ffi/write` and `ffi/free` handle the
+memory pointers point to: buffers, out-parameters, struct fields. Wrap the
+calls you use in subgraphs to get squares of your own. It's C: a wrong
+prototype or pointer crashes lineit. Compiled programs call them the same
+way, and link with libffi.
 
 Start with the canvases in `examples/`: each begins with a comment that
 explains it, and `examples/README.md` lists them.

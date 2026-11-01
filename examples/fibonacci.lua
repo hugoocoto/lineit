@@ -14,17 +14,17 @@ camera = { x = 703.050781, y = 140.894531, offset_x = 640, offset_y = 344, zoom 
 squares = {
         { id = 53, module = "flow/entry", x = -35, y = -35 },
         { id = 54, module = "var/var", x = 116.898438, y = 121.898438, params = { { name = "name", value = "fib" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "list" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 55, module = "list/push", x = 306.898438, y = -73.1015625, inputs = { { name = "value", type = "int", value = "0" }, } },
-        { id = 56, module = "list/push", x = 496.898438, y = -73.1015625, inputs = { { name = "value", type = "int", value = "1" }, } },
+        { id = 55, module = "list/push", x = 306.898438, y = -73.1015625, inputs = { { name = "list", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
+        { id = 56, module = "list/push", x = 496.898438, y = -73.1015625, inputs = { { name = "list", type = "ref", value = "" }, { name = "value", type = "int", value = "1" }, } },
         { id = 57, module = "flow/loop", x = 703.109375, y = -75.890625, inputs = { { name = "from", type = "int", value = "2" }, { name = "to", type = "int", value = "30" }, } },
         { id = 58, module = "var/var", x = 515.898438, y = 241.898438, params = { { name = "name", value = "fib" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "list" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 59, module = "list/get", x = 703.109375, y = 164.109375, inputs = { { name = "index", type = "int", value = "-1" }, } },
-        { id = 60, module = "list/get", x = 703.109375, y = 359.109375, inputs = { { name = "index", type = "int", value = "-2" }, } },
+        { id = 59, module = "list/get", x = 703.109375, y = 164.109375, inputs = { { name = "list", type = "ref", value = "" }, { name = "index", type = "int", value = "-1" }, } },
+        { id = 60, module = "list/get", x = 703.109375, y = 359.109375, inputs = { { name = "list", type = "ref", value = "" }, { name = "index", type = "int", value = "-2" }, } },
         { id = 61, module = "math/add", x = 928.843689, y = 255.84375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
         { id = 62, module = "var/var", x = 914.898376, y = -253.101562, params = { { name = "name", value = "fib" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "list" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 63, module = "list/push", x = 1104.89844, y = -73.1015625, inputs = { { name = "value", type = "int", value = "0" }, } },
+        { id = 63, module = "list/push", x = 1104.89844, y = -73.1015625, inputs = { { name = "list", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
         { id = 64, module = "io/print", x = 1294.89844, y = -73.1015625, inputs = { { name = "value", type = "string", value = "" }, } },
-        { id = 65, module = "list/length", x = 1179.47656, y = 203.476562 },
+        { id = 65, module = "list/length", x = 1148.47656, y = 172.476562, inputs = { { name = "list", type = "ref", value = "" }, } },
         { id = 66, module = "io/display", x = 1371, y = 205 },
 }
 

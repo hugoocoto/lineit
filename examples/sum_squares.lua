@@ -17,10 +17,10 @@ squares = {
         { id = 23, module = "flow/loop", x = 133.109375, y = -75.890625, inputs = { { name = "from", type = "int", value = "0" }, { name = "to", type = "int", value = "10" }, } },
         { id = 24, module = "math/multiply", x = 347.6875, y = 124.6875, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
         { id = 25, module = "var/var", x = 344.898438, y = 301.898438, params = { { name = "name", value = "sum" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 26, module = "var/get", x = 568.6875, y = 335.6875 },
+        { id = 26, module = "var/get", x = 537.6875, y = 304.6875, inputs = { { name = "var", type = "ref", value = "" }, } },
         { id = 27, module = "math/add", x = 567.84375, y = 165.84375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
         { id = 28, module = "var/var", x = 553.898438, y = -253.101562, params = { { name = "name", value = "sum" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 29, module = "var/set", x = 741.109436, y = -75.890625, inputs = { { name = "value", type = "int", value = "0" }, } },
+        { id = 29, module = "var/set", x = 741.109436, y = -75.890625, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
         { id = 30, module = "io/print", x = 933.898499, y = 151.898438, inputs = { { name = "value", type = "string", value = "" }, } },
 }
 

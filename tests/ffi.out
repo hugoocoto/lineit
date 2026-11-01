@@ -1,0 +1,28 @@
+1024
+5
+5
+42-x 3.14
+9
+7
+2.5
+-- 20 squares, 26 links
+0 ffi/call: pow()
+1 ffi/call: abs()
+2 ffi/call: strlen()
+3 ffi/call: no library nolib
+4 flow/entry: 
+5 io/print: 1024
+6 io/print: 5
+7 io/print: 5
+8 ffi/alloc: 64 bytes
+9 ffi/call: snprintf
+10 ffi/read: 
+11 io/print: 42-x 3.14
+12 io/print: 9
+13 ffi/write: 
+14 ffi/write: 
+15 ffi/read: 
+16 ffi/read: 
+17 io/print: 7
+18 io/print: 2.5
+19 ffi/free: 

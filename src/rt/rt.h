@@ -48,11 +48,13 @@ struct Li_Node {
         bool evaluating;
 };
 
-/* A custom type: its name and the names of its fields */
+/* A custom type: its name, and the names and types of its fields (the
+ * types by name, as in its .type.lua: "int32", "geo/point") */
 typedef struct Rt_Type {
         const char *name;
         int field_count;
         const char *const *fields;
+        const char *const *field_types;
 } Rt_Type;
 
 /* Given by main.c */

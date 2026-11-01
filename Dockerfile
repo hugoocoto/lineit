@@ -15,7 +15,7 @@
 FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config liblua5.1-0-dev libfontconfig-dev \
-        libx11-dev zlib1g-dev libssl-dev \
+        libx11-dev zlib1g-dev libssl-dev libffi-dev \
         ca-certificates curl libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
 WORKDIR /src
 COPY . .
@@ -25,10 +25,11 @@ RUN raylib=repo; [ "$(uname -m)" = x86_64 ] || raylib=source; \
 
 FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 # lineit's libraries, software GL (llvmpipe) and what GLFW loads; a C
-# compiler, make and objcopy for Compile, zip and lua5.1 for lineit-pack;
+# compiler, make and objcopy for Compile (libffi-dev: ffi/call, and the
+# programs that use it link it), zip and lua5.1 for lineit-pack;
 # the screen and the web page
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        liblua5.1-0 libfontconfig1 libx11-6 zlib1g libssl3t64 fonts-dejavu-core \
+        liblua5.1-0 libfontconfig1 libx11-6 zlib1g libssl3t64 libffi-dev fonts-dejavu-core \
         libgl1 libglx-mesa0 libgl1-mesa-dri libxrandr2 libxinerama1 libxcursor1 libxi6 \
         gcc libc6-dev make binutils zip lua5.1 \
         tigervnc-standalone-server matchbox-window-manager novnc websockify \

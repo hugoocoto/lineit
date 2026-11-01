@@ -31,7 +31,7 @@ env:
   # window, so under Xvfb
   APT_PACKAGES: >-
     build-essential pkg-config liblua5.1-0-dev lua5.1 libfontconfig1-dev
-    libx11-dev zlib1g-dev libssl-dev zip clang xvfb xauth libgl1
+    libx11-dev zlib1g-dev libssl-dev libffi-dev zip clang xvfb xauth libgl1
     libgl1-mesa-dri libxrandr2 libxinerama1 libxcursor1 libxi6
     fonts-dejavu-core
 

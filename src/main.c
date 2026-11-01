@@ -77,6 +77,7 @@ static const char *type_names[LI_TYPE_COUNT] = {
         [LI_LIST]   = "list",
         [LI_MAP]    = "map",
         [LI_REF]    = "ref",
+        [LI_BYTES]  = "bytes",
 };
 
 /* The colors of the editor: a theme gives them all, and colors.* in the
@@ -308,6 +309,7 @@ static const struct {
         [LI_LIST]   = { 56, 189, 248, 255 },
         [LI_MAP]    = { 251, 146, 60, 255 },
         [LI_REF]    = { 45, 212, 191, 255 },
+        [LI_BYTES]  = { 148, 163, 184, 255 },
         },
         .menu        = { 39, 39, 42, 255 },
         .menu_border = { 63, 63, 70, 255 },
@@ -348,6 +350,7 @@ static const struct {
         [LI_LIST]   = { 2, 132, 199, 255 },
         [LI_MAP]    = { 234, 88, 12, 255 },
         [LI_REF]    = { 13, 148, 136, 255 },
+        [LI_BYTES]  = { 71, 85, 105, 255 },
         },
         .menu        = { 255, 255, 255, 255 },
         .menu_border = { 212, 212, 216, 255 },
@@ -388,6 +391,7 @@ static const struct {
         [LI_LIST]   = { 94, 129, 172, 255 },
         [LI_MAP]    = { 208, 135, 112, 255 },
         [LI_REF]    = { 143, 188, 187, 255 },
+        [LI_BYTES]  = { 216, 222, 233, 255 },
         },
         .menu        = { 59, 66, 82, 255 },
         .menu_border = { 76, 86, 106, 255 },
@@ -428,6 +432,7 @@ static const struct {
         [LI_LIST]   = { 131, 165, 152, 255 },
         [LI_MAP]    = { 254, 128, 25, 255 },
         [LI_REF]    = { 142, 192, 124, 255 },
+        [LI_BYTES]  = { 189, 174, 147, 255 },
         },
         .menu        = { 60, 56, 54, 255 },
         .menu_border = { 80, 73, 69, 255 },
@@ -550,6 +555,7 @@ static const Setting settings[] = {
         TYPE_COLOR(LI_LIST, "list"),
         TYPE_COLOR(LI_MAP, "map"),
         TYPE_COLOR(LI_REF, "ref"),
+        TYPE_COLOR(LI_BYTES, "bytes"),
 };
 #undef SETTING
 #undef TYPE_COLOR
@@ -958,6 +964,7 @@ typedef struct ModuleFns {
         void (*draw)(Li_Node *n);
         void (*start)(Li_Node *n);
         const char *(*emit)(Li_Node *n); /* only used by Compile */
+        const char *(*libs)(void);       /* the same */
 } ModuleFns;
 
 /* A square on the canvas, an instance of a module. Modules see it as an
@@ -970,6 +977,7 @@ struct Li_Node {
         ModuleFns fn;
         PinList inputs;
         PinList outputs;
+        PinList was;      /* the inputs before li_pins_reset, for their typed values */
         ParamList params; /* changed from the settings panel */
         float side;       /* cached by square_side, 0 to recompute */
         float label_w;    /* longest input name, cached with side */
@@ -1057,6 +1065,7 @@ static long long squares_version = 1; /* bumped when a square is made or freed, 
 static void program_lower(void);
 static bool program_each(bool start);
 static bool stepping; /* a run going one square at a time, see Step */
+static void squares_settle(void);
 static void run_stop(void);
 static bool step_next(struct Li_Node *s);
 static const char *step_names(void);
@@ -1541,6 +1550,10 @@ types_compatible(Li_Type out, Li_Type in)
 {
         /* A variable only goes to what reads or changes one */
         if (out == LI_TICK || in == LI_TICK || out == LI_REF || in == LI_REF) return out == in;
+        /* As in C, li_get makes an int a float, and a bool an int or the
+         * other way (0 is false) */
+        if ((out == LI_INT && in == LI_FLOAT) || (out == LI_BOOL && in == LI_INT) || (out == LI_INT && in == LI_BOOL))
+                return true;
         return out == in || out == LI_ANY || in == LI_ANY;
 }
 
@@ -1611,12 +1624,36 @@ li_input(Li_Node *n, const char *name, Li_Type type)
         return pin_add(&n->inputs, name, type);
 }
 
+static void pins_free(PinList *l);
+
+/* Every pin goes, for the module to say them again: what a param
+ * changed (ffi/call's prototype). Typed values stay with the inputs of the
+ * same name and type said again. */
+void
+li_pins_reset(Li_Node *n)
+{
+        Da_foreach(p, n->outputs)
+        {
+                value_drop(p->value);
+        }
+        pins_free(&n->outputs);
+        pins_free(&n->was);
+        n->was    = n->inputs; /* li_input_value takes their values back */
+        n->inputs = (PinList) { 0 };
+        n->side   = 0;
+}
+
 int
 li_input_value(Li_Node *n, const char *name, Li_Type type, Li_Value value)
 {
         int i      = li_input(n, name, type);
         PinInfo *p = &n->inputs.items[i];
         p->kind    = PIN_VALUE;
+        /* The one before li_pins_reset, if it's the same */
+        Da_foreach(w, n->was)
+        {
+                if (w->kind == PIN_VALUE && w->type == type && !strcmp(w->name, name)) value = w->value;
+        }
         pin_store(p, value);
         return i;
 }
@@ -1794,6 +1831,29 @@ type_field_name(Li_Type t, int field)
         return d && field >= 0 && field < d->fields.count ? d->fields.items[field].name : "?";
 }
 
+int
+type_field_count(Li_Type t)
+{
+        TypeDef *d = type_def(t);
+        return d ? d->fields.count : 0;
+}
+
+const char *
+type_field_type(Li_Type t, int field)
+{
+        TypeDef *d = type_def(t);
+        return d && field >= 0 && field < d->fields.count ? d->fields.items[field].type : "";
+}
+
+static int type_from_name(const char *name);
+
+Li_Type
+type_named(const char *name)
+{
+        int t = type_from_name(name);
+        return type_def(t) ? (Li_Type) t : LI_NONE;
+}
+
 /* For people: "int", "point" */
 static const char *
 type_name(Li_Type t)
@@ -1896,6 +1956,20 @@ value_parse_as(Li_Type type, const char *text, Li_Value *out)
 
 /* ---- Params ---- */
 
+/* A param can change the pins of S (li_pins_reset, ffi/call): the wires
+ * to ones that aren't there anymore, or can't take one, go */
+static void
+links_check(Square *s)
+{
+        for (int i = links.count - 1; i >= 0; i--) {
+                Link k = links.items[i];
+                if (k.from == s->id && k.from_pin >= s->outputs.count)
+                        Da_remove(&links, i);
+                else if (k.to == s->id && (k.to_pin >= s->inputs.count || s->inputs.items[k.to_pin].kind == PIN_OPTIONS))
+                        Da_remove(&links, i);
+        }
+}
+
 static void
 param_text(Param *p, char *buf, int size, bool exact)
 {
@@ -1919,6 +1993,7 @@ param_set_text(Square *s, int i, const char *text)
         p->value = v;
 
         if (s->fn.param) s->fn.param(s, i);
+        links_check(s);
         return true;
 }
 
@@ -2171,6 +2246,7 @@ module_open(const char *path, ModuleFns *fn)
         fn->draw    = (void (*)(Li_Node *)) dlsym(handle, "module_draw");
         fn->start   = (void (*)(Li_Node *)) dlsym(handle, "module_start");
         fn->emit    = (const char *(*)(Li_Node *) ) dlsym(handle, "module_emit");
+        fn->libs    = (const char *(*)(void) ) dlsym(handle, "module_libs");
         if (!fn->init) {
                 fprintf(stderr, "modules: %s has no module_init\n", path);
                 dlclose(handle);
@@ -2296,6 +2372,7 @@ square_free(Square *s)
         if (field_edit.square == s) field_edit.square = NULL;
         if (s->fn.destroy) s->fn.destroy(s);
         pins_free(&s->inputs);
+        pins_free(&s->was);
         Da_foreach(p, s->outputs)
         {
                 value_drop(p->value); /* li_set's copy */
@@ -3147,8 +3224,10 @@ module_name_of(const char *path, const char *dir, size_t ext)
  *
  * modules/geo/point.type.lua is the type geo/point, with two modules next
  * to it: geo/make_point (its fields in, a point out) and geo/break_point (a
- * point in, its fields out). Fields are bool, int, float, string, any, or
- * another custom type, by its name. */
+ * point in, its fields out). Fields are bool, int, float, string, any,
+ * ptr, or another custom type, by its name; and, for a type that's a C
+ * struct (see li_c_size), char, int8..int64, uint8..uint64, float32,
+ * float64: ints and floats in lineit, of their size in C. */
 
 /* Type files say the LI_VERSION that wrote them (lineit_type), and
  * type_read reads the ones of the same major and an older minor (see
@@ -3161,17 +3240,45 @@ is_type_file(const char *path)
         return n > 9 && !strcmp(path + n - 9, ".type.lua");
 }
 
-/* What a field can be: data, not ticks nor pointers */
+/* What a field can be: data, not ticks */
 static bool
 field_type_ok(int t)
 {
-        return t == LI_BOOL || t == LI_INT || t == LI_FLOAT || t == LI_STRING || t == LI_ANY || type_is_record(t);
+        return t == LI_BOOL || t == LI_INT || t == LI_FLOAT || t == LI_STRING || t == LI_ANY || t == LI_PTR ||
+               type_is_record(t);
+}
+
+/* Field types with a size, for records that are C structs (see li_c_size):
+ * in lineit they're ints, floats and ptrs */
+static const struct {
+        const char *name;
+        Li_Type type;
+} c_field_types[] = {
+        { "char", LI_INT },
+        { "int8", LI_INT },
+        { "uint8", LI_INT },
+        { "int16", LI_INT },
+        { "uint16", LI_INT },
+        { "int32", LI_INT },
+        { "uint32", LI_INT },
+        { "int64", LI_INT },
+        { "uint64", LI_INT },
+        { "float32", LI_FLOAT },
+        { "float64", LI_FLOAT },
+};
+
+static int
+field_type_named(const char *name)
+{
+        for (int i = 0; i < countof(c_field_types); i++)
+                if (!strcmp(c_field_types[i].name, name)) return c_field_types[i].type;
+        return type_from_name(name);
 }
 
 static Li_Type
 field_type(Field *f)
 {
-        int t = type_from_name(f->type);
+        int t = field_type_named(f->type);
         return t >= 0 ? (Li_Type) t : LI_ANY;
 }
 
@@ -3302,7 +3409,7 @@ fields_free(void *list)
 static bool
 field_type_known(const char *name, char **known, int nknown)
 {
-        int t = type_from_name(name);
+        int t = field_type_named(name);
         if (t >= 0) return field_type_ok(t);
         for (int i = 0; i < nknown; i++) {
                 const char *label = strrchr(known[i], '/') ? strrchr(known[i], '/') + 1 : known[i];
@@ -5968,7 +6075,7 @@ li_get(Li_Node *n, int input)
                 Li_Value v = value_dup(pin_info(s, PART_OUTPUT, src.pin)->value);
                 sched_unlock(sched_get(), src.node);
                 Da_append(&got_values, v);
-                return v;
+                return value_widen(v, in->type); /* see types_compatible */
         }
         default: return none;
         }
@@ -6206,7 +6313,7 @@ static Da(CompileNode) compiled;
 /* The C callbacks that the program calls */
 static const char *const callback_names[] = { "init", "tick", "eval", "frame", "param", "load", "start" };
 /* And the ones it doesn't, but may be in a module */
-static const char *const callback_others[] = { "draw", "destroy", "save", "emit" };
+static const char *const callback_others[] = { "draw", "destroy", "save", "emit", "libs" };
 
 static bool
 node_is_make(Node *x)
@@ -6546,6 +6653,11 @@ compile_main(FILE *f, const char *name, const char *from)
                         fprintf(f, "%s", k ? ", " : " ");
                         c_string(f, d->fields.items[k].name);
                 }
+                fprintf(f, "%s}, (const char *const[]) {", d->fields.count ? " " : " NULL ");
+                for (int k = 0; k < d->fields.count; k++) {
+                        fprintf(f, "%s", k ? ", " : " ");
+                        c_string(f, d->fields.items[k].type ? d->fields.items[k].type : "");
+                }
                 fprintf(f, "%s} },\n", d->fields.count ? " " : " NULL ");
         }
         if (!types.count) fprintf(f, "        { 0 },\n");
@@ -6696,9 +6808,12 @@ compile_sources(const char *dir)
                 } else {
                         /* With lineit's (modules.source), or the user's own, next to its .so */
                         snprintf(path, sizeof path, "%s/%s.c", m->dir ? cfg.modules.user : cfg.modules.source, m->name);
-                        if (!m->builtin && realpath(path, src))
+                        if (!m->builtin && realpath(path, src)) {
                                 compiled.items[i].src = strdup(src);
-                        else
+                                /* What it needs to link, if it says (module_libs) */
+                                const char *libs = x->square->fn.libs ? x->square->fn.libs() : NULL;
+                                if (libs) compiled.items[i].libs = strdup(libs);
+                        } else
                                 output_add(TextFormat("compile: square %d: no C for %s, it should be %s", x->square->id, m->name, path), true);
                 }
                 if (!compiled.items[i].src && !compiled.items[i].obj) {
@@ -6757,6 +6872,8 @@ compile_canvas(const char *name, char *bin, int size)
                 output_add(TextFormat("compile: the squares of variable %s say different things", bad), true);
                 return false;
         }
+        program_lower();
+        squares_settle();
         program_lower();
         file_name(base, sizeof base, name);
         if (!mkdir_p(cfg.compile.output) || !realpath(cfg.compile.output, out)) {
@@ -7173,6 +7290,20 @@ run_check_end(void)
         if (!sched_busy(sched_get()) && !program_has_frames()) run_stop();
 }
 
+/* Squares say their pin types when drawn (var/get takes its variable's,
+ * value/convert the one chosen): without a window (the tests, --compile)
+ * nothing was. Before a run or a compile, every square says them. */
+static void
+squares_settle(void)
+{
+        int mark = got_mark();
+        Da_foreach(sp, squares)
+        {
+                if ((*sp)->fn.draw) (*sp)->fn.draw(*sp);
+        }
+        got_free(mark);
+}
+
 /* A new run: from the declared values of the variables, the starts first
  * (as branches, see branches.h). False if it can't. */
 static bool
@@ -7188,6 +7319,8 @@ run_begin(void)
         if (cfg.output.clear_on_run) output_clear();
         output_panel.open   = true;
         output_panel.unseen = 0;
+        program_lower();
+        squares_settle();
         program_lower();
         program_each(true);
         return true;

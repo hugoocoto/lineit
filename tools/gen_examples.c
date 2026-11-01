@@ -287,6 +287,88 @@ fibonacci(void)
                           "list/length. The three var/var are copies of the same list.");
 }
 
+/* A param of S other than the first: ffi/call has lib, fn and pure */
+static Square *
+setp(Square *s, int i, const char *value)
+{
+        if (!param_set_text(s, i, value)) {
+                fprintf(stderr, "bad param %d %s for %s\n", i, value, s->module->name);
+                exit(1);
+        }
+        return s;
+}
+
+/* An ffi/call of FN in LIB, pure or ticked */
+static Square *
+ffi(float x, float y, const char *lib, const char *fn, bool pure)
+{
+        Square *s = setp(setp(sq("ffi/call", x, y), 0, lib), 1, fn);
+        return pure ? setp(s, 2, "true") : s;
+}
+
+static void
+pi(void)
+{
+        Square *e = sq("flow/entry", 0, 3);
+
+        /* Basel: pi^2 / 6 = sum of 1 / k^2, so pi = sqrt(6 * sum) */
+        in(in(param(sq("var/var", 1.2, 1.4), "basel"), 0, "float"), 1, "0");
+        Square *la = in(in(sq("flow/loop", 1, 0), 1, "1"), 2, "20001");
+        Square *pa = in(ffi(2, 1.2, "m", "double pow(double k, double e)", true), 1, "-2");
+        Square *ga = in(sq("var/get", 2, 2.4), 0, "basel");
+        Square *aa = sq("math/add", 3, 1.6);
+        Square *sa = in(sq("var/set", 4, 0), 1, "basel");
+        w(e, 0, la, 0), w(la, 1, pa, 0), w(ga, 0, aa, 0), w(pa, 0, aa, 1); /* index: an int is a double too */
+        w(la, 0, sa, 0), w(aa, 0, sa, 2);
+        Square *six = in(sq("math/multiply", 5, 1.4), 1, "6");
+        Square *rt  = ffi(6, 1.4, "m", "double sqrt(double x)", true);
+        w(ga, 0, six, 0), w(six, 0, rt, 0);
+
+        /* Leibniz: pi / 4 = 1 - 1/3 + 1/5 - ... = sum of (-1)^k / (2k + 1) */
+        in(in(param(sq("var/var", 1.2, 5.4), "leibniz"), 0, "float"), 1, "0");
+        Square *lb = in(in(sq("flow/loop", 1, 4), 1, "0"), 2, "20000");
+        Square *pb = in(ffi(2, 5.2, "m", "double pow(double b, double k)", true), 0, "-1");
+        Square *d2 = in(sq("math/multiply", 2, 6.6), 1, "2");
+        Square *d1 = in(sq("math/add", 3, 6.6), 1, "1");
+        Square *dv = sq("math/divide", 3, 5.4);
+        Square *gb = in(sq("var/get", 3, 7.6), 0, "leibniz");
+        Square *ab = sq("math/add", 4, 6);
+        Square *sb = in(sq("var/set", 5, 4), 1, "leibniz");
+        w(e, 0, lb, 0), w(lb, 1, pb, 1), w(lb, 1, d2, 0), w(d2, 0, d1, 0), w(pb, 0, dv, 0), w(d1, 0, dv, 1);
+        w(gb, 0, ab, 0), w(dv, 0, ab, 1), w(lb, 0, sb, 0), w(ab, 0, sb, 2);
+        Square *four = in(sq("math/multiply", 6, 5.6), 1, "4");
+        w(gb, 0, four, 0);
+
+        /* And libm's own: pi = 4 * atan(1) */
+        Square *at = in(ffi(1, 8.4, "m", "double atan(double x)", false), 1, "1");
+        Square *a4 = in(sq("math/multiply", 2, 9.4), 1, "4");
+        w(e, 0, at, 0), w(at, 1, a4, 0);
+
+        /* The three meet here, a barrier: the buffer is made once, when
+         * all are done, and snprintf (variadic) writes the three in it */
+        Square *al = in(sq("ffi/alloc", 7, 4), 1, "128");
+        Square *sn = ffi(8, 4, "c", "int snprintf(char *buf, size_t n, const char *fmt, ..., double, double, double)", false);
+        in(in(sn, 2, "128"), 3, "basel %.6f, leibniz %.6f, atan %.6f");
+        Square *rd = in(sq("ffi/read", 9, 5), 2, "string");
+        Square *pr = sq("io/print", 10, 4);
+        Square *fr = sq("ffi/free", 11, 4);
+        w(la, 2, al, 0), w(lb, 2, al, 0), w(at, 0, al, 0);
+        w(al, 0, sn, 0), w(al, 1, sn, 1), w(rt, 0, sn, 4), w(four, 0, sn, 5), w(a4, 0, sn, 6);
+        w(sn, 0, pr, 0), w(al, 1, rd, 0), w(rd, 0, pr, 1), w(pr, 0, fr, 0), w(al, 1, fr, 1);
+
+        save("pi", "Pi three ways at once, with C functions and branches in parallel.\n"
+                   "flow/entry ticks three squares, so each is a branch, on a thread of\n"
+                   "its own. One sums the Basel series (pi^2 / 6 = sum of 1 / k^2) with\n"
+                   "pow, then takes sqrt(6 * sum); one sums Leibniz's (pi / 4 = sum of\n"
+                   "(-1)^k / (2k + 1)), with pow for the sign; one asks libm for atan(1).\n"
+                   "pow, sqrt and atan are libm's, called with ffi/call from their C\n"
+                   "prototype, no module written for them. The three meet at ffi/alloc: it\n"
+                   "waits for all of them, then snprintf (libc's, variadic) writes the\n"
+                   "three in its buffer, io/print shows it and ffi/free frees it.\n"
+                   "Each sum is a variable of its own branch (by name, declared by the\n"
+                   "var/var that start them at 0), so they don't race.");
+}
+
 int
 main(void)
 {
@@ -303,6 +385,7 @@ main(void)
         sum_squares();
         collatz();
         fibonacci();
+        pi();
 
         unload_modules();
         unload_fonts();

@@ -12,7 +12,11 @@
  * With -c it compiles them instead (Compile in the bar), to build/test-bin,
  * runs the programs for the same frames (--frames) and compares what they
  * print with the lines printed in X.out: Run and Compile have to do the
- * same. */
+ * same.
+ *
+ * With -s it steps them instead (Step in the bar): pressed until the program
+ * is done, every branch a square at a time, and the frames one by one.
+ * Stepping has to do what Run does too. */
 
 /* The editor itself, without its main, and with fake time */
 #define main lineit_main
@@ -23,9 +27,16 @@
 
 #include <signal.h>
 
-enum { FPS     = 60,
-       FRAMES  = 10 * FPS,
-       TIMEOUT = 10 };
+enum { FPS    = 60,
+       FRAMES = 10 * FPS };
+
+/* ThreadSanitizer makes every handoff between threads slow, and stepping
+ * pi.lua is tens of thousands of them */
+#ifdef __SANITIZE_THREAD__
+enum { TIMEOUT = 120 };
+#else
+enum { TIMEOUT = 10 };
+#endif
 
 static double now;
 static const char *current;
@@ -61,6 +72,16 @@ write_squares(FILE *f, SquareList *list, int depth)
 
 /* What the canvas at PATH does, as text: the printed lines, then the
  * squares with their text. NULL if it can't be read. */
+static bool step; /* -s */
+
+/* Step pressed until the branches running are done */
+static void
+step_through(void)
+{
+        while (running && sched_busy(sched))
+                bar_step();
+}
+
 static char *
 run(const char *path)
 {
@@ -70,10 +91,23 @@ run(const char *path)
 
         alarm(TIMEOUT);
         running = false;
-        bar_run_stop();
-        for (int i = 0; i < FRAMES; i++) {
-                now = (double) i / FPS;
-                run_frame();
+        if (step) {
+                bar_step(); /* the starts, stopped before their first square */
+                step_through();
+                for (int i = 0; i < FRAMES; i++) {
+                        now = (double) i / FPS;
+                        run_frame(); /* what squares show: stepping, no frame runs here */
+                        if (!running) continue;
+                        bar_step(); /* the frame's branches, stopped */
+                        step_through();
+                }
+                run_stop();
+        } else {
+                bar_run_stop();
+                for (int i = 0; i < FRAMES; i++) {
+                        now = (double) i / FPS;
+                        run_frame();
+                }
         }
         running = false;
         alarm(0);
@@ -169,6 +203,7 @@ main(int argc, char **argv)
 {
         bool update  = argc > 1 && !strcmp(argv[1], "-u");
         bool compile = argc > 1 && !strcmp(argv[1], "-c");
+        step         = argc > 1 && !strcmp(argv[1], "-s");
         int failed = 0, total = 0;
 
         config_start("config.lua");
@@ -193,7 +228,7 @@ main(int argc, char **argv)
         /* Not where the config says: these are only tests */
         if (cfg.compile.output != cfg_defaults.compile.output) free((char *) cfg.compile.output);
         cfg.compile.output = "build/test-bin";
-        for (int i = 1 + update + compile; i < argc; i++) {
+        for (int i = 1 + update + compile + step; i < argc; i++) {
                 const char *path = argv[i];
                 char out[PATH_MAX];
                 snprintf(out, sizeof out, "%.*s.out", (int) (strlen(path) - strlen(GetFileExtension(path))), path);
@@ -242,7 +277,8 @@ main(int argc, char **argv)
         /* No CloseWindow: it unloads the GL driver, and the one under Xvfb
          * (Mesa) leaves memory that LeakSanitizer can't tell from ours in
          * make test-asan. The process ends right after anyway. */
-        fprintf(report, "%d/%d passed%s\n", total - failed, total, compile ? ", compile" : "");
+        fprintf(report, "%d/%d passed%s\n", total - failed, total, compile ? ", compile" : step ? ", stepped" :
+                                                                                                  "");
         fclose(report);
         return failed != 0;
 }

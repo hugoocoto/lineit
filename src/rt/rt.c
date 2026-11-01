@@ -37,6 +37,17 @@ li_input_value(Li_Node *n, const char *name, Li_Type type, Li_Value value)
         return pin_add(n, true, type);
 }
 
+void
+li_pins_reset(Li_Node *n)
+{
+        Da_foreach(p, n->outputs)
+        {
+                value_drop(p->value);
+        }
+        n->inputs.count  = 0;
+        n->outputs.count = 0;
+}
+
 int
 li_input_options(Li_Node *n, const char *name, const char *options, int chosen)
 {
@@ -89,8 +100,9 @@ li_get(Li_Node *n, int input)
 {
         if (input < 0 || input >= n->inputs.count) return (Li_Value) { .type = LI_NONE };
         if (n->inputs.items[input].options) return n->inputs.items[input].value;
-        if (input < n->get_count && n->get[input]) return n->get[input]();
-        return (Li_Value) { .type = LI_NONE };
+        if (input >= n->get_count || !n->get[input]) return (Li_Value) { .type = LI_NONE };
+        Li_Value v = n->get[input]();
+        return value_widen(v, n->inputs.items[input].type); /* like the editor's */
 }
 
 void
@@ -351,6 +363,37 @@ type_field_name(Li_Type t, int field)
 {
         const Rt_Type *d = type_get(t);
         return d && field >= 0 && field < d->field_count ? d->fields[field] : "?";
+}
+
+int
+type_field_count(Li_Type t)
+{
+        const Rt_Type *d = type_get(t);
+        return d ? d->field_count : 0;
+}
+
+const char *
+type_field_type(Li_Type t, int field)
+{
+        const Rt_Type *d = type_get(t);
+        return d && d->field_types && field >= 0 && field < d->field_count ? d->field_types[field] : "";
+}
+
+/* Like the editor's: by its name ("geo/point") or, if only one has it, its
+ * last part ("point") */
+Li_Type
+type_named(const char *name)
+{
+        int found = -1, same = 0;
+        if (!name || !*name) return LI_NONE;
+        for (int i = 0; i < rt_type_count; i++) {
+                const char *full = rt_types[i].name, *last;
+                if (!full) continue;
+                if (!strcmp(full, name)) return (Li_Type) (LI_TYPE_COUNT + i);
+                last = strrchr(full, '/');
+                if (last && !strcmp(last + 1, name)) found = i, same++;
+        }
+        return same == 1 ? (Li_Type) (LI_TYPE_COUNT + found) : LI_NONE;
 }
 
 /* Like the editor's: made again only when a field changes, so what was

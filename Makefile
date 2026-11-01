@@ -105,7 +105,11 @@ build/modules/%.lua: modules/%.lua
 
 $(CONFIG)/modules/%.so: modules/%.c src/lineit.h $(MODULES_H)
 	@mkdir -p $(@D)
-	$(CC) $(WARN) $(CFLAGS) -I./src -fPIC -shared $< $(LDFLAGS:-pie=) -o $@
+	$(CC) $(WARN) $(CFLAGS) -I./src -fPIC -shared $< $(LDFLAGS:-pie=) $(MODULE_LIBS) -o $@
+
+# What a module links with, if it needs more: ffi/call calls C functions
+# with libffi (see modules/ffi/call.c)
+$(CONFIG)/modules/ffi/call.so: MODULE_LIBS = $(shell pkg-config --libs libffi) -ldl
 
 # Kept: made only through a pattern rule, make would remove them after
 .PRECIOUS: $(CONFIG)/modules/%.so
@@ -154,6 +158,7 @@ TESTS = $(wildcard examples/*.lua tests/*.lua)
 test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
 	./$(RUN_TESTS) $(TESTS)
 	./$(RUN_TESTS) -c $(TESTS)
+	./$(RUN_TESTS) -s $(TESTS)
 	./$(TEST_EXTRACT)
 
 # The same, with the editor built with AddressSanitizer and UBSan: any
@@ -162,6 +167,7 @@ test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
 test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
 	./build/run_tests_asan $(TESTS)
 	./build/run_tests_asan -c $(TESTS)
+	./build/run_tests_asan -s $(TESTS)
 	./build/test_extract_asan
 
 build/%_asan: tools/%.c $(SRC) src/lineit.h
@@ -173,6 +179,7 @@ build/%_asan: tools/%.c $(SRC) src/lineit.h
 # aren't built with it: races inside one aren't seen.
 test-tsan: build/run_tests_tsan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT)
 	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan $(TESTS)
+	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan -s $(TESTS)
 
 build/%_tsan: tools/%.c $(SRC) src/lineit.h
 	@mkdir -p $(dir $@)
@@ -287,7 +294,8 @@ dist:
 
 # lineit-x86_64.AppImage: make install into an AppDir (PREFIX=/usr), with
 # every shared library lineit needs (but glibc, X11 and GL, see linuxdeploy's
-# excludelist). It finds its modules and runtime inside, like make install
+# excludelist), and the ones of the modules that link more (libffi, for
+# ffi/call). It finds its modules and runtime inside, like make install
 # (see Paths in src/main.c). x86_64 only: that's the raylib in the repo.
 # Compile still needs a C compiler and make on the machine.
 ARCH := $(shell uname -m)
@@ -325,6 +333,7 @@ $(APPIMAGE): all $(LINUXDEPLOY) $(APPIMAGETOOL) $(RUNTIME)
 	rm -rf $(APPDIR)
 	$(MAKE) --no-print-directory install DESTDIR=$(APPDIR) PREFIX=/usr
 	NO_STRIP=1 $(LINUXDEPLOY) --appdir $(APPDIR) --executable $(APPDIR)/usr/bin/lineit \
+		--deploy-deps-only $(APPDIR)/usr/lib/lineit/modules/ffi/call.so \
 		--desktop-file assets/lineit.desktop --icon-file assets/lineit.svg
 	find $(APPDIR)/usr/lib -maxdepth 1 -name '*.so*' -type f -exec $(STRIP) --strip-unneeded {} +
 	ARCH=x86_64 $(APPIMAGETOOL) --no-appstream --runtime-file $(RUNTIME) $(APPDIR) $@

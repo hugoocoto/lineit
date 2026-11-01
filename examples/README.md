@@ -23,6 +23,7 @@ Or without the editor: `./lineit --compile examples/hello.lua`.
 | `sum_squares.lua` | a variable (`var/var`, `var/get`, `var/set`) updated in a `flow/loop` |
 | `collatz.lua`     | `flow/while` with a comparison as its condition, plus `flow/ifelse`   |
 | `fibonacci.lua`   | a list variable: `list/push`, `list/get` from the end, `list/length`  |
+| `pi.lua`          | branches in parallel calling C (`ffi/call`: libm's `pow`, `sqrt`, `atan`, libc's `snprintf`) |
 
 Ctrl+S saves back to the file you opened, so copy one before experimenting
 if you want to keep the original.

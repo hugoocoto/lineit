@@ -587,6 +587,24 @@ more than one target, each target goes through `rt_tick` (merge, lock,
 call) and `start` and `frame` are `rt_run` of their nodes. `rt_next` gives
 the ticks between nodes, for merges, and `rt_pull` reads like `li_get`.
 
+== Calling C <sec-ffi>
+
+`ffi/call` (`modules/ffi/call.c`) calls a C function with libffi, from a
+prototype in a param. It parses it (`proto_parse`: integer types by size
+and sign, `float`, `double`, `bool`, `char *` and other pointers, `...`
+followed by the call's own types, promoted), opens the library
+(`lib_open`: `libNAME.so`, or with a version, or `dlopen(NULL)` for
+what's loaded), finds the function and prepares the call
+(`ffi_prep_cif`, `ffi_prep_cif_var`). Its pins depend on the prototype, so
+`module_param` says them again after `li_pins_reset`: the editor drops the
+wires to pins that aren't there after (`links_check`), and an input said
+again with the same name and type keeps its typed value (`Li_Node.was`).
+A module whose compiled copies link with more says so in `module_libs`
+(`-lffi -ldl`): Compile adds it to the program's link, and `make` links
+`ffi/call.so` with it (`MODULE_LIBS`), which the AppImage bundles. The
+memory squares (`ffi/alloc`, `read`, `write`, `free`) work on `LI_PTR`
+values.
+
 = Variables, lists and maps <sec-vars>
 
 == Storage

@@ -1,0 +1,28 @@
+basel 3.141545, leibniz 3.141543, atan 3.141593
+-- 26 squares, 34 links
+67 flow/entry: 
+68 var/var: basel = 1.64488
+69 flow/loop: 20000
+70 ffi/call: pow()
+71 var/get: basel = 1.64488
+72 math/add: 1.64488
+73 var/set: basel = 1.64488
+74 math/multiply: 9.8693
+75 ffi/call: sqrt()
+76 var/var: leibniz = 0.785386
+77 flow/loop: 19999
+78 ffi/call: pow()
+79 math/multiply: 39998
+80 math/add: 39999
+81 math/divide: -2.50006e-05
+82 var/get: leibniz = 0.785386
+83 math/add: 0.785386
+84 var/set: leibniz = 0.785386
+85 math/multiply: 3.14154
+86 ffi/call: atan
+87 math/multiply: 3.14159
+88 ffi/alloc: 128 bytes
+89 ffi/call: snprintf
+90 ffi/read: 
+91 io/print: basel 3.141545, leibniz 3.141543, atan 3.141593
+92 ffi/free: 

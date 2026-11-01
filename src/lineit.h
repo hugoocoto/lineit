@@ -60,6 +60,10 @@
         module_save returned. Called after module_init and after its params
         are restored (module_param).
 
+     const char *module_libs(void);
+        What a compiled program with this module has to link with, for
+        the linker ("-lffi -ldl"). NULL or none: nothing more.
+
      const char *module_emit(Li_Node *n);
         Only for pure squares (module_eval, no ticks, no state, no
         variables: inline code runs in no scope of its own). Compile
@@ -132,12 +136,13 @@ typedef enum Li_Type {
         LI_ANY,    /* pin accepts any data type */
         LI_BOOL,   /* .b */
         LI_INT,    /* .i */
-        LI_FLOAT,  /* .f */
+        LI_FLOAT,  /* .f; an int wired to a float input comes as one (and bool to int, int to bool) */
         LI_STRING, /* .s; li_set copies it */
         LI_PTR,    /* .p, anything else, owned by the module that set it */
         LI_LIST,   /* .p, values in order, see li_list_* */
         LI_MAP,    /* .p, string keys to values, in key order, see li_map_* */
         LI_REF,    /* .s, a variable: its name, "::name" for a global (var/var) */
+        LI_BYTES,  /* .p, bytes of its own (a C buffer), see li_bytes */
         LI_TYPE_COUNT,
         /* Custom types, records made in the editor (File > New type), come
            after these: LI_TYPE_COUNT and up. Their .p is the record, owned
@@ -190,6 +195,12 @@ int li_output(Li_Node *n, const char *name, Li_Type type);
  * with the canvas. */
 int li_input_value(Li_Node *n, const char *name, Li_Type type, Li_Value value);
 int li_input_options(Li_Node *n, const char *name, const char *options, int chosen);
+
+/* Every pin of N goes, to say them again: for a square whose pins depend on
+ * a param (ffi/call, from its prototype), in module_param. Wires to pins
+ * that aren't there after go; typed values stay with an input of the same
+ * name and type. */
+void li_pins_reset(Li_Node *n);
 const char *li_option(Li_Node *n, int input);
 
 /* Value on the wire plugged into INPUT, or what is typed or chosen in it.
@@ -286,6 +297,34 @@ const char *li_map_key(Li_Value map, long index);                /* the INDEXth 
 void li_map_set(Li_Value *map, const char *key, Li_Value value); /* add or replace; makes *MAP a map */
 void li_map_del(Li_Value *map, const char *key);
 void li_map_clear(Li_Value *map); /* makes *MAP an empty map */
+
+/* Bytes (LI_BYTES): a buffer that's a value, copied like strings and freed
+   with what has it. li_bytes makes one of SIZE bytes, a copy of DATA (all
+   zero if DATA is NULL): yours, li_drop it (or li_set it, which copies). */
+Li_Value li_bytes(const void *data, size_t size);
+size_t li_bytes_size(Li_Value v);
+unsigned char *li_bytes_data(Li_Value v); /* NULL if V isn't bytes */
+
+/* Records (custom types) as C structs. A type whose fields all have a C
+   form (int8..int64, uint8..uint64, char, bool, int (a long), float32,
+   float64, float (a double), string (a char *), ptr, and other such
+   records, by value) has a C layout, as C lays a struct out: li_c_size is
+   its size, 0 if it has none. li_c_write puts record V in MEM (its strings
+   are pointers to V's, valid while V is), li_c_read makes a record from
+   MEM: yours. li_c_members is its fields as C sees them, nested ones
+   flattened: what libffi needs to pass one by value. li_type_named finds a
+   custom type by its name ("geo/point") or its last part ("point"). */
+typedef struct Li_C_Member {
+        int offset, size;
+        char kind; /* 'i' signed integer, 'u' unsigned, 'f' floating point, 'p' pointer */
+} Li_C_Member;
+
+size_t li_c_size(Li_Type t);
+size_t li_c_align(Li_Type t);
+bool li_c_write(Li_Type t, Li_Value v, void *mem);
+Li_Value li_c_read(Li_Type t, const void *mem);
+int li_c_members(Li_Type t, Li_C_Member *out, int max);
+Li_Type li_type_named(const char *name); /* LI_NONE if there's none */
 
 /* A copy of V that owns what it points to (strings, lists, maps, records),
    and freeing one: what li_copy, li_list_pop or a module's own list gave.
