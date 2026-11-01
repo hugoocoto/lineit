@@ -10,8 +10,11 @@
  * outputs after it are that call's arguments (a pointer to a record comes
  * out as the record), and what's wired to "result" is what it returns.
  * Only pure squares can compute it: what reads the arguments and gives
- * the result is computed when C calls, there's no tick. One call at a time:
- * C calling it from two threads at once gets the arguments mixed.
+ * the result is computed when C calls, there's no tick. Branches can call
+ * it at the same time: each call has its own arguments (see handler). Its
+ * outputs have them only while C calls it: between calls, nothing. C
+ * calling it from a thread of its own, not a branch's, must not do it
+ * while lineit runs squares.
  *
  * With libffi's closures. Compiled programs make it the same way. */
 #include "proto.h"
@@ -22,8 +25,11 @@ enum { OUT_FN };
 
 static Proto f;
 static ffi_closure *closure;
-static void *code;              /* the function: what C calls */
-static Li_Value args[ARGS_MAX]; /* of the call running, owned */
+static void *code; /* the function: what C calls */
+/* The arguments of the call running on this thread, owned. Branches can
+ * call it at once, each from its thread: what computes the result reads
+ * them on the same thread, so each sees its own call's. */
+static _Thread_local Li_Value args[ARGS_MAX];
 
 static void
 args_clear(void)
@@ -38,7 +44,9 @@ handler(ffi_cif *cif, void *ret, void **avalues, void *data)
 {
         (void) cif;
         Li_Node *n = data;
-        args_clear();
+        Li_Value outer[ARGS_MAX]; /* of a call this one is inside, on this thread */
+        memcpy(outer, args, sizeof outer);
+        memset(args, 0, sizeof args);
         for (int i = 0; i < f.nargs; i++) {
                 Arg *a  = &f.args[i];
                 args[i] = value_at(a->kind, a->size, a->rec, avalues[i]);
@@ -47,6 +55,8 @@ handler(ffi_cif *cif, void *ret, void **avalues, void *data)
          * them from ARGS */
         Li_Value r = f.ret.kind != K_VOID ? li_get(n, IN_RESULT) : (Li_Value) { .type = LI_NONE };
         return_put(&f.ret, r, ret);
+        args_clear();
+        memcpy(args, outer, sizeof args);
 }
 
 static void

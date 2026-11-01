@@ -3,6 +3,7 @@
 #include "rt.h"
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,10 +178,34 @@ rt_run(const Sched_Task *tasks, int n)
         if (n) sched_run(sched, tasks, n);
 }
 
+/* A branch of a fan-out: as deep as the tick that forked it, on whatever
+ * thread runs it, so a loop through a fan-out stops too (like the
+ * editor's) */
+typedef struct Forked {
+        Sched_Task task;
+        int depth;
+} Forked;
+
+static void
+forked_run(void *arg)
+{
+        Forked *f = arg;
+        int was   = depth;
+        depth     = f->depth;
+        f->task.fn(f->task.arg);
+        depth = was;
+}
+
 void
 rt_fork(const Sched_Task *tasks, int n)
 {
-        sched_fork(sched, tasks, n);
+        Forked fs[n > 0 ? n : 1];
+        Sched_Task ts[n > 0 ? n : 1];
+        for (int i = 0; i < n; i++) {
+                fs[i] = (Forked) { tasks[i], depth };
+                ts[i] = (Sched_Task) { forked_run, &fs[i], tasks[i].node, tasks[i].pin };
+        }
+        sched_fork(sched, ts, n);
 }
 
 void
@@ -232,12 +257,12 @@ rt_tick(Li_Node *n, void (*tick)(Li_Node *, int), int pin, int node, bool merge)
 void
 li_tick(Li_Node *n, int output)
 {
-        static bool warned;
+        static atomic_bool warned; /* branches tick from their threads */
 
         if (output < 0 || output >= n->tick_count || !n->tick[output]) return;
         if (depth >= TICK_DEPTH_MAX) {
-                if (!warned) fprintf(stderr, "tick: more than %d squares deep, is there a loop?\n", TICK_DEPTH_MAX);
-                warned = true;
+                if (!atomic_exchange(&warned, true))
+                        fprintf(stderr, "tick: more than %d squares deep, is there a loop?\n", TICK_DEPTH_MAX);
                 return;
         }
         depth++;
@@ -267,12 +292,14 @@ li_text(Li_Node *n, const char *fmt, ...)
 void
 li_print(Li_Node *n, const char *fmt, ...)
 {
+        char buf[1024];
         va_list ap;
         (void) n;
         va_start(ap, fmt);
-        vprintf(fmt, ap);
+        vsnprintf(buf, sizeof buf, fmt, ap);
         va_end(ap);
-        putchar('\n');
+        /* One write: lines of branches printing at once don't mix */
+        printf("%s\n", buf);
 }
 
 static bool fake_time;

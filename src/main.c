@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <strings.h>
 #include <sys/socket.h>
@@ -1256,11 +1257,10 @@ static struct {
 /* Branches print from their threads: one at a time */
 static pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Add TEXT, one line per '\n' in it */
+/* Add TEXT, one line per '\n' in it. With output_lock. */
 static void
-output_add(const char *text, bool info)
+output_append(const char *text, bool info)
 {
-        pthread_mutex_lock(&output_lock);
         const char *p = text;
         do {
                 const char *nl = strchr(p, '\n');
@@ -1279,6 +1279,13 @@ output_add(const char *text, bool info)
                 memmove(output_panel.lines.items, output_panel.lines.items + extra, (output_panel.lines.count - extra) * sizeof *output_panel.lines.items);
                 output_panel.lines.count -= extra;
         }
+}
+
+static void
+output_add(const char *text, bool info)
+{
+        pthread_mutex_lock(&output_lock);
+        output_append(text, info);
         pthread_mutex_unlock(&output_lock);
 }
 
@@ -1757,8 +1764,11 @@ li_print(Li_Node *n, const char *fmt, ...)
         va_start(ap, fmt);
         vsnprintf(buf, sizeof buf, fmt, ap);
         va_end(ap);
-        output_add(buf, false);
+        /* In the panel and the terminal in the same order, whatever branch */
+        pthread_mutex_lock(&output_lock);
+        output_append(buf, false);
         printf("%s\n", buf);
+        pthread_mutex_unlock(&output_lock);
 }
 
 double
@@ -6057,16 +6067,20 @@ li_get(Li_Node *n, int input)
                 return p && p->kind == PIN_VALUE ? p->value : none;
         }
         case SRC_OUTPUT: {
-                Node *from   = &prog.nodes.items[src.node];
-                Square *s    = from->square;
-                PinInfo *out = pin_info(s, PART_OUTPUT, src.pin);
-                /* Its type may have changed since it was lowered */
-                if (!out || !types_compatible(out->type, in->type)) return none;
+                Node *from = &prog.nodes.items[src.node];
+                Square *s  = from->square;
 
                 /* The square is ours while we read it: it may be computing it
                  * for another branch. Pure squares compute their outputs when
                  * someone reads them. */
                 sched_lock(sched_get(), src.node);
+                /* Its type may have changed since it was lowered: a pure one
+                 * says it again while it computes, so with the lock */
+                PinInfo *out = pin_info(s, PART_OUTPUT, src.pin);
+                if (!out || !types_compatible(out->type, in->type)) {
+                        sched_unlock(sched_get(), src.node);
+                        return none;
+                }
                 if (s->fn.eval && !s->evaluating) {
                         int mark      = got_mark();
                         Graph *was    = scope_enter(from->scope);
@@ -6147,21 +6161,32 @@ tick_target(Target t)
         sched_back(sched_get(), at);
 }
 
+/* A target of a fan-out, run as a branch: as deep as the tick that forked
+ * it, on whatever thread runs it, so a loop through a fan-out stops too */
+typedef struct Forked {
+        Target target;
+        int depth;
+} Forked;
+
 static void
 tick_task(void *arg)
 {
-        tick_target(*(Target *) arg);
+        Forked *f  = arg;
+        int was    = tick_depth;
+        tick_depth = f->depth;
+        tick_target(f->target);
+        tick_depth = was;
 }
 
 void
 li_tick(Li_Node *n, int output)
 {
-        static bool warned;
+        static atomic_bool warned; /* branches tick from their threads */
 
         if (output >= 0 && output < (int) countof(n->fired)) n->fired[output] = GetTime();
         if (tick_depth >= TICK_DEPTH_MAX) {
-                if (!warned) fprintf(stderr, "tick: more than %d squares deep, is there a loop?\n", TICK_DEPTH_MAX);
-                warned = true;
+                if (!atomic_exchange(&warned, true))
+                        fprintf(stderr, "tick: more than %d squares deep, is there a loop?\n", TICK_DEPTH_MAX);
                 return;
         }
         Node *x = prog_node(n);
@@ -6174,11 +6199,11 @@ li_tick(Li_Node *n, int output)
         } else if (o.count > 1) {
                 /* A fan-out: a branch each, back when they're all done */
                 assert(o.count > 0);
-                Target ts[o.count];
+                Forked fs[o.count];
                 Sched_Task tasks[o.count];
                 for (int i = 0; i < o.count; i++) {
-                        ts[i]    = prog.targets.items[o.first + i];
-                        tasks[i] = (Sched_Task) { tick_task, &ts[i], ts[i].node, ts[i].pin };
+                        fs[i]    = (Forked) { prog.targets.items[o.first + i], tick_depth };
+                        tasks[i] = (Sched_Task) { tick_task, &fs[i], fs[i].target.node, fs[i].target.pin };
                 }
                 sched_fork(sched_get(), tasks, o.count);
         }

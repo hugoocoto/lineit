@@ -1,0 +1,16 @@
+8995500500
+2664667000
+-- 13 squares, 18 links
+0 flow/entry: 
+1 ffi/callback: f
+2 ffi/call: fma()
+3 ffi/call: sum_of
+4 ffi/call: sum_of
+5 ffi/call: snprintf()
+6 ffi/call: snprintf()
+7 io/print: 8995500500
+8 io/print: 2664667000
+9 flow/entry: 
+10 flow/counter: 128
+11 flow/counter: 128
+12 flow/counter: 128

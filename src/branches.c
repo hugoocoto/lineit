@@ -7,6 +7,7 @@
 #include "branches.h"
 #include "cum.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,8 +62,9 @@ struct Sched {
         Da(Branch *) branches;  /* alive */
         Da(Group *) groups;
         Da(Owner) owners; /* by node */
-        bool step, abort;
-        long gen; /* steps given */
+        bool step;
+        atomic_bool abort; /* written with the lock, read by branches without it too (sched_aborted) */
+        long gen;          /* steps given */
         long clock;
 };
 
