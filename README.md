@@ -162,6 +162,8 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Click a field next to an input    | Type a value used while nothing is plugged in           |
 | Add a square                      | Typing goes to its first field at once                  |
 | Tab, Shift+Tab while typing       | The square's next / previous field, round               |
+| Space or Enter, on Tab's field    | Toggles a checkbox, opens a list                        |
+| Up, Down, then Space or Enter     | Go through a menu or a list, pick                       |
 | Hover a field                     | All of its value, if it's longer than the field         |
 | Drag the canvas, or Shift+click   | Select with a box, or add to the selection              |
 | Right drag / mouse wheel          | Pan / zoom                                              |

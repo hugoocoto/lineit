@@ -493,7 +493,8 @@ struct FieldEditState {
         int input;      /* or param */
         bool param;
         TextInput text;
-        bool error; /* what is typed is not valid */
+        bool error;  /* what is typed is not valid */
+        bool choose; /* a checkbox or a list, reached with Tab: no text, Space or Enter */
 };
 
 /* Input field, or param field, being typed in the square */
@@ -867,6 +868,8 @@ bool input_set_text(Square *s, int i, const char *text, Li_Type type);
 int input_find(Square *s, const char *name);
 void field_edit_start(Square *s, int i, bool param);
 bool field_edit_first(Square *s);
+void options_open(Square *s, int pin);
+bool field_chosen(Square *s, int i, bool param);
 bool field_typing(Square *s, int i, bool param);
 bool update_field(void);
 void option_choose(int id, void *arg);

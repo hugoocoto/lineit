@@ -338,6 +338,21 @@ update_menu(void)
         } else if (key_pressed(KEY_ESCAPE)) {
                 menu.depth = 0;
                 return true;
+        } else if (menu.depth == 1 && menu.level[0].menu->count) {
+                /* Any menu: Up and Down go through it, Space or Enter picks */
+                Menu *m   = menu.level[0].menu;
+                bool down = key_pressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN);
+                bool up   = key_pressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP);
+                if (down) menu.selected = (menu.selected + 1) % m->count;
+                if (up) menu.selected = (menu.selected <= 0 ? m->count : menu.selected) - 1;
+                if (down || up) menu_scroll_to(0, menu.selected);
+                bool pick = key_pressed(KEY_SPACE) || key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER);
+                if (pick && menu.selected >= 0 && menu.selected < m->count && m->items[menu.selected].fn) {
+                        MenuItem *it = &m->items[menu.selected];
+                        menu.depth   = 0;
+                        it->fn(menu.id, it->arg);
+                }
+                if (down || up || pick) return true;
         }
 
         /* The wheel scrolls the menu under the mouse */
@@ -416,7 +431,7 @@ draw_menu(void)
                         /* Highlight the hovered entry, the one chosen with the
                          * arrows and the ones whose submenu is open */
                         bool open = it->sub && k + 1 < menu.depth && menu.level[k + 1].menu == it->sub;
-                        bool keys = k == 0 && menu.searchable && i == menu.selected;
+                        bool keys = k == 0 && i == menu.selected;
                         if ((k == hover_lvl && i == hover) || open || keys) DrawRectangleRec(item, cfg.colors.menu_hover);
 
                         draw_text(it->label, item.x + 2 * cfg.menu.padding, ty, cfg.menu.font_size, cfg.colors.menu_text);

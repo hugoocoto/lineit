@@ -57,14 +57,7 @@ update_mouse(void)
                 case PART_FIELD: {
                         PinInfo *p = &h.square->inputs.items[h.pin];
                         if (p->kind == PIN_OPTIONS) {
-                                /* Its list, below the field */
-                                Rectangle f        = field_rect(h.square, h.pin);
-                                options_input      = h.pin;
-                                options_menu.count = 0;
-                                for (int k = 0; k < p->option_count; k++)
-                                        Da_append(&options_menu, (MenuItem) { .label = p->options[k], .fn = option_choose, .arg = (void *) (intptr_t) k });
-                                menu_open(&options_menu, h.square->id,
-                                          GetWorldToScreen2D((Vector2) { f.x, f.y + f.height }, camera));
+                                options_open(h.square, h.pin); /* its list, below the field */
                         } else if (p->type == LI_BOOL) {
                                 pin_store(p, li_bool(!(p->value.type == LI_BOOL && p->value.b)));
                         } else {

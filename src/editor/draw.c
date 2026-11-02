@@ -124,16 +124,16 @@ draw_pin(Vector2 p, Li_Type type, bool connected, const Color *tint)
 /* A field at F showing VALUE (what's typed, if TYPING), with an arrow if
  * it's a list of OPTIONS */
 static void
-draw_value_field(Rectangle f, const char *value, bool typing, bool options)
+draw_value_field(Rectangle f, const char *value, bool typing, bool options, bool chosen)
 {
         float fs     = cfg.canvas.pin_font_size;
         Color border = typing && field_edit.error ? cfg.colors.error :
-                       typing                     ? cfg.colors.pin_hover :
+                       typing || chosen           ? cfg.colors.pin_hover :
                                                     cfg.colors.square_border;
         char buf[256], text[256];
 
         DrawRectangleRec(f, cfg.colors.field);
-        DrawRectangleLinesEx(f, typing ? 2.0f : 1.0f, border);
+        DrawRectangleLinesEx(f, typing || chosen ? 2.0f : 1.0f, border);
 
         float arrow = options ? measure_canvas_text(FIELD_ARROW, fs) + 6 : 0;
         if (typing) {
@@ -149,11 +149,12 @@ draw_value_field(Rectangle f, const char *value, bool typing, bool options)
 
 /* Bools: a round checkbox, filled when ON (clicked in the same box) */
 static void
-draw_checkbox(Rectangle f, bool on)
+draw_checkbox(Rectangle f, bool on, bool chosen)
 {
         Vector2 c = { f.x + f.width / 2, f.y + f.height / 2 };
         float r   = fminf(f.width, f.height) / 2;
-        DrawCircleV(c, r, cfg.colors.square_border); /* the border: a circle under the field */
+        if (chosen) DrawCircleV(c, r + 2, cfg.colors.pin_hover); /* Tab is on it */
+        DrawCircleV(c, r, cfg.colors.square_border);             /* the border: a circle under the field */
         DrawCircleV(c, r - 1, cfg.colors.field);
         if (on) DrawCircleV(c, r - 4, cfg.colors.square_text);
 }
@@ -166,11 +167,11 @@ draw_field(Square *s, int i)
         char buf[256];
 
         if (p->kind == PIN_VALUE && p->type == LI_BOOL) {
-                draw_checkbox(field_rect(s, i), p->value.type == LI_BOOL && p->value.b);
+                draw_checkbox(field_rect(s, i), p->value.type == LI_BOOL && p->value.b, field_chosen(s, i, false));
                 return;
         }
         input_text(s, i, buf, sizeof buf, false);
-        draw_value_field(field_rect(s, i), buf, field_typing(s, i, false), p->kind == PIN_OPTIONS);
+        draw_value_field(field_rect(s, i), buf, field_typing(s, i, false), p->kind == PIN_OPTIONS, field_chosen(s, i, false));
 }
 
 /* The params, in rows at the bottom, under a line */
@@ -188,11 +189,11 @@ draw_params(Square *s)
                 Param *p = &s->params.items[i];
                 draw_canvas_text(p->name, r.x + pin_label_gap(), param_y(s, i) - fs / 2, fs, cfg.colors.square_text);
                 if (p->value.type == LI_BOOL) {
-                        draw_checkbox(param_rect(s, i), p->value.b);
+                        draw_checkbox(param_rect(s, i), p->value.b, field_chosen(s, i, true));
                         continue;
                 }
                 param_text(p, buf, sizeof buf, false);
-                draw_value_field(param_rect(s, i), buf, field_typing(s, i, true), false);
+                draw_value_field(param_rect(s, i), buf, field_typing(s, i, true), false, false);
         }
 }
 

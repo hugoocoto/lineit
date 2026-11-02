@@ -153,6 +153,16 @@ field_edit_start(Square *s, int i, bool param)
         field_edit.input  = i;
         field_edit.param  = param;
         field_edit.error  = false;
+        field_edit.choose = false;
+}
+
+/* A checkbox or a list: chosen, not typed in */
+static bool
+field_choosable(Square *s, int i, bool param)
+{
+        if (param) return i < s->params.count && s->params.items[i].value.type == LI_BOOL;
+        PinInfo *p = &s->inputs.items[i];
+        return p->kind == PIN_OPTIONS || (p->kind == PIN_VALUE && p->type == LI_BOOL && link_to(s->id, i) < 0);
 }
 
 /* The first input of S from FROM with a field to type in: a typed value,
@@ -175,8 +185,92 @@ field_at(Square *s, int k, bool *param, int *i)
 {
         *param = k >= s->inputs.count;
         *i     = *param ? k - s->inputs.count : k;
-        if (!*param) return typed_input_from(s, k) == k;
-        return *i < s->params.count && s->params.items[*i].value.type != LI_BOOL;
+        if (!*param) return typed_input_from(s, k) == k || field_choosable(s, k, false);
+        return *i < s->params.count;
+}
+
+/* Field I of S, the next with Tab: typed in, its value selected, or a
+ * checkbox or a list, chosen with Space or Enter */
+static void
+field_focus(Square *s, int i, bool param)
+{
+        if (!field_choosable(s, i, param)) {
+                field_edit_start(s, i, param);
+                field_edit.text.anchor = 0;
+                return;
+        }
+        text_input_set(&field_edit.text, "");
+        field_edit.square = s;
+        field_edit.input  = i;
+        field_edit.param  = param;
+        field_edit.error  = false;
+        field_edit.choose = true;
+}
+
+/* Field I of S is the checkbox or list Tab is on */
+bool
+field_chosen(Square *s, int i, bool param)
+{
+        return field_edit.choose && field_edit.square == s && field_edit.input == i && field_edit.param == param;
+}
+
+/* The list of options input PIN of S, below its field, on its option */
+void
+options_open(Square *s, int pin)
+{
+        PinInfo *p         = &s->inputs.items[pin];
+        Rectangle f        = field_rect(s, pin);
+        options_input      = pin;
+        options_menu.count = 0;
+        for (int k = 0; k < p->option_count; k++)
+                Da_append(&options_menu, (MenuItem) { .label = p->options[k], .fn = option_choose, .arg = (void *) (intptr_t) k });
+        menu_open(&options_menu, s->id, GetWorldToScreen2D((Vector2) { f.x, f.y + f.height }, camera));
+        menu.selected = (int) p->value.i;
+}
+
+/* Space or Enter on a checkbox or a list: it toggles, or opens */
+static void
+field_choose(void)
+{
+        Square *s = field_edit.square;
+        int i     = field_edit.input;
+        if (field_edit.param) {
+                Param *p = &s->params.items[i];
+                param_set_text(s, i, p->value.b ? "false" : "true");
+                return;
+        }
+        PinInfo *p = &s->inputs.items[i];
+        if (p->kind == PIN_OPTIONS)
+                options_open(s, i);
+        else
+                pin_store(p, li_bool(!(p->value.type == LI_BOOL && p->value.b)));
+}
+
+static bool field_edit_next(Square *s, bool param, int i, int dir);
+
+/* Keys on a checkbox or a list: Tab moves on, Space or Enter chooses, Esc
+ * leaves. Its list, while open, has the keys. */
+static bool
+update_chooser(void)
+{
+        if (menu.depth) return false;
+        bool back = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        if (key_pressed(KEY_TAB)) {
+                if (!field_edit_next(field_edit.square, field_edit.param, field_edit.input, back ? -1 : 1))
+                        field_edit.square = NULL;
+                return true;
+        }
+        if (key_pressed(KEY_SPACE) || key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER)) {
+                field_choose();
+                return true;
+        }
+        if (key_pressed(KEY_ESCAPE)) {
+                field_edit.square = NULL;
+                return true;
+        }
+        /* A click elsewhere leaves it, and goes on */
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) field_edit.square = NULL;
+        return false;
 }
 
 /* Typing to S's next field after the one typed (DIR -1: before it), round
@@ -190,8 +284,7 @@ field_edit_next(Square *s, bool param, int i, int dir)
                 bool p;
                 int j;
                 if (!field_at(s, ((k + dir * step) % n + n) % n, &p, &j)) continue;
-                field_edit_start(s, j, p);
-                field_edit.text.anchor = 0;
+                field_focus(s, j, p);
                 return true;
         }
         return false;
@@ -203,17 +296,28 @@ bool
 field_edit_first(Square *s)
 {
         int i = s ? typed_input_from(s, 0) : -1;
-        if (i < 0) return false;
-        field_edit_start(s, i, false);
-        field_edit.text.anchor = 0;
-        return true;
+        if (i >= 0) {
+                field_edit_start(s, i, false);
+                field_edit.text.anchor = 0;
+                return true;
+        }
+        /* None to type in: the first checkbox or list, for Space */
+        int n = s ? s->inputs.count + s->params.count : 0;
+        for (int k = 0; k < n; k++) {
+                bool p;
+                int j;
+                if (!field_at(s, k, &p, &j)) continue;
+                field_focus(s, j, p);
+                return true;
+        }
+        return false;
 }
 
 /* Field I of S (a param if PARAM) is being typed */
 bool
 field_typing(Square *s, int i, bool param)
 {
-        return field_edit.square == s && field_edit.input == i && field_edit.param == param;
+        return !field_edit.choose && field_edit.square == s && field_edit.input == i && field_edit.param == param;
 }
 
 /* Apply what is typed. On error it stays open. */
@@ -298,6 +402,23 @@ draw_field_editor(void)
 
         DrawRectangleRec(r, cfg.colors.bar);
         DrawRectangleLinesEx(r, 2.0f, edge);
+        if (field_edit.choose) {
+                /* A checkbox or a list: what it is, and its keys */
+                Square *s = field_edit.square;
+                bool list = !field_edit.param && s->inputs.items[field_edit.input].kind == PIN_OPTIONS;
+                char v[256];
+                if (field_edit.param)
+                        param_text(&s->params.items[field_edit.input], v, sizeof v, false);
+                else
+                        input_text(s, field_edit.input, v, sizeof v, false);
+                const char *keys = list ? "Space or Enter opens it, Up and Down, Tab next" : "Space or Enter toggles, Tab next";
+                float kw         = measure_text(keys, fs);
+                draw_text(text_fit(editor_title(), fs, r.width - kw - 6 * pad), r.x + 2 * pad, r.y + pad, fs, cfg.colors.name);
+                draw_text(keys, r.x + r.width - kw - 2 * pad, r.y + pad, fs, cfg.colors.name);
+                Rectangle t = editor_text_rect(r);
+                draw_text(text_fit(v, fs, t.width), t.x, t.y, fs, cfg.colors.bar_text);
+                return;
+        }
         const char *keys = field_edit.error ? "not valid: fix it, or Esc" : "Enter applies, Esc cancels";
         float kw         = measure_text(keys, fs);
         draw_text(text_fit(editor_title(), fs, r.width - kw - 6 * pad), r.x + 2 * pad, r.y + pad, fs, cfg.colors.name);
@@ -321,6 +442,7 @@ update_field(void)
         bool changed = false;
 
         if (!field_edit.square) return false;
+        if (field_edit.choose) return update_chooser();
 
         switch (text_input_update(&field_edit.text, &changed)) {
         case TEXT_DONE: field_edit_apply(); break;
