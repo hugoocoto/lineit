@@ -160,6 +160,7 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Drag a plugged wire to the canvas | Remove it                                               |
 | Click a field low in a square     | Its settings (params); double click shows them too      |
 | Click a field next to an input    | Type a value used while nothing is plugged in           |
+| Hover a field                     | All of its value, if it's longer than the field         |
 | Drag the canvas, or Shift+click   | Select with a box, or add to the selection              |
 | Right drag / mouse wheel          | Pan / zoom                                              |
 | Delete, Backspace                 | Delete the selection                                    |
@@ -171,6 +172,12 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Ctrl+Tab, Ctrl+PageUp/PageDown    | Next / previous tab                                     |
 | Ctrl+G                            | Make a subgraph of the selection                        |
 | Ctrl+,                            | Settings, in a tab                                      |
+
+While you type in a field, all of its text is also in a strip above the
+bar, wrapped over as many lines as it needs: click or drag there (or in the
+field) to move the cursor or select. Arrows, Home and End move it, Ctrl
+with them goes a word at a time, Shift selects; Ctrl+A, Ctrl+C, Ctrl+X and
+Ctrl+V select all, copy, cut and paste; Enter applies, Esc cancels.
 
 The bar at the bottom has the run button, **Output** (what the program
 prints) and **File** (tabs, save, new type, autosave, settings). The run

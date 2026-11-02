@@ -141,11 +141,12 @@ struct FieldEditState field_edit;
 void
 field_edit_start(Square *s, int i, bool param)
 {
-        char buf[256];
+        /* Exact: a float shown as 3.14159 is edited as all of it, and stays it */
+        char buf[sizeof field_edit.text.buf];
         if (param)
-                param_text(&s->params.items[i], buf, sizeof buf, false);
+                param_text(&s->params.items[i], buf, sizeof buf, true);
         else
-                input_text(s, i, buf, sizeof buf, false);
+                input_text(s, i, buf, sizeof buf, true);
         text_input_set(&field_edit.text, buf);
         field_edit.square = s;
         field_edit.input  = i;
@@ -176,6 +177,88 @@ field_edit_apply(void)
         return true;
 }
 
+/* ---- The editor: the field being typed, all of it, at the bottom ---- */
+
+/* A field is as wide as its square lets it be: what's typed in it is also
+ * in a strip above the bar (and the output, if open), wrapped over as many
+ * lines as it takes, with the square and the input it's for. */
+
+static float
+editor_pad(void)
+{
+        return cfg.bar.font_size * 0.5f;
+}
+
+static float
+editor_line(void)
+{
+        return cfg.bar.font_size + 4;
+}
+
+/* Where its text wraps, given the editor's rect R */
+static Rectangle
+editor_text_rect(Rectangle r)
+{
+        float pad = editor_pad();
+        return (Rectangle) { r.x + 2 * pad, r.y + pad + editor_line() + pad / 2, r.width - 4 * pad,
+                             r.height - 2 * pad - editor_line() - pad / 2 };
+}
+
+/* The whole strip, empty if nothing's typed */
+Rectangle
+field_editor_rect(void)
+{
+        if (!field_edit.square) return (Rectangle) { 0 };
+        float pad    = editor_pad();
+        float bottom = output_rect().y;
+        float w      = GetScreenWidth();
+        float text   = text_input_wrapped_height(&field_edit.text, w - 4 * pad, cfg.bar.font_size, editor_line());
+        /* At most half of what's above it: long text wraps in that */
+        float h = fminf(2 * pad + editor_line() + pad / 2 + text, bottom / 2);
+        return (Rectangle) { 0, bottom - h, w, h };
+}
+
+/* What it's for: the square, the input or param, and its type */
+static const char *
+editor_title(void)
+{
+        Square *s = field_edit.square;
+        int i     = field_edit.input;
+        if (field_edit.param) {
+                Param *p = &s->params.items[i];
+                return TextFormat("%s  >  %s (param, %s)", s->module->name, p->name, type_name(p->value.type));
+        }
+        PinInfo *p = &s->inputs.items[i];
+        return TextFormat("%s  >  %s (%s)", s->module->name, p->name, type_name(p->type));
+}
+
+void
+draw_field_editor(void)
+{
+        if (!field_edit.square) return;
+        Rectangle r = field_editor_rect();
+        float fs    = cfg.bar.font_size;
+        float pad   = editor_pad();
+        Color edge  = field_edit.error ? cfg.colors.error : cfg.colors.pin_hover;
+
+        DrawRectangleRec(r, cfg.colors.bar);
+        DrawRectangleLinesEx(r, 2.0f, edge);
+        const char *keys = field_edit.error ? "not valid: fix it, or Esc" : "Enter applies, Esc cancels";
+        float kw         = measure_text(keys, fs);
+        draw_text(text_fit(editor_title(), fs, r.width - kw - 6 * pad), r.x + 2 * pad, r.y + pad, fs, cfg.colors.name);
+        draw_text(keys, r.x + r.width - kw - 2 * pad, r.y + pad, fs, field_edit.error ? cfg.colors.error : cfg.colors.name);
+
+        Rectangle t = editor_text_rect(r);
+        BeginScissorMode(t.x, t.y, t.width + pad, t.height);
+        text_input_draw_wrapped(&field_edit.text, t, fs, editor_line(), cfg.colors.bar_text);
+        EndScissorMode();
+}
+
+/* A press being dragged, and where it was: the cursor follows the mouse there */
+static enum { SELECT_NONE,
+              SELECT_EDITOR,
+              SELECT_FIELD } selecting;
+
 /* Returns true if the field consumed the input this frame. */
 bool
 update_field(void)
@@ -193,12 +276,42 @@ update_field(void)
         if (changed) field_edit.error = false;
 
         /* Applied above (Enter, Tab): there's no field to click away from */
-        if (!field_edit.square) return false;
+        if (!field_edit.square) {
+                selecting = SELECT_NONE;
+                return false;
+        }
+        Vector2 mouse  = GetMousePosition();
+        Vector2 world  = GetScreenToWorld2D(mouse, camera);
+        Square *s      = field_edit.square;
+        bool options   = !field_edit.param && s->inputs.items[field_edit.input].kind == PIN_OPTIONS;
+        Rectangle f    = field_edit.param ? param_rect(s, field_edit.input) : field_rect(s, field_edit.input);
+        Rectangle ed   = field_editor_rect();
+        Rectangle et   = editor_text_rect(ed);
+        Rectangle ft   = field_text_rect(f, options);
+        float fs       = cfg.bar.font_size;
+        float canvasfs = cfg.canvas.pin_font_size;
+
+        /* In the editor or the field: the cursor goes there, a drag selects */
+        if (selecting && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                if (selecting == SELECT_EDITOR)
+                        text_input_drag(&field_edit.text, text_input_hit_wrapped(&field_edit.text, et, fs, editor_line(), mouse));
+                else
+                        text_input_drag(&field_edit.text, text_input_hit(&field_edit.text, ft, canvasfs, true, world.x));
+                return true;
+        }
+        selecting = SELECT_NONE;
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-                Vector2 world = GetScreenToWorld2D(GetMousePosition(), camera);
-                Square *s     = field_edit.square;
-                Rectangle f   = field_edit.param ? param_rect(s, field_edit.input) : field_rect(s, field_edit.input);
-                if (CheckCollisionPointRec(world, f)) return true;
+                bool left = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+                if (CheckCollisionPointRec(mouse, ed)) {
+                        if (left) text_input_click(&field_edit.text, text_input_hit_wrapped(&field_edit.text, et, fs, editor_line(), mouse));
+                        selecting = left ? SELECT_EDITOR : SELECT_NONE;
+                        return true;
+                }
+                if (CheckCollisionPointRec(world, f)) {
+                        if (left) text_input_click(&field_edit.text, text_input_hit(&field_edit.text, ft, canvasfs, true, world.x));
+                        selecting = left ? SELECT_FIELD : SELECT_NONE;
+                        return true;
+                }
                 /* Clicking away applies what's valid, the click goes on */
                 if (!field_edit_apply()) field_edit.square = NULL;
         }

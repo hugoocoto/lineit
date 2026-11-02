@@ -381,13 +381,16 @@ update_menu(void)
 static void
 draw_menu_search(void)
 {
-        Rectangle b     = menu_search_rect();
-        TextInput *t    = menu_search();
-        const char *txt = t->len ? TextFormat("%s%s", t->buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "") : "Type to search modules";
+        Rectangle b  = menu_search_rect();
+        TextInput *t = menu_search();
+        float pad    = cfg.menu.padding;
         DrawRectangleRec(b, cfg.colors.field);
         DrawRectangleLinesEx(b, 1.0f, cfg.colors.menu_border);
-        draw_text(txt, b.x + 2 * cfg.menu.padding, b.y + cfg.menu.padding, cfg.menu.font_size,
-                  t->len ? cfg.colors.square_text : cfg.colors.name);
+        Rectangle in = { b.x + 2 * pad, b.y + pad, b.width - 4 * pad, cfg.menu.font_size };
+        if (t->len)
+                text_input_draw(t, in, cfg.menu.font_size, cfg.colors.square_text, false);
+        else
+                draw_text("Type to search modules", in.x, in.y, cfg.menu.font_size, cfg.colors.name);
 }
 
 void

@@ -76,8 +76,8 @@ panel_apply(void)
 static void
 panel_edit(int i)
 {
-        char buf[256];
-        param_text(&panel.square->params.items[i], buf, sizeof buf, false);
+        char buf[sizeof panel.text.buf];
+        param_text(&panel.square->params.items[i], buf, sizeof buf, true); /* all of a float */
         text_input_set(&panel.text, buf);
         panel.field = i;
         panel.error = false;
@@ -167,10 +167,7 @@ draw_panel(void)
 
                 draw_text(p->name, r.x + pad, r.y + (i + 1) * h + pad, fs, cfg.colors.menu_text);
 
-                if (typing)
-                        snprintf(buf, sizeof buf, "%s%s", panel.text.buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "");
-                else
-                        param_text(p, buf, sizeof buf, false);
+                if (!typing) param_text(p, buf, sizeof buf, false);
 
                 Color border = panel.error && typing ? cfg.colors.error :
                                typing                ? cfg.colors.pin_hover :
@@ -178,9 +175,14 @@ draw_panel(void)
                 DrawRectangleRec(f, cfg.colors.field);
                 DrawRectangleLinesEx(f, typing ? 2.0f : 1.0f, border);
 
-                /* Long values are cut at the field */
-                BeginScissorMode(f.x, f.y, f.width, f.height);
-                draw_text(buf, f.x + 4, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
-                EndScissorMode();
+                /* Long values are cut at the field; typed, it shows the cursor */
+                Rectangle in = { f.x + 4, f.y, f.width - 8, f.height };
+                if (typing) {
+                        text_input_draw(&panel.text, in, fs, cfg.colors.square_text, false);
+                } else {
+                        BeginScissorMode(f.x, f.y, f.width, f.height);
+                        draw_text(buf, in.x, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
+                        EndScissorMode();
+                }
         }
 }

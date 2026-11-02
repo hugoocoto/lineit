@@ -75,7 +75,15 @@ setting_text(int i, char *buf, int size)
         }
         switch (s->type) {
         case SET_INT: snprintf(buf, size, "%d", *(int *) s->val); break;
-        case SET_FLOAT: snprintf(buf, size, "%g", *(float *) s->val); break;
+        case SET_FLOAT: {
+                /* The shortest that reads back the same float */
+                float f = *(float *) s->val;
+                for (int digits = 6; digits <= 9; digits++) {
+                        snprintf(buf, size, "%.*g", digits, f);
+                        if (strtof(buf, NULL) == f) break;
+                }
+                break;
+        }
         case SET_BOOL: snprintf(buf, size, "%s", *(bool *) s->val ? "on" : "off"); break;
         case SET_STR: snprintf(buf, size, "%s", *(const char **) s->val); break;
         case SET_COLOR: {
@@ -277,7 +285,7 @@ settings_edit_end(void)
 static void
 settings_edit(int i)
 {
-        char buf[256];
+        char buf[sizeof settings_ui.text.buf];
         setting_text(i, buf, sizeof buf);
         text_input_set(&settings_ui.text, buf);
         settings_ui.field = i;
@@ -549,10 +557,7 @@ draw_settings_value(const SettingsLayout *l, int i, Rectangle row)
                 DrawRectangleLinesEx(sw, 1.0f, cfg.colors.menu_border);
         }
 
-        if (typing)
-                snprintf(buf, sizeof buf, "%s%s", settings_ui.text.buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "");
-        else
-                setting_text(i, buf, sizeof buf);
+        if (!typing) setting_text(i, buf, sizeof buf);
 
         Color border = settings_ui.error && typing ? cfg.colors.error :
                        typing                      ? cfg.colors.pin_hover :
@@ -569,13 +574,10 @@ draw_settings_value(const SettingsLayout *l, int i, Rectangle row)
                              cfg.colors.square_text);
                 room -= a + l->pad;
         }
-        /* The end of it while it's typed, its start if not */
-        float tw = measure_text(buf, fs);
-        if (typing && tw > room) {
-                Rectangle clip = GetCollisionRec(f, l->list);
-                BeginScissorMode(clip.x, clip.y, clip.width, clip.height);
-                draw_text(buf, f.x + l->pad - (tw - room), f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
-                BeginScissorMode(l->list.x, l->list.y, l->list.width, l->list.height);
+        /* Scrolled to the cursor while it's typed, its start if not */
+        if (typing) {
+                text_input_draw(&settings_ui.text, (Rectangle) { f.x + l->pad, f.y, room, f.height }, fs,
+                                cfg.colors.square_text, false);
         } else {
                 draw_text(text_fit(buf, fs, room), f.x + l->pad, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
         }
@@ -620,9 +622,12 @@ draw_settings(void)
         bool searching = settings_ui.field < 0;
         DrawRectangleRec(sb, cfg.colors.field);
         DrawRectangleLinesEx(sb, searching ? 2.0f : 1.0f, searching ? cfg.colors.square : cfg.colors.menu_border);
-        if (settings_ui.search.len)
-                draw_text(TextFormat("%s%s", settings_ui.search.buf, searching && fmod(GetTime(), 1.0) < 0.5 ? "_" : ""),
-                          sb.x + pad, sb.y + (sb.height - fs) / 2, fs, cfg.colors.square_text);
+        if (settings_ui.search.len && searching)
+                text_input_draw(&settings_ui.search, (Rectangle) { sb.x + pad, sb.y, sb.width - 2 * pad, sb.height }, fs,
+                                cfg.colors.square_text, false);
+        else if (settings_ui.search.len)
+                draw_text(text_fit(settings_ui.search.buf, fs, sb.width - 2 * pad), sb.x + pad, sb.y + (sb.height - fs) / 2,
+                          fs, cfg.colors.square_text);
         else
                 draw_text(searching && fmod(GetTime(), 1.0) < 0.5 ? "_ Type to search settings" : "  Type to search settings",
                           sb.x + pad, sb.y + (sb.height - fs) / 2, fs, Fade(cfg.colors.square_text, 0.5f));

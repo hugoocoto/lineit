@@ -59,9 +59,9 @@ input_tooltip(Square *s, int in, char *buf, int size)
 void
 draw_tooltip(void)
 {
-        char buf[192] = "";
-        Vector2 mouse = GetMousePosition();
-        Vector2 world = mouse_world();
+        char buf[1024] = "";
+        Vector2 mouse  = GetMousePosition();
+        Vector2 world  = mouse_world();
 
         if (drag.kind != DRAG_NONE || menu.depth || !CheckCollisionPointRec(mouse, canvas_rect())) return;
 
@@ -70,6 +70,18 @@ draw_tooltip(void)
                 output_tooltip(h.square, h.pin, buf, sizeof buf);
         } else if (h.part == PART_INPUT) {
                 input_tooltip(h.square, h.pin, buf, sizeof buf);
+        } else if ((h.part == PART_FIELD || h.part == PART_PARAM) && !field_typing(h.square, h.pin, h.part == PART_PARAM)) {
+                /* A value longer than its field: all of it */
+                char v[sizeof buf];
+                bool param  = h.part == PART_PARAM;
+                Rectangle f = param ? param_rect(h.square, h.pin) : field_rect(h.square, h.pin);
+                bool opts   = !param && h.square->inputs.items[h.pin].kind == PIN_OPTIONS;
+                if (param)
+                        param_text(&h.square->params.items[h.pin], v, sizeof v, false);
+                else
+                        input_text(h.square, h.pin, v, sizeof v, false);
+                if (measure_canvas_text(v, cfg.canvas.pin_font_size) > field_text_rect(f, opts).width)
+                        snprintf(buf, sizeof buf, "%s", v);
         } else if (h.part == PART_NONE) {
                 int l = link_hit(world);
                 if (l < 0) return;
@@ -84,12 +96,13 @@ draw_tooltip(void)
         }
         if (!*buf) return;
 
-        float fs    = cfg.menu.font_size;
-        float pad   = cfg.menu.padding;
-        Rectangle r = { mouse.x + 16, mouse.y + 16, measure_text(buf, fs) + 2 * pad, fs + 2 * pad };
-        r.x         = fminf(r.x, GetScreenWidth() - r.width);
-        r.y         = fminf(r.y, GetScreenHeight() - r.height);
+        float fs        = cfg.menu.font_size;
+        float pad       = cfg.menu.padding;
+        const char *tip = text_fit(buf, fs, GetScreenWidth() - 2 * pad); /* cut to the window */
+        Rectangle r     = { mouse.x + 16, mouse.y + 16, measure_text(tip, fs) + 2 * pad, fs + 2 * pad };
+        r.x             = fminf(r.x, GetScreenWidth() - r.width);
+        r.y             = fminf(r.y, GetScreenHeight() - r.height);
         DrawRectangleRec(r, cfg.colors.menu);
         DrawRectangleLinesEx(r, 1.0f, cfg.colors.menu_border);
-        draw_text(buf, r.x + pad, r.y + pad, fs, cfg.colors.menu_text);
+        draw_text(tip, r.x + pad, r.y + pad, fs, cfg.colors.menu_text);
 }

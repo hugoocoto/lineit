@@ -52,7 +52,7 @@ prompt_complete(void)
                         same = k;
                 }
                 snprintf(start, sizeof t->buf - dir_len, "%.*s", same, found.items[0]);
-                t->len = strlen(t->buf);
+                text_input_sync(t);
                 for (int i = 0; found.count > 1 && i < found.count; i++) {
                         size_t used = strlen(prompt.matches);
                         snprintf(prompt.matches + used, sizeof prompt.matches - used, "%s%s", i ? "  " : "", found.items[i]);
@@ -94,21 +94,18 @@ void
 draw_prompt(void)
 {
         if (!prompt.open) return;
-        Rectangle r    = prompt_rect();
-        float fs       = cfg.menu.font_size;
-        float pad      = cfg.menu.padding;
-        float lw       = measure_text(prompt.label, fs) + 2 * pad;
-        const char *tx = TextFormat("%s%s", prompt.input.buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "");
+        Rectangle r = prompt_rect();
+        float fs    = cfg.menu.font_size;
+        float pad   = cfg.menu.padding;
+        float lw    = measure_text(prompt.label, fs) + 2 * pad;
 
         DrawRectangleRec(r, cfg.colors.field);
         DrawRectangleRec((Rectangle) { r.x, r.y, lw + pad, r.height }, cfg.colors.menu);
         DrawRectangleLinesEx(r, 1.0f, cfg.colors.menu_border);
         draw_text(prompt.label, r.x + pad, r.y + pad, fs, cfg.colors.menu_text);
-        /* The end of it if it's long */
-        float tw = measure_text(tx, fs), room = r.width - lw - 3 * pad;
-        BeginScissorMode(r.x + lw + pad, r.y, r.width - lw - pad, r.height);
-        draw_text(tx, r.x + lw + 2 * pad - fmaxf(0, tw - room), r.y + pad, fs, cfg.colors.square_text);
-        EndScissorMode();
+        /* Scrolled to the cursor if it's long */
+        text_input_draw(&prompt.input, (Rectangle) { r.x + lw + 2 * pad, r.y + pad, r.width - lw - 3 * pad, fs }, fs,
+                        cfg.colors.square_text, false);
 
         const char *hint = *prompt.matches ? prompt.matches :
                            prompt.hint     ? prompt.hint :

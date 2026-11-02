@@ -475,8 +475,10 @@ typedef Da(TypeDef *) TypesDa;
 extern TypesDa types;
 
 typedef struct TextInput {
-        char buf[256];
+        char buf[1024];
         int len;
+        int cursor; /* where typing goes, 0 to len */
+        int anchor; /* the other end of the selection, none if it's cursor */
 } TextInput;
 
 typedef enum TextResult {
@@ -871,7 +873,15 @@ int param_find(Square *s, const char *name);
 /* ---- text_input.c: typing text: one line, with a cursor ---- */
 
 void text_input_set(TextInput *t, const char *text);
+void text_input_sync(TextInput *t);
 TextResult text_input_update(TextInput *t, bool *changed);
+void text_input_draw(const TextInput *t, Rectangle r, float fs, Color color, bool canvas);
+int text_input_hit(const TextInput *t, Rectangle r, float fs, bool canvas, float x);
+float text_input_wrapped_height(const TextInput *t, float w, float fs, float lh);
+void text_input_draw_wrapped(const TextInput *t, Rectangle r, float fs, float lh, Color color);
+int text_input_hit_wrapped(const TextInput *t, Rectangle r, float fs, float lh, Vector2 p);
+void text_input_click(TextInput *t, int at);
+void text_input_drag(TextInput *t, int at);
 
 /* ---- squares.c: squares: made from a module, freed, disconnected ---- */
 
@@ -1132,6 +1142,9 @@ Rectangle square_rect(Square *s);
 PinInfo *pin_info(Square *s, Part part, int i);
 Vector2 pin_pos(Square *s, Part part, int i);
 Rectangle field_rect(Square *s, int i);
+Rectangle field_text_rect(Rectangle f, bool options);
+Rectangle field_editor_rect(void);
+void draw_field_editor(void);
 float param_y(Square *s, int i);
 Rectangle param_rect(Square *s, int i);
 bool field_visible(Square *s, int i);

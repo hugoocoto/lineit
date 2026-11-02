@@ -120,6 +120,16 @@ field_rect(Square *s, int i)
         return (Rectangle) { p.x + pin_label_gap() + s->label_w + 6, p.y - h / 2, field_width(&s->inputs.items[i]), h };
 }
 
+/* Where the text of field F goes: inside its padding, before the arrow of
+ * a list of OPTIONS */
+Rectangle
+field_text_rect(Rectangle f, bool options)
+{
+        float fs    = cfg.canvas.pin_font_size;
+        float arrow = options ? measure_canvas_text(FIELD_ARROW, fs) + 6 : 0;
+        return (Rectangle) { f.x + 4, f.y, fmaxf(f.width - 8 - arrow, 0), f.height };
+}
+
 /* Middle of the row of param I, at the bottom of the square */
 float
 param_y(Square *s, int i)

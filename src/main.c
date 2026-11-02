@@ -106,6 +106,7 @@ main(int argc, char **argv)
                         draw_panel();
                 }
                 draw_output();
+                draw_field_editor();
                 draw_tabs();
                 draw_bar();
                 draw_menu();

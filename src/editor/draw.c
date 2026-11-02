@@ -136,12 +136,14 @@ draw_value_field(Rectangle f, const char *value, bool typing, bool options)
         DrawRectangleLinesEx(f, typing ? 2.0f : 1.0f, border);
 
         float arrow = options ? measure_canvas_text(FIELD_ARROW, fs) + 6 : 0;
-        if (typing)
-                snprintf(buf, sizeof buf, "%s%s", field_edit.text.buf, fmod(GetTime(), 1.0) < 0.5 ? "_" : "");
-        else
+        if (typing) {
+                /* Scrolled to the cursor: the whole of it is in the editor below too */
+                text_input_draw(&field_edit.text, field_text_rect(f, options), fs, cfg.colors.square_text, true);
+        } else {
                 snprintf(buf, sizeof buf, "%s", value);
-        fit_canvas_text(buf, text, sizeof text, f.width - 8 - arrow, fs);
-        draw_canvas_text(text, f.x + 4, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
+                fit_canvas_text(buf, text, sizeof text, f.width - 8 - arrow, fs);
+                draw_canvas_text(text, f.x + 4, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
+        }
         if (arrow) draw_canvas_text(FIELD_ARROW, f.x + f.width - arrow, f.y + (f.height - fs) / 2, fs, cfg.colors.square_text);
 }
 
