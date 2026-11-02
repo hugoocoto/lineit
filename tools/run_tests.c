@@ -206,6 +206,8 @@ main(int argc, char **argv)
         int failed = 0, total = 0;
 
         config_start("config.lua");
+        /* Every line printed, to compare: the panel keeps only the last ones */
+        cfg.output.lines = INT_MAX;
         SetTraceLogLevel(LOG_WARNING);
         /* No window with ThreadSanitizer (make test-tsan): the GL driver's
          * own threads aren't what it's there for. Running doesn't need the

@@ -47,6 +47,18 @@ reshape(Li_Node *n)
                 snprintf(f.why, sizeof f.why, "no library %s", name);
                 f.ok = false;
         }
+        /* Nothing is what's loaded, and libc and libm: a compiled program
+         * that uses no libm itself doesn't have it loaded, lineit does */
+        for (const char *const *l = (const char *const[]) { "m", "c", NULL }; f.ok && !*name && *l; l++) {
+                if (dlsym(lib, f.name)) break;
+                void *more = lib_open(*l);
+                if (more && dlsym(more, f.name)) {
+                        dlclose(lib);
+                        lib = more;
+                } else if (more) {
+                        dlclose(more);
+                }
+        }
         if (f.ok && !(fn = dlsym(lib, f.name))) {
                 snprintf(f.why, sizeof f.why, "no %s in %s", f.name, *name ? name : "lineit");
                 f.ok = false;
