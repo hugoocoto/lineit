@@ -1,7 +1,8 @@
 /* run.c - Run and Step: starting, stepping and stopping the program */
 #include "editor.h"
-bool running;  /* module_frame is only called while running */
-bool stepping; /* a run going one square at a time, see run.c */
+double (*time_source)(void) = GetTime; /* raylib's: see editor.h */
+bool running;                          /* module_frame is only called while running */
+bool stepping;                         /* a run going one square at a time, see run.c */
 
 void
 run_frame(void)

@@ -44,11 +44,10 @@
 
 #define countof(a) ((int) (sizeof(a) / sizeof *(a)))
 
-/* The tests (tools/run_tests.c) run frames of fake time */
-#ifdef LINEIT_FAKE_TIME
-double fake_time(void);
-#define GetTime fake_time
-#endif
+/* The clock: raylib's, or the tests' frames of fake time (the tools set
+ * it, see tools/run_tests.c). GetTime() goes through it. */
+extern double (*time_source)(void);
+#define GetTime() time_source()
 
 /* ---- Types, and the variables more than one file uses ---- */
 

@@ -1,4 +1,7 @@
 SRC = $(wildcard src/*.c src/editor/*.c)
+# All but main(): the tools (tools/*.c) include src/main.c, main renamed,
+# and link these
+LIB_SRC = $(filter-out src/main.c,$(SRC))
 OUT = lineit
 
 # Every modules/**/x.c is built to build/modules/**/x.so, loaded at runtime.
@@ -66,6 +69,16 @@ $(shell mkdir -p build)
 $(file > build/.flags,$(FLAGS))
 endif
 CONFIG := build/config/$(shell sha256sum < build/.flags | cut -c1-12)
+# Every source to an object of its own, with what it includes (-MMD, the .d
+# next to it): a change builds again only the files it touches, then links
+OBJ = $(patsubst %.c,$(CONFIG)/obj/%.o,$(SRC))
+LIB_OBJ = $(patsubst %.c,$(CONFIG)/obj/%.o,$(LIB_SRC))
+# The same with the sanitizers, for make test-asan and test-tsan
+ASAN_OBJ = $(patsubst %.c,$(CONFIG)/asan/%.o,$(LIB_SRC))
+TSAN_OBJ = $(patsubst %.c,$(CONFIG)/tsan/%.o,$(LIB_SRC))
+# Each tool is one file, and these
+TOOLS = run_tests test_extract test_step_edit gen_examples
+
 # $(call use,FILE): FILE of CONFIG to $@. A new file, not the old one written
 # over: a running lineit could have it loaded.
 use = cp $(1) $@.tmp && mv -f $@.tmp $@
@@ -87,10 +100,29 @@ RT_H = src/lineit.h src/value.h src/branches.h src/rt/rt.h thirdparty/bt.h/bt.h 
 
 all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
-# -rdynamic exports the li_* functions (src/lineit.h) to the modules
-$(CONFIG)/lineit: $(SRC) src/editor/editor.h src/lineit.h src/value.h $(RAYLIB_LIB)
+$(CONFIG)/obj/%.o: %.c
 	@mkdir -p $(@D)
-	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) $(SRC) $(LDFLAGS) $(DEPS) -rdynamic -o $@
+	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) -MMD -MP -c $< -o $@
+
+# -rdynamic exports the li_* functions (src/lineit.h) to the modules
+$(CONFIG)/lineit: $(OBJ) $(RAYLIB_LIB)
+	@mkdir -p $(@D)
+	$(CC) $(OBJ) $(LDFLAGS) $(DEPS) -rdynamic -o $@
+
+# The tools: their file (src/main.c in it) and the editor's other objects
+$(addprefix $(CONFIG)/,$(TOOLS)): $(CONFIG)/%: tools/%.c $(LIB_OBJ) $(RAYLIB_LIB)
+	@mkdir -p $(@D)
+	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) -MMD -MP -MF $@.d $< $(LIB_OBJ) $(LDFLAGS) $(DEPS) -rdynamic -o $@
+
+$(CONFIG)/asan/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(WARN) -O1 -g $(SAN_FLAGS) $(CPPFLAGS) -MMD -MP -c $< -o $@
+
+$(CONFIG)/tsan/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) -MMD -MP -c $< -o $@
+
+-include $(wildcard $(OBJ:.o=.d) $(ASAN_OBJ:.o=.d) $(TSAN_OBJ:.o=.d) $(CONFIG)/*.d build/*_asan.d build/*_tsan.d)
 
 $(OUT): $(CONFIG)/lineit build/.flags
 	$(call use,$<)
@@ -131,16 +163,11 @@ $(CONFIG)/rt/liblineit-rt.a: src/value.c src/branches.c src/rt/rt.c $(RT_H)
 $(RT): $(CONFIG)/rt/liblineit-rt.a build/.flags
 	$(call use,$<)
 
-# examples/*.lua, see tools/gen_examples.c. It includes src/main.c, so it
-# links every other source file but that one.
+# examples/*.lua, see tools/gen_examples.c
 GEN_EXAMPLES = $(CONFIG)/gen_examples
 
 examples: $(GEN_EXAMPLES) $(MODULES)
 	./$(GEN_EXAMPLES)
-
-$(GEN_EXAMPLES): tools/gen_examples.c $(SRC) src/editor/editor.h src/lineit.h
-	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
 # Modules packaged with tools/lineit-pack (.li). Only the example, used by
 # tests/package.lua.
@@ -179,9 +206,9 @@ test-asan: build/run_tests_asan build/test_extract_asan build/test_step_edit_asa
 	./build/test_extract_asan
 	./build/test_step_edit_asan
 
-build/%_asan: tools/%.c $(SRC) src/editor/editor.h src/lineit.h
+build/%_asan: tools/%.c $(ASAN_OBJ) $(RAYLIB_LIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) -O1 -g $(SAN_FLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+	$(CC) $(WARN) -O1 -g $(SAN_FLAGS) $(CPPFLAGS) -MMD -MP -MF $@.d $< $(ASAN_OBJ) $(DEPS) -rdynamic -o $@
 
 # The same with ThreadSanitizer: branches run in parallel (see
 # src/branches.h), and any data race between them fails it. The modules
@@ -190,26 +217,13 @@ test-tsan: build/run_tests_tsan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TES
 	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan $(TESTS)
 	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan -s $(TESTS)
 
-build/%_tsan: tools/%.c $(SRC) src/editor/editor.h src/lineit.h
+build/%_tsan: tools/%.c $(TSAN_OBJ) $(RAYLIB_LIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) -MMD -MP -MF $@.d $< $(TSAN_OBJ) $(DEPS) -rdynamic -o $@
 
 test-update: $(RUN_TESTS) $(MODULES) $(GRAPHS) $(PACKAGES) $(FFI_TEST_LIB)
 	./$(RUN_TESTS) -u $(TESTS)
 
-# Make subgraph on example canvases, see tools/test_extract.c
-$(TEST_EXTRACT): tools/test_extract.c $(SRC) src/editor/editor.h src/lineit.h
-	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
-
-# Changing the canvas while stepping, see tools/test_step_edit.c
-$(TEST_STEP_EDIT): tools/test_step_edit.c $(SRC) src/editor/editor.h src/lineit.h
-	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
-
-$(RUN_TESTS): tools/run_tests.c $(SRC) src/editor/editor.h src/lineit.h
-	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
 # clang's static analyzer: it follows every path through the code, also the
 # ones no test runs, looking for leaks, NULL dereferences, use after free...

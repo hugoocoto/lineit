@@ -18,8 +18,8 @@
  * is done, every branch a square at a time, and the frames one by one.
  * Stepping has to do what Run does too. */
 
-/* The editor itself, without its main, and with fake time (built with
- * -DLINEIT_FAKE_TIME: GetTime is fake_time, see src/editor/editor.h) */
+/* The editor itself, without its main; its clock is fake_time (main sets
+ * time_source, see src/editor/editor.h) */
 #define main lineit_main
 #include "../src/main.c"
 #undef main
@@ -41,7 +41,7 @@ static double now;
 static const char *current;
 static FILE *report; /* stdout: the real one is silenced, li_print writes there too */
 
-double
+static double
 fake_time(void)
 {
         return now;
@@ -200,6 +200,7 @@ show_line(const char *label, const char *text, int line)
 int
 main(int argc, char **argv)
 {
+        time_source  = fake_time; /* the editor's clock: frames of fake time */
         bool update  = argc > 1 && !strcmp(argv[1], "-u");
         bool compile = argc > 1 && !strcmp(argv[1], "-c");
         step         = argc > 1 && !strcmp(argv[1], "-s");

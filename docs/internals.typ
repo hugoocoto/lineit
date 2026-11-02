@@ -1311,10 +1311,10 @@ in `config.lua`: their defaults depend on where lineit is (see
 = Tests <sec-tests>
 
 `make test` runs three things, all with the real editor: the test tools
-`#include "../src/main.c"` with its `main` renamed, and are built with
-the files of `src/editor/` and `-DLINEIT_FAKE_TIME`, which makes `GetTime`
-a fake clock (`fake_time`, see `editor.h`). So they run the same code
-without user input.
+`#include "../src/main.c"` with its `main` renamed, and link the editor's
+other objects. Their `main` points `time_source`, the clock `GetTime()`
+goes through (see `editor.h`), at a fake one, `fake_time`. So they run
+the same code without user input.
 
 - `run_tests` loads every canvas in `examples/` and `tests/`, presses Run,
   runs 600 frames (10 s) of fake time at 60 per second, and compares what

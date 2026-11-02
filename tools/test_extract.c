@@ -3,8 +3,8 @@
  * have. Run it with `make test` from the repo root. The subgraphs go to a
  * temporary folder, modules.user while it runs. */
 
-/* The editor itself, without its main, and with fake time (built with
- * -DLINEIT_FAKE_TIME: GetTime is fake_time, see src/editor/editor.h) */
+/* The editor itself, without its main; its clock is fake_time (main sets
+ * time_source, see src/editor/editor.h) */
 #define main lineit_main
 #include "../src/main.c"
 #undef main
@@ -12,7 +12,7 @@
 static double now;
 static int failed;
 
-double
+static double
 fake_time(void)
 {
         return now;
@@ -97,6 +97,7 @@ check(const char *canvas, const int *ids, int n, const char *name, const char *i
 int
 main(void)
 {
+        time_source = fake_time; /* the editor's clock: frames of fake time */
         char user[] = "/tmp/lineit-test-extract-XXXXXX";
         config_start("config.lua");
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
