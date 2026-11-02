@@ -36,15 +36,18 @@ env:
     fonts-dejavu-core
 
 jobs:
-  # Every canvas in examples/ and tests/ against its .out, run and compiled,
-  # and Make subgraph (make test), then all of it again with AddressSanitizer
-  # and UBSan (make test-asan). WERROR=1: a new warning fails it.
+  # Every canvas in examples/ and tests/ against its .out, run, compiled and
+  # stepped, and the tools' tests (make test); all of it again with
+  # AddressSanitizer and UBSan (make test-asan), and run and stepped with
+  # ThreadSanitizer (make test-tsan). Each a job of its own, at the same
+  # time. WERROR=1: a new warning fails it.
   test:
     strategy:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
-    name: test (${{ matrix.cc }})
+        suite: [test, test-asan, test-tsan]
+    name: ${{ matrix.suite }} (${{ matrix.cc }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -58,16 +61,20 @@ jobs:
 
       # The runners randomize addresses more than the sanitizers can handle
       - name: Make the sanitizers work
+        if: matrix.suite != 'test'
         run: sudo sysctl vm.mmap_rnd_bits=28
 
+      # make -j with every core the runner has, the output of each target
+      # together (the Makefile is safe to run in parallel)
+      - name: Use every core
+        run: echo "MAKEFLAGS=-j$(nproc) --output-sync=target" >> "$GITHUB_ENV"
+
       - name: Build
+        if: matrix.suite == 'test'
         run: make CC=${{ matrix.cc }} WERROR=1
 
-      - name: make test
-        run: xvfb-run -a make test CC=${{ matrix.cc }} WERROR=1
-
-      - name: make test-asan
-        run: xvfb-run -a make test-asan CC=${{ matrix.cc }} WERROR=1
+      - name: make ${{ matrix.suite }}
+        run: xvfb-run -a make ${{ matrix.suite }} CC=${{ matrix.cc }} WERROR=1
 
   format:
     runs-on: ubuntu-latest
@@ -100,6 +107,11 @@ jobs:
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+
+      # make -j with every core the runner has, the output of each target
+      # together (the Makefile is safe to run in parallel)
+      - name: Use every core
+        run: echo "MAKEFLAGS=-j$(nproc) --output-sync=target" >> "$GITHUB_ENV"
 
       - name: Analyze
         run: make analyze
@@ -152,6 +164,11 @@ jobs:
           path: build/downloads
           key: downloads-${{ hashFiles('Makefile') }}
           restore-keys: downloads-
+
+      # make -j with every core the runner has, the output of each target
+      # together (the Makefile is safe to run in parallel)
+      - name: Use every core
+        run: echo "MAKEFLAGS=-j$(nproc) --output-sync=target" >> "$GITHUB_ENV"
 
       - name: Build
         run: make appimage dist WERROR=1
