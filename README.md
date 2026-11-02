@@ -160,7 +160,8 @@ the config to one you do have (see `fc-list`; it has to be a .ttf or .otf).
 | Drag a plugged wire to the canvas | Remove it                                               |
 | Click a field low in a square     | Its settings (params); double click shows them too      |
 | Click a field next to an input    | Type a value used while nothing is plugged in           |
-| Add a square                      | Typing goes to its first field at once; Tab, the next   |
+| Add a square                      | Typing goes to its first field at once                  |
+| Tab, Shift+Tab while typing       | The square's next / previous field, round               |
 | Hover a field                     | All of its value, if it's longer than the field         |
 | Drag the canvas, or Shift+click   | Select with a box, or add to the selection              |
 | Right drag / mouse wheel          | Pan / zoom                                              |

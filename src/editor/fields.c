@@ -167,6 +167,36 @@ typed_input_from(Square *s, int from)
         return -1;
 }
 
+/* The fields of S one after another: its inputs, then its params. K of them
+ * can be typed in: a typed input (not a checkbox or a list, nothing wired),
+ * or a param that isn't a checkbox. */
+static bool
+field_at(Square *s, int k, bool *param, int *i)
+{
+        *param = k >= s->inputs.count;
+        *i     = *param ? k - s->inputs.count : k;
+        if (!*param) return typed_input_from(s, k) == k;
+        return *i < s->params.count && s->params.items[*i].value.type != LI_BOOL;
+}
+
+/* Typing to S's next field after the one typed (DIR -1: before it), round
+ * to the first after the last, its value selected. False if it has no other. */
+static bool
+field_edit_next(Square *s, bool param, int i, int dir)
+{
+        int n = s->inputs.count + s->params.count;
+        int k = param ? s->inputs.count + i : i;
+        for (int step = 1; step < n; step++) {
+                bool p;
+                int j;
+                if (!field_at(s, ((k + dir * step) % n + n) % n, &p, &j)) continue;
+                field_edit_start(s, j, p);
+                field_edit.text.anchor = 0;
+                return true;
+        }
+        return false;
+}
+
 /* A square just added: typing goes to its first field, its value selected,
  * so what's typed replaces it (Esc keeps it). False if it has none. */
 bool
@@ -295,13 +325,13 @@ update_field(void)
         switch (text_input_update(&field_edit.text, &changed)) {
         case TEXT_DONE: field_edit_apply(); break;
         case TEXT_NEXT: {
-                /* Applied, typing goes on in the square's next field, if any */
-                Square *s = field_edit.square;
-                int next  = field_edit.param ? -1 : typed_input_from(s, field_edit.input + 1);
-                if (field_edit_apply() && next >= 0) {
-                        field_edit_start(s, next, false);
-                        field_edit.text.anchor = 0;
-                }
+                /* Applied, typing goes on in the square's next field (Shift:
+                 * the one before), round: Tab, Tab... goes through them all */
+                Square *s  = field_edit.square;
+                bool param = field_edit.param;
+                int i      = field_edit.input;
+                bool back  = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                if (field_edit_apply()) field_edit_next(s, param, i, back ? -1 : 1);
                 break;
         }
         case TEXT_CANCEL: field_edit.square = NULL; return true;
