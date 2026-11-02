@@ -306,6 +306,7 @@ typedef struct Link {
         int from, from_pin; /* square id, output index */
         int to, to_pin;     /* square id, input index */
         double flash;       /* last time something went through it */
+        bool selected;      /* clicked: Delete removes it (not saved) */
 } Link;
 
 /* A .so found in the modules dir. It's not kept open: each square opens
@@ -1001,6 +1002,7 @@ void history_destroy(void);
 /* ---- selection.c: the selection: copy, paste, duplicate ---- */
 
 void select_all(bool on);
+void links_delete_selected(void);
 void each_selected(void (*fn)(int id, void *arg));
 int selected_count(void);
 void selection_copy(void);

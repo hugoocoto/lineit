@@ -287,8 +287,10 @@ draw_canvas(void)
                 Color c     = a->conflict ? cfg.colors.error : type_color(pin_info(a, PART_OUTPUT, l->from_pin)->type);
                 float g     = glow(l->flash);
                 float thick = cfg.canvas.wire_thickness * (1 + g + (i == hovered ? 0.6f : 0));
-                draw_wire_ex(pin_pos(a, PART_OUTPUT, l->from_pin), pin_pos(b, PART_INPUT, l->to_pin),
-                             ColorLerp(c, cfg.colors.flash, g), thick);
+                Vector2 p1 = pin_pos(a, PART_OUTPUT, l->from_pin), p2 = pin_pos(b, PART_INPUT, l->to_pin);
+                /* Selected: in the selection's color, around it */
+                if (l->selected) draw_wire_ex(p1, p2, cfg.colors.selection, thick + 6 / camera.zoom);
+                draw_wire_ex(p1, p2, ColorLerp(c, cfg.colors.flash, g), thick);
         }
 
         Da_foreach(s, squares)

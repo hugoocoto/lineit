@@ -21,6 +21,10 @@ select_in_box(Rectangle b, bool add)
                 bool in         = b.width > 0 && b.height > 0 && CheckCollisionRecs(square_rect(*sp), b);
                 (*sp)->selected = in || (add && (*sp)->selected);
         }
+        Da_foreach(l, links)
+        {
+                l->selected = add && l->selected;
+        }
 }
 
 void
@@ -110,10 +114,20 @@ update_mouse(void)
                         break;
                 }
 
-                case PART_NONE:
+                case PART_NONE: {
+                        /* On a wire: it's selected (Shift: added or taken out) */
+                        int wire   = link_hit(world);
+                        bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                        if (wire >= 0) {
+                                bool was = links.items[wire].selected;
+                                if (!shift) select_all(false);
+                                links.items[wire].selected = shift ? !was : true;
+                                break;
+                        }
                         drag.kind  = DRAG_BOX;
                         drag.start = world;
                         break;
+                }
                 }
         }
 

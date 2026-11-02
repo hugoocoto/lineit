@@ -29,7 +29,10 @@ update_shortcuts(void)
         if (editing_text()) return;
 
         if (!ctrl) {
-                if (key_pressed(KEY_DELETE) || key_pressed(KEY_BACKSPACE)) each_selected(square_delete);
+                if (key_pressed(KEY_DELETE) || key_pressed(KEY_BACKSPACE)) {
+                        links_delete_selected();
+                        each_selected(square_delete);
+                }
                 if (key_pressed(KEY_ESCAPE)) select_all(false);
                 return;
         }

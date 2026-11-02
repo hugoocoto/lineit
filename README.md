@@ -59,6 +59,7 @@ explained in a comment at its top.
 | Drag from an output to an input   | Wire them (drag a plugged input to move its wire)       |
 | Drag from an output to the canvas | Search a module to add there, wired to that output      |
 | Drag a plugged wire to the canvas | Remove it                                               |
+| Click a wire, then Delete         | Remove it (Shift+click selects more)                    |
 | Click a field next to an input    | Type a value used while nothing is plugged in           |
 | Click a field low in a square     | Its settings (params); double click shows them too      |
 | Tab, Shift+Tab in a field         | The square's next / previous field                      |

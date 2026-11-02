@@ -8,6 +8,19 @@ select_all(bool on)
         {
                 (*sp)->selected = on;
         }
+        /* Wires are selected one by one, with a click: none, or as they are */
+        Da_foreach(l, links)
+        {
+                if (!on) l->selected = false;
+        }
+}
+
+/* The selected wires go (Delete, Backspace) */
+void
+links_delete_selected(void)
+{
+        for (int i = links.count - 1; i >= 0; i--)
+                if (links.items[i].selected) Da_remove(&links, i);
 }
 
 /* Run FN on every selected square. FN may remove squares. */
