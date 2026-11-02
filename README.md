@@ -6,9 +6,10 @@ program in the editor, step through it, or compile it to a native binary.**
 [![CI](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml/badge.svg)](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/hugoocoto/lineit)](LICENSE)
 
-![FizzBuzz in the lineit editor: a loop square sends each index to three
-modulo and equal checks, and three ifelse squares pick what to
-print](assets/screenshot.png)
+![A program made in lineit: an entry ticks a loop from 1 to 4, typed in
+its fields, whose body ticks a print of "Help, I am stuck in a loop!", added
+from the search with a wire from the loop. Run prints it three
+times](assets/demo.gif)
 
 # Try it
 
@@ -20,11 +21,7 @@ On x86_64 Linux:
 The canvas starts with an `entry` square. Drag a wire from its output to
 an empty spot, type `print` and press Enter, type `Hello, world!` and press
 Enter. Then, in the bar at the bottom, open the `v` next to **Step** and
-pick **Run**:
-
-![Writing Hello, World! from the entry module: a wire dragged from it to
-the canvas opens the module search, print is added wired to it, its value
-set to "Hello, World!", then Run, and Output shows it](assets/hello.gif)
+pick **Run**.
 
 On Mac or Windows, with [Docker](https://docs.docker.com/get-docker/), run
 this in the folder to work in and open <http://localhost:6080>:
@@ -45,6 +42,10 @@ lineit is in alpha: expect breaking changes with any commit.
 - **Extended in C, or with squares.** A module is a C file, rebuilt and
   reloaded while the editor runs; a selection of squares becomes a module
   of its own (a subgraph) with Ctrl+G.
+
+![FizzBuzz in the lineit editor: a loop square sends each index to three
+modulo and equal checks, and three ifelse squares pick what to
+print](assets/screenshot.png)
 
 The canvases in [`examples/`](examples/README.md) show the rest, each
 explained in a comment at its top.
