@@ -1,11 +1,5 @@
 # TODO
 
-## Bugs
-
-- bottom bar overlaps on small screens (web half screen)
-- docker show an error but it works
-- Docs: how to update docker image?
-
 ## Features
 
 - VIM MODE!

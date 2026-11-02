@@ -233,10 +233,10 @@ refresh_desktop() {
 integrate_desktop() {
         local root=squashfs-root/usr/share icon
         chmod +x "$1"
-        "./$1" --appimage-extract >/dev/null 2>&1 && [ -f "$root/applications/$NAME.desktop" ] || {
+        if ! "./$1" --appimage-extract >/dev/null 2>&1 || [ ! -f "$root/applications/$NAME.desktop" ]; then
                 warn "couldn't get the menu entry out of the AppImage"
                 return 0
-        }
+        fi
         mkdir -p "$APPSDIR"
         sed -e "s|^Exec=[^ ]*|Exec=\"$BINDIR/$NAME\"|" -e '/^TryExec=/d' \
                 -e "/^Exec=/a TryExec=$BINDIR/$NAME" "$root/applications/$NAME.desktop" >"$APPSDIR/$NAME.desktop"
@@ -331,7 +331,9 @@ main() {
         # not match its checksums yet: then it tries again
         for try in 1 2 3; do
                 download && break
-                [ "$tag" = nightly ] && [ "$try" -lt 3 ] || die "the download doesn't check out, nothing was installed"
+                if [ "$tag" != nightly ] || [ "$try" -ge 3 ]; then
+                        die "the download doesn't check out, nothing was installed"
+                fi
                 say "nightly may be being updated right now, trying again in 20 seconds"
                 sleep 20
         done

@@ -41,14 +41,21 @@ xvnc=$!
 pids=$xvnc
 i=0
 until [ -S /tmp/.X11-unix/X0 ]; do
-        kill -0 "$xvnc" 2>/dev/null && [ $i -lt 100 ] || { cat "$xvnc_log" >&2; echo "lineit-docker: Xvnc didn't start" >&2; exit 1; }
+        if ! kill -0 "$xvnc" 2>/dev/null || [ $i -ge 100 ]; then
+                cat "$xvnc_log" >&2
+                echo "lineit-docker: Xvnc didn't start" >&2
+                exit 1
+        fi
         i=$((i + 1))
         sleep 0.1
 done
 
 matchbox-window-manager -use_titlebar no &
 pids="$pids $!"
-websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null &
+# websockify writes a line for every connection, and a "handler exception"
+# when a browser tab closes or reloads, all fine: to a file too
+websockify_log=$XDG_RUNTIME_DIR/websockify.log
+websockify --web /usr/share/novnc 6080 localhost:5900 >"$websockify_log" 2>&1 &
 pids="$pids $!"
 echo "lineit-docker: open http://localhost:6080"
 
@@ -59,6 +66,6 @@ while kill -0 "$xvnc" 2>/dev/null; do
         wait $lineit || true
         sleep 1
 done
-cat "$xvnc_log" >&2
+cat "$xvnc_log" "$websockify_log" >&2
 echo "lineit-docker: Xvnc quit" >&2
 exit 1

@@ -164,9 +164,15 @@ bar_button_rect(int i)
         float x   = GetScreenWidth();
         float w   = 0;
 
+        /* On a window too narrow for all of them, all narrower, the same */
+        float total = pad;
+        for (int k = 0; k < countof(bar_buttons); k++)
+                total += measure_text(bar_buttons[k].widest, fs) + 4 * pad + (k && bar_buttons[k - 1].joined ? 0 : pad);
+        float scale = total > GetScreenWidth() ? GetScreenWidth() / total : 1;
+
         for (int k = 0; k <= i; k++) {
-                w = measure_text(bar_buttons[k].widest, fs) + 4 * pad;
-                x -= w + (k && bar_buttons[k - 1].joined ? 0 : pad);
+                w = (measure_text(bar_buttons[k].widest, fs) + 4 * pad) * scale;
+                x -= w + (k && bar_buttons[k - 1].joined ? 0 : pad) * scale;
         }
         return (Rectangle) { x, GetScreenHeight() - cfg.bar.height + pad, w, h };
 }
@@ -228,6 +234,7 @@ draw_bar(void)
                 bool hover       = CheckCollisionPointRec(GetMousePosition(), b = bar_button_rect(i));
                 DrawRectangleRec(b, hover ? cfg.colors.menu_hover : cfg.colors.menu);
                 DrawRectangleLinesEx(b, 1.0f, cfg.colors.menu_border);
+                text = text_fit(text, fs, b.width - 4); /* a narrow window */
                 draw_text(text, b.x + (b.width - measure_text(text, fs)) / 2, b.y + (b.height - fs) / 2, fs,
                           cfg.colors.bar_text);
         }
@@ -239,7 +246,9 @@ draw_bar(void)
                 msg = step_names() ? TextFormat("Step: next is %s", step_names()) :
                                      "Step: next runs a frame";
         if (msg) {
-                /* Over the stats if they are long: it's the newer thing */
+                /* Over the stats if they are long: it's the newer thing. On
+                 * a narrow window, cut at its end, from the left of the bar. */
+                msg      = text_fit(msg, fs, fmaxf(b.x - 32, 0));
                 float sw = measure_text(msg, fs);
                 DrawRectangle(b.x - sw - 24, y + 1, sw + 20, h - 1, cfg.colors.bar);
                 draw_text(msg, b.x - sw - 12, y + (h - fs) / 2, fs, cfg.colors.bar_text);
