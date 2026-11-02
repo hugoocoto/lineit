@@ -115,7 +115,7 @@ c_string(FILE *f, const char *s)
 {
         fputc('"', f);
         for (const unsigned char *c = (const unsigned char *) (s ? s : ""); *c; c++) {
-                if (*c == '"' || *c == '\\')
+                if (*c == '"' || *c == '\\' || *c == '?') /* ?: "??/" is a trigraph with -std=c11 */
                         fprintf(f, "\\%c", *c);
                 else if (*c >= 0x20 && *c < 0x7f)
                         fputc(*c, f);

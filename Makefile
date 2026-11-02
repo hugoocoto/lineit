@@ -153,6 +153,7 @@ build/modules/string/reverse.li: $(wildcard examples/package/* examples/package/
 # see tools/run_tests.c. `make test-update` rewrites the .out files.
 RUN_TESTS = $(CONFIG)/run_tests
 TEST_EXTRACT = $(CONFIG)/test_extract
+TEST_STEP_EDIT = $(CONFIG)/test_step_edit
 TESTS = $(wildcard examples/*.lua tests/*.lua)
 # What tests/ffi_types.lua calls that libc has none of
 FFI_TEST_LIB = build/libffitest.so
@@ -161,20 +162,22 @@ $(FFI_TEST_LIB): tests/lib/ffitest.c
 	@mkdir -p $(@D)
 	$(CC) $(WARN) $(CFLAGS) -fPIC -shared $< $(LDFLAGS:-pie=) -lm -o $@
 
-test: $(RUN_TESTS) $(TEST_EXTRACT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
+test: $(RUN_TESTS) $(TEST_EXTRACT) $(TEST_STEP_EDIT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
 	./$(RUN_TESTS) $(TESTS)
 	./$(RUN_TESTS) -c $(TESTS)
 	./$(RUN_TESTS) -s $(TESTS)
 	./$(TEST_EXTRACT)
+	./$(TEST_STEP_EDIT)
 
 # The same, with the editor built with AddressSanitizer and UBSan: any
 # memory error, leak or undefined behavior fails it
 
-test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
+test-asan: build/run_tests_asan build/test_extract_asan build/test_step_edit_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
 	./build/run_tests_asan $(TESTS)
 	./build/run_tests_asan -c $(TESTS)
 	./build/run_tests_asan -s $(TESTS)
 	./build/test_extract_asan
+	./build/test_step_edit_asan
 
 build/%_asan: tools/%.c $(SRC) src/editor/editor.h src/lineit.h
 	@mkdir -p $(dir $@)
@@ -196,6 +199,11 @@ test-update: $(RUN_TESTS) $(MODULES) $(GRAPHS) $(PACKAGES) $(FFI_TEST_LIB)
 
 # Make subgraph on example canvases, see tools/test_extract.c
 $(TEST_EXTRACT): tools/test_extract.c $(SRC) src/editor/editor.h src/lineit.h
+	@mkdir -p $(dir $@)
+	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+
+# Changing the canvas while stepping, see tools/test_step_edit.c
+$(TEST_STEP_EDIT): tools/test_step_edit.c $(SRC) src/editor/editor.h src/lineit.h
 	@mkdir -p $(dir $@)
 	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 

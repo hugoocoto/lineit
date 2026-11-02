@@ -71,6 +71,8 @@ history_step(bool undo)
         Da(char *) *t = to;
 
         if (!f->count) return;
+        /* The canvas changes: not seen by history_check, it's the snapshot */
+        run_stop_inside();
         Da_append(t, history.current);
         history.current = f->items[--f->count];
         canvas_read_text(history.current, READ_RESTORE);

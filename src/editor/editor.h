@@ -670,7 +670,8 @@ typedef struct Program {
         Da(Out) outs;
         Da(Target) targets;
         Da(Wire) wires;
-        long long version; /* squares_version it was lowered for */
+        long long version;   /* squares_version it was lowered for */
+        unsigned long shape; /* what it is, hashed: see program_shape */
 } Program;
 
 extern Program prog;
@@ -1168,6 +1169,7 @@ int main(int argc, char **argv);
 
 void run_frame(void);
 void run_stop(void);
+void run_stop_inside(void);
 void run_check_end(void);
 void squares_settle(void);
 bool run_begin(void);

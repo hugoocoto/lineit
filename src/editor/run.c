@@ -37,6 +37,17 @@ run_stop(void)
         if (sched) sched_abort(sched);
 }
 
+/* Stepping, branches are stopped inside squares (a loop, between two ticks
+ * of its body): before a square goes or changes, they end, or they'd go on
+ * in code that's gone. Freeing a square and changing a param do it. */
+void
+run_stop_inside(void)
+{
+        if (!sched || !sched_busy(sched)) return;
+        run_stop();
+        set_status("Stopped stepping: the canvas changed");
+}
+
 /* The branches started are done (or stopped, stepping): over, if nothing
  * starts more */
 void

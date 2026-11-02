@@ -215,7 +215,7 @@ modules_scan(bool reload)
         }
 
         if (!menu_changed) return;
-        qsort(modules.items, modules.count, sizeof *modules.items, module_cmp);
+        if (modules.count) qsort(modules.items, modules.count, sizeof *modules.items, module_cmp); /* none: NULL */
         module_menu_build();
         if (!last_module || last_module->gone) {
                 last_module = NULL;

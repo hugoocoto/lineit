@@ -75,8 +75,10 @@ lower_squares(int lv)
         Graph *graph     = levels.items[lv].graph;
         assert(list->count >= 0);
         Square *sorted[list->count + 1];
-        memcpy(sorted, list->items, list->count * sizeof *sorted);
-        qsort(sorted, list->count, sizeof *sorted, square_order);
+        if (list->count) { /* an empty canvas has no items: NULL, which memcpy can't take */
+                memcpy(sorted, list->items, list->count * sizeof *sorted);
+                qsort(sorted, list->count, sizeof *sorted, square_order);
+        }
         for (int i = 0; i < list->count; i++) {
                 Square *s = sorted[i];
                 s->ir     = -1;
@@ -186,6 +188,47 @@ lower_targets(int lv, Square *s, int output, int depth)
 }
 
 /* The canvas shown, to prog */
+/* The program, hashed (FNV-1a): its nodes and their squares, what ticks
+ * what, and where inputs read from */
+static unsigned long
+hash_bytes(unsigned long h, const void *p, size_t n)
+{
+        for (const unsigned char *c = p; n--; c++)
+                h = (h ^ *c) * 1099511628211UL;
+        return h;
+}
+
+static unsigned long
+program_shape(void)
+{
+        unsigned long h = 14695981039346656037UL;
+        Da_foreach(x, prog.nodes)
+        {
+                h = hash_bytes(h, &x->square, sizeof x->square);
+                h = hash_bytes(h, &x->scope, sizeof x->scope);
+                h = hash_bytes(h, &x->inputs, sizeof x->inputs);
+                h = hash_bytes(h, &x->outputs, sizeof x->outputs);
+        }
+        Da_foreach(o, prog.outs)
+        {
+                h = hash_bytes(h, &o->first, sizeof o->first);
+                h = hash_bytes(h, &o->count, sizeof o->count);
+        }
+        Da_foreach(t, prog.targets)
+        {
+                h = hash_bytes(h, &t->node, sizeof t->node);
+                h = hash_bytes(h, &t->pin, sizeof t->pin);
+        }
+        Da_foreach(s, prog.sources)
+        {
+                h = hash_bytes(h, &s->kind, sizeof s->kind);
+                h = hash_bytes(h, &s->node, sizeof s->node);
+                h = hash_bytes(h, &s->pin, sizeof s->pin);
+                h = hash_bytes(h, &s->square, sizeof s->square);
+        }
+        return h;
+}
+
 void
 program_lower(void)
 {
@@ -238,6 +281,13 @@ program_lower(void)
                         if (u->node == t->node && u->pin == t->pin) x->merge |= bit;
         }
         prog.version = squares_version;
+
+        /* Branches stopped stepping keep nodes, squares and targets of the
+         * program they were in: if it isn't that one anymore (an undo, a
+         * square moved before another...), they end */
+        unsigned long shape = program_shape();
+        if (shape != prog.shape) run_stop_inside();
+        prog.shape = shape;
 }
 
 static void

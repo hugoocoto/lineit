@@ -78,6 +78,7 @@ param_set_text(Square *s, int i, const char *text)
         Li_Value v;
 
         if (!value_parse_as(p->value.type, text, &v)) return false;
+        run_stop_inside(); /* its module may reshape it under a branch in it */
         if (v.type == LI_STRING) {
                 free(p->str);
                 p->str = strdup(v.s);

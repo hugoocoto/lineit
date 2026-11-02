@@ -72,6 +72,7 @@ pins_free(PinList *l)
 void
 square_free(Square *s)
 {
+        run_stop_inside(); /* a branch may be in it: its code goes with it */
         if (panel.square == s) panel_close();
         if (field_edit.square == s) field_edit.square = NULL;
         if (s->fn.destroy) s->fn.destroy(s);
