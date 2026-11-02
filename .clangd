@@ -10,7 +10,7 @@ CompileFlags:
     - -I../../../src
     - -std=c11
 ---
-# tools/ includes src/main.c, so it needs the same paths as src/
+# tools/ includes src/main.c, and so src/editor/editor.h: the same paths as src/
 If:
   PathMatch: tools/.*
 CompileFlags:

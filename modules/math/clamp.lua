@@ -1,5 +1,5 @@
--- math/clamp: a subgraph, a canvas used as a module (see Subgraphs in
--- src/main.c). value = x, but at least lo and at most hi: min(max(x, lo), hi).
+-- math/clamp: a subgraph, a canvas used as a module (see
+-- src/editor/subgraphs.c). value = x, but at least lo and at most hi: min(max(x, lo), hi).
 -- Open it with ./lineit -f modules/math/clamp.lua to change it; `make` copies
 -- it to build/modules and the squares using it pick the change up.
 lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION

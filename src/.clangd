@@ -5,6 +5,12 @@ CompileFlags:
     - -I../thirdparty/conf.h
     - -I../thirdparty/cum.h
     - -I../thirdparty/bt.h
+    # src/editor/: paths are relative to the file, missing ones are ignored
+    - -I../../raylib-6.0_linux_amd64/include
+    - -I../../thirdparty/flag.h
+    - -I../../thirdparty/conf.h
+    - -I../../thirdparty/cum.h
+    - -I../../thirdparty/bt.h
     - -I/usr/include/lua5.1
     - -std=c11
 ---

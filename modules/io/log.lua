@@ -1,4 +1,4 @@
--- log: a subgraph, a canvas used as a module (see Subgraphs in src/main.c).
+-- log: a subgraph, a canvas used as a module (see src/editor/subgraphs.c).
 -- On tick, prints "label: value" (string/format + print), then ticks then.
 -- Open it with ./lineit -f modules/log.lua to change it; `make` copies it to
 -- build/modules and the squares using it pick the change up.

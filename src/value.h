@@ -1,5 +1,5 @@
 /* value.h - what values need at run time: records, lists, maps, variables
- * and li_format. Shared by the editor (src/main.c) and the programs
+ * and li_format. Shared by the editor (src/editor/) and the programs
  * Compile makes (src/rt/rt.c), so both run canvases the same way.
  *
  * Whoever links it says what the custom types are: type_is_record and

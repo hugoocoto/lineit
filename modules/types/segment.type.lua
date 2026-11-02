@@ -1,4 +1,4 @@
--- types/segment: a lineit type (see Types in src/main.c) made of two
+-- types/segment: a lineit type (see src/editor/types.c) made of two
 -- types/point, from one to the other.
 lineit_type = "0.0.1"
 fields = {

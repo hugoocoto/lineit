@@ -73,8 +73,10 @@ print the same lines.
   stroke: 0.5pt + luma(200),
   inset: 6pt,
   [*Path*], [*What it is*],
-  [`src/main.c`], [The editor: window, canvas, menus, tabs, the module
-    loader, the program lowering, Run, Compile, undo, hot reload. One file.],
+  [`src/main.c`, `src/editor/`], [The editor: window, canvas, menus, tabs,
+    the module loader, the program lowering, Run, Compile, undo, hot
+    reload. A file for each (`program.c`, `compile.c`, `tabs.c`...), and
+    `editor.h` with what they share; `main.c` is `main`.],
   [`src/lineit.h`], [The module API. The only header a module includes.],
   [`src/value.c`, `src/value.h`], [What values need at run time: records,
     lists, maps, variables and `li_format`. Shared by the editor and the
@@ -1309,8 +1311,10 @@ in `config.lua`: their defaults depend on where lineit is (see
 = Tests <sec-tests>
 
 `make test` runs three things, all with the real editor: the test tools
-`#include "../src/main.c"` with its `main` renamed and `GetTime` replaced
-by a fake clock, so they run the same code without user input.
+`#include "../src/main.c"` with its `main` renamed, and are built with
+the files of `src/editor/` and `-DLINEIT_FAKE_TIME`, which makes `GetTime`
+a fake clock (`fake_time`, see `editor.h`). So they run the same code
+without user input.
 
 - `run_tests` loads every canvas in `examples/` and `tests/`, presses Run,
   runs 600 frames (10 s) of fake time at 60 per second, and compares what

@@ -1,4 +1,4 @@
-SRC = $(wildcard src/*.c)
+SRC = $(wildcard src/*.c src/editor/*.c)
 OUT = lineit
 
 # Every modules/**/x.c is built to build/modules/**/x.so, loaded at runtime.
@@ -78,8 +78,8 @@ DEPS += $(shell pkg-config --libs zlib)
 # libcrypto (OpenSSL): the SHA-256 of the files in packages
 DEPS += $(shell pkg-config --libs libcrypto)
 
-# What the programs Compile makes are built with (see Compile in
-# src/main.c): build/rt/liblineit-rt.a, and the headers they and their
+# What the programs Compile makes are built with (see
+# src/editor/compile.c): build/rt/liblineit-rt.a, and the headers they and their
 # modules include in build/rt/include. Before all: make expands a rule's
 # prerequisites when it reads it, an RT defined later would be empty there.
 RT = build/rt/liblineit-rt.a
@@ -88,7 +88,7 @@ RT_H = src/lineit.h src/value.h src/branches.h src/rt/rt.h thirdparty/bt.h/bt.h 
 all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
 # -rdynamic exports the li_* functions (src/lineit.h) to the modules
-$(CONFIG)/lineit: $(SRC) src/lineit.h src/value.h $(RAYLIB_LIB)
+$(CONFIG)/lineit: $(SRC) src/editor/editor.h src/lineit.h src/value.h $(RAYLIB_LIB)
 	@mkdir -p $(@D)
 	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) $(SRC) $(LDFLAGS) $(DEPS) -rdynamic -o $@
 
@@ -138,7 +138,7 @@ GEN_EXAMPLES = $(CONFIG)/gen_examples
 examples: $(GEN_EXAMPLES) $(MODULES)
 	./$(GEN_EXAMPLES)
 
-$(GEN_EXAMPLES): tools/gen_examples.c $(SRC) src/lineit.h
+$(GEN_EXAMPLES): tools/gen_examples.c $(SRC) src/editor/editor.h src/lineit.h
 	@mkdir -p $(dir $@)
 	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
@@ -176,9 +176,9 @@ test-asan: build/run_tests_asan build/test_extract_asan $(MODULES) $(GRAPHS) $(P
 	./build/run_tests_asan -s $(TESTS)
 	./build/test_extract_asan
 
-build/%_asan: tools/%.c $(SRC) src/lineit.h
+build/%_asan: tools/%.c $(SRC) src/editor/editor.h src/lineit.h
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) -O1 -g $(SAN_FLAGS) $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+	$(CC) $(WARN) -O1 -g $(SAN_FLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
 # The same with ThreadSanitizer: branches run in parallel (see
 # src/branches.h), and any data race between them fails it. The modules
@@ -187,21 +187,21 @@ test-tsan: build/run_tests_tsan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TES
 	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan $(TESTS)
 	TSAN_OPTIONS="halt_on_error=1 suppressions=tools/tsan.supp" ./build/run_tests_tsan -s $(TESTS)
 
-build/%_tsan: tools/%.c $(SRC) src/lineit.h
+build/%_tsan: tools/%.c $(SRC) src/editor/editor.h src/lineit.h
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
 test-update: $(RUN_TESTS) $(MODULES) $(GRAPHS) $(PACKAGES) $(FFI_TEST_LIB)
 	./$(RUN_TESTS) -u $(TESTS)
 
 # Make subgraph on example canvases, see tools/test_extract.c
-$(TEST_EXTRACT): tools/test_extract.c $(SRC) src/lineit.h
+$(TEST_EXTRACT): tools/test_extract.c $(SRC) src/editor/editor.h src/lineit.h
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
-$(RUN_TESTS): tools/run_tests.c $(SRC) src/lineit.h
+$(RUN_TESTS): tools/run_tests.c $(SRC) src/editor/editor.h src/lineit.h
 	@mkdir -p $(dir $@)
-	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
+	$(CC) $(WARN) $(CFLAGS) $(CPPFLAGS) -DLINEIT_FAKE_TIME $< $(filter-out src/main.c,$(SRC)) $(DEPS) -rdynamic -o $@
 
 # clang's static analyzer: it follows every path through the code, also the
 # ones no test runs, looking for leaks, NULL dereferences, use after free...
@@ -243,8 +243,8 @@ version:
 	@echo $(VERSION)
 
 # make install: to ~/.local (/usr/local as root), or PREFIX, under DESTDIR.
-# lineit finds what comes with it from where its binary is (see Paths in
-# src/main.c), so the folders below are fixed, relative to PREFIX:
+# lineit finds what comes with it from where its binary is (see
+# src/editor/paths.c), so the folders below are fixed, relative to PREFIX:
 #
 #   bin/lineit, bin/lineit-pack
 #   lib/lineit/modules            the modules, subgraphs, types and packages
@@ -302,7 +302,7 @@ dist:
 # every shared library lineit needs (but glibc, X11 and GL, see linuxdeploy's
 # excludelist), and the ones of the modules that link more (libffi, for
 # ffi/call). It finds its modules and runtime inside, like make install
-# (see Paths in src/main.c). x86_64 only: that's the raylib in the repo.
+# (see src/editor/paths.c). x86_64 only: that's the raylib in the repo.
 # Compile still needs a C compiler and make on the machine.
 ARCH := $(shell uname -m)
 APPDIR := build/AppDir

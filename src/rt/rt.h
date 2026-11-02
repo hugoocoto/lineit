@@ -1,6 +1,6 @@
 /* rt.h - what the programs Compile makes run on
  *
- * Compile (see Compile in src/main.c) writes a canvas as C: main.c, with
+ * Compile (see src/editor/compile.c) writes a canvas as C: main.c, with
  * every square of it a node, N[i], and its wires as functions, and one
  * nI.c per node that has its module source in it, with the callbacks
  * renamed (module_tick is nI_tick). Each one is its own object, so each

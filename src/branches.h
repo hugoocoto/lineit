@@ -1,5 +1,5 @@
 /* branches.h - branches: tick chains that run in parallel, on threads.
- * Shared by the editor (src/main.c) and the programs Compile makes
+ * Shared by the editor (src/editor/) and the programs Compile makes
  * (src/rt/rt.c), so both run a canvas the same way.
  *
  * Each start of a run (every entry, every clock in a frame) is a branch,

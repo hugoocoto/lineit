@@ -47,10 +47,12 @@ touch: it names the functions, so you can read the code next to it.
 ### Project layout
 
 ```
-src/main.c               the editor: canvas, modules, Run, Compile, tabs, reloads
+src/main.c               main: the window and every frame
+src/editor/              the editor, a file for each thing it does (below)
+src/editor/editor.h      what those files share: the types, and what more than one uses
 src/lineit.h             the module API, documented: all a module includes
 src/value.c              values, lists, maps, variables: the editor's and Compile's
-src/branches.c              branches: fan-outs, merges, Step; the editor's and Compile's
+src/branches.c           branches: fan-outs, merges, Step; the editor's and Compile's
 src/rt/                  the runtime the programs Compile makes link with
 modules/                 the standard modules (.c), subgraphs (.lua), types (.type.lua)
 examples/, tests/        canvases, each with the .out make test checks it against
@@ -61,6 +63,23 @@ scripts/                 install.sh, release.sh, git hooks, the Docker entrypoin
 Dockerfile               the Docker image: lineit in the browser (see the README)
 assets/                  the icon and the desktop entry
 ```
+
+Each file of `src/editor/` says in its first line what it's for. By what
+they do:
+
+```
+the canvas         canvas.c squares.c links.c layout.c draw.c input.c selection.c undo.c
+squares' parts     fields.c panel.c text_input.c context_menu.c tooltips.c
+the program        program.c run.c subgraphs.c decls.c compile.c
+modules and types  modules.c packages.c records.c types.c type_edit.c make_subgraph.c module_api.c
+the window         bar.c output.c menu.c tabs.c tab_strip.c prompt.c file_menu.c ask.c
+                   settings_tab.c shortcuts.c keys.c text.c
+config and files   config.c themes.c paths.c version.c save.c autosave.c util.c
+the editor itself  reload.c single.c
+```
+
+A function or a variable only one file uses is `static` in it; what more
+than one uses is declared in `editor.h`, under the file that has it.
 
 ## Making a change
 

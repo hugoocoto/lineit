@@ -18,11 +18,10 @@
  * is done, every branch a square at a time, and the frames one by one.
  * Stepping has to do what Run does too. */
 
-/* The editor itself, without its main, and with fake time */
+/* The editor itself, without its main, and with fake time (built with
+ * -DLINEIT_FAKE_TIME: GetTime is fake_time, see src/editor/editor.h) */
 #define main lineit_main
-#define GetTime fake_time
 #include "../src/main.c"
-#undef GetTime
 #undef main
 
 #include <signal.h>

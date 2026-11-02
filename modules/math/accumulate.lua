@@ -1,5 +1,5 @@
--- math/accumulate: a subgraph, a canvas used as a module (see Subgraphs in
--- src/main.c). On tick, total = total + value, then ticks then. total is a
+-- math/accumulate: a subgraph, a canvas used as a module (see
+-- src/editor/subgraphs.c). On tick, total = total + value, then ticks then. total is a
 -- local variable (var/var, an int that starts as 0 on Run): each accumulate
 -- square has its own, like a C function's static local, and the canvas
 -- around it doesn't see it.
