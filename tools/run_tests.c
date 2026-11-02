@@ -29,9 +29,19 @@
 enum { FPS    = 60,
        FRAMES = 10 * FPS };
 
+/* Built with ThreadSanitizer: gcc says so with __SANITIZE_THREAD__, clang
+ * with __has_feature */
+#if defined(__SANITIZE_THREAD__)
+#define TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define TSAN 1
+#endif
+#endif
+
 /* ThreadSanitizer makes every handoff between threads slow, and stepping
  * pi.lua is tens of thousands of them */
-#ifdef __SANITIZE_THREAD__
+#ifdef TSAN
 enum { TIMEOUT = 120 };
 #else
 enum { TIMEOUT = 10 };
@@ -213,7 +223,7 @@ main(int argc, char **argv)
         /* No window with ThreadSanitizer (make test-tsan): the GL driver's
          * own threads aren't what it's there for. Running doesn't need the
          * font, Compile runs without it too. */
-#ifndef __SANITIZE_THREAD__
+#ifndef TSAN
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         InitWindow(320, 240, "test");
         load_font();
@@ -276,7 +286,7 @@ main(int argc, char **argv)
         }
 
         unload_modules();
-#ifndef __SANITIZE_THREAD__
+#ifndef TSAN
         unload_fonts();
 #endif
         /* No CloseWindow: it unloads the GL driver, and the one under Xvfb

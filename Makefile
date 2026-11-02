@@ -43,6 +43,8 @@ RAYLIB_VERSION := 6.0
 ifeq ($(RAYLIB),source)
 RAYLIB_INCLUDE := build/raylib-$(RAYLIB_VERSION)/src
 RAYLIB_LIB := build/raylib-$(RAYLIB_VERSION)/src/libraylib.a
+# Its headers come with the library: extracted and built from source first
+RAYLIB_HEADERS := $(RAYLIB_LIB)
 else
 RAYLIB_INCLUDE := ./raylib-$(RAYLIB_VERSION)_linux_amd64/include
 RAYLIB_LIB := ./raylib-$(RAYLIB_VERSION)_linux_amd64/lib/libraylib.a
@@ -100,7 +102,7 @@ RT_H = src/lineit.h src/value.h src/branches.h src/rt/rt.h thirdparty/bt.h/bt.h 
 
 all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
 
-$(CONFIG)/obj/%.o: %.c
+$(CONFIG)/obj/%.o: %.c | $(RAYLIB_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) -MMD -MP -c $< -o $@
 
@@ -114,11 +116,11 @@ $(addprefix $(CONFIG)/,$(TOOLS)): $(CONFIG)/%: tools/%.c $(LIB_OBJ) $(RAYLIB_LIB
 	@mkdir -p $(@D)
 	$(CC) $(WARN) $(CFLAGS) -fPIE $(CPPFLAGS) -MMD -MP -MF $@.d $< $(LIB_OBJ) $(LDFLAGS) $(DEPS) -rdynamic -o $@
 
-$(CONFIG)/asan/%.o: %.c
+$(CONFIG)/asan/%.o: %.c | $(RAYLIB_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(WARN) -O1 -g $(SAN_FLAGS) $(CPPFLAGS) -MMD -MP -c $< -o $@
 
-$(CONFIG)/tsan/%.o: %.c
+$(CONFIG)/tsan/%.o: %.c | $(RAYLIB_HEADERS)
 	@mkdir -p $(@D)
 	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) -MMD -MP -c $< -o $@
 
