@@ -351,7 +351,8 @@ char *
 package_build(const char *path, const unsigned char *zip, size_t size, char *why, int why_size)
 {
         static int n;
-        char cache[PATH_MAX], base[PATH_MAX * 2], dir[PATH_MAX * 2 + 8], so[PATH_MAX * 2 + 8], tmp[PATH_MAX];
+        char cache[PATH_MAX], base[PATH_MAX * 2], dir[PATH_MAX * 2 + 32], so[PATH_MAX * 2 + 8], tmp[PATH_MAX];
+        char built[PATH_MAX * 2 + 32];
         unsigned long crc = crc32(0, zip, size);
 
         /* Absolute: make runs in the package */
@@ -360,13 +361,18 @@ package_build(const char *path, const unsigned char *zip, size_t size, char *why
                 return NULL;
         }
         snprintf(base, sizeof base, "%s/%s-%08lx", cache, GetFileNameWithoutExt(path), crc);
-        snprintf(dir, sizeof dir, "%s.build", base);
+        /* Two lineits (two make test at once) can build it at the same time:
+         * each in a folder of its own, and the library goes in its place in
+         * one go (rename), whole */
+        snprintf(dir, sizeof dir, "%s.build-%d", base, (int) getpid());
+        snprintf(built, sizeof built, "%s.so-%d", base, (int) getpid());
         snprintf(so, sizeof so, "%s.so", base);
         if (!FileExists(so)) {
                 fprintf(stderr, "modules: %s is not built for " LI_PLATFORM ", building it in %s\n", path, dir);
                 output_add(TextFormat("%s is not built for " LI_PLATFORM ", building it", path), true);
                 if (!package_extract(zip, size, dir, why, why_size)) return NULL;
-                if (!package_make(dir, "lineit-so", so)) {
+                if (!package_make(dir, "lineit-so", built) || rename(built, so) != 0) {
+                        remove(built);
                         snprintf(why, why_size, "not built for " LI_PLATFORM ", and make lineit-so failed in %s", dir);
                         return NULL;
                 }

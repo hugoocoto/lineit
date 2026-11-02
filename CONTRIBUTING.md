@@ -32,9 +32,9 @@ See [From source](README.md#from-source) for what to install, then:
 ```sh
 git clone --recursive https://github.com/hugoocoto/lineit
 cd lineit
-make hooks   # run the tests before every push
-make         # or make debug, with the sanitizers, while working
-make test
+make hooks          # run the tests before every push
+make -j"$(nproc)"   # or make debug, with the sanitizers, while working
+make -j"$(nproc)" test
 ```
 
 Editors that use clangd get the right flags from the `.clangd` files, and

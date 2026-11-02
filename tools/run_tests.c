@@ -9,7 +9,7 @@
  * clocks tick the same every run. A canvas that takes longer than TIMEOUT
  * seconds of real time fails the run.
  *
- * With -c it compiles them instead (Compile in the bar), to build/test-bin,
+ * With -c it compiles them instead (Compile in the bar), to build/test-bin/RUNNER (its name: make test and test-asan can run at once),
  * runs the programs for the same frames (--frames) and compares what they
  * print with the lines printed in X.out: Run and Compile have to do the
  * same.
@@ -229,7 +229,10 @@ main(int argc, char **argv)
 
         /* Not where the config says: these are only tests */
         if (cfg.compile.output != cfg_defaults.compile.output) free((char *) cfg.compile.output);
-        cfg.compile.output = "build/test-bin";
+        /* One for each runner: make test and make test-asan can run at once */
+        static char bin_dir[PATH_MAX];
+        snprintf(bin_dir, sizeof bin_dir, "build/test-bin/%s", GetFileName(argv[0]));
+        cfg.compile.output = bin_dir;
         for (int i = 1 + update + compile + step; i < argc; i++) {
                 const char *path = argv[i];
                 char out[PATH_MAX];

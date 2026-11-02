@@ -122,6 +122,10 @@ $(CONFIG)/tsan/%.o: %.c
 	@mkdir -p $(@D)
 	$(CC) $(WARN) -O1 -g -fsanitize=thread $(CPPFLAGS) -MMD -MP -c $< -o $@
 
+# Kept: the sanitizers' objects are only reached through a pattern rule, and
+# make would remove them as intermediate files after linking
+.SECONDARY: $(OBJ) $(ASAN_OBJ) $(TSAN_OBJ)
+
 -include $(wildcard $(OBJ:.o=.d) $(ASAN_OBJ:.o=.d) $(TSAN_OBJ:.o=.d) $(CONFIG)/*.d build/*_asan.d build/*_tsan.d)
 
 $(OUT): $(CONFIG)/lineit build/.flags
@@ -174,7 +178,7 @@ examples: $(GEN_EXAMPLES) $(MODULES)
 PACKAGES = build/modules/string/reverse.li
 
 build/modules/string/reverse.li: $(wildcard examples/package/* examples/package/src/*) tools/lineit-pack src/lineit.h
-	tools/lineit-pack -o $@ examples/package/Makefile
+	+tools/lineit-pack -o $@ examples/package/Makefile # +: it runs make, which shares the jobs
 
 # Runs every canvas in examples/ and tests/ and compares it with its .out,
 # see tools/run_tests.c. `make test-update` rewrites the .out files.
@@ -191,7 +195,7 @@ $(FFI_TEST_LIB): tests/lib/ffitest.c
 
 test: $(RUN_TESTS) $(TEST_EXTRACT) $(TEST_STEP_EDIT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
 	./$(RUN_TESTS) $(TESTS)
-	./$(RUN_TESTS) -c $(TESTS)
+	+./$(RUN_TESTS) -c $(TESTS) # +: Compile runs make, which shares the jobs
 	./$(RUN_TESTS) -s $(TESTS)
 	./$(TEST_EXTRACT)
 	./$(TEST_STEP_EDIT)
@@ -201,7 +205,7 @@ test: $(RUN_TESTS) $(TEST_EXTRACT) $(TEST_STEP_EDIT) $(MODULES) $(GRAPHS) $(PACK
 
 test-asan: build/run_tests_asan build/test_extract_asan build/test_step_edit_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
 	./build/run_tests_asan $(TESTS)
-	./build/run_tests_asan -c $(TESTS)
+	+./build/run_tests_asan -c $(TESTS)
 	./build/run_tests_asan -s $(TESTS)
 	./build/test_extract_asan
 	./build/test_step_edit_asan
@@ -232,11 +236,14 @@ ANALYZE_CC ?= clang
 ANALYZE_FLAGS = --analyze --analyzer-output text -Xanalyzer -analyzer-werror
 ANALYZE_SRC = $(SRC) src/rt/rt.c $(MODULES_SRC)
 
-analyze:
-	@for f in $(ANALYZE_SRC); do \
-		echo "analyze $$f"; \
-		$(ANALYZE_CC) $(ANALYZE_FLAGS) $(CPPFLAGS) -Isrc $$f -o /dev/null || exit 1; \
-	done
+# A target for each file, so make -j analyzes them at once
+ANALYZE = $(addprefix analyze/,$(ANALYZE_SRC))
+
+analyze: $(ANALYZE)
+
+$(ANALYZE): analyze/%: %
+	@echo "analyze $<"
+	@$(ANALYZE_CC) $(ANALYZE_FLAGS) $(CPPFLAGS) -Isrc $< -o /dev/null
 
 # clang-format with .clang-format, on the C of the editor, the runtime, the
 # modules and the tools (not thirdparty/ nor raylib). CI checks with
@@ -388,7 +395,7 @@ build/raylib-$(RAYLIB_VERSION)/src/libraylib.a: $(RAYLIB_TAR)
 	$(call check,$<,$(RAYLIB_SHA256))
 	rm -rf build/raylib-$(RAYLIB_VERSION)
 	tar -xzf $< -C build
-	env -u MAKEFLAGS -u MFLAGS $(MAKE) -C $(@D) PLATFORM=PLATFORM_DESKTOP RAYLIB_LIBTYPE=STATIC
+	env -u MAKEFLAGS -u MFLAGS $(MAKE) -C $(@D) -j"$$(nproc)" PLATFORM=PLATFORM_DESKTOP RAYLIB_LIBTYPE=STATIC
 
 $(RAYLIB_TAR):
 	@mkdir -p $(@D)
@@ -404,4 +411,4 @@ clean:
 	find docs -name '*.pdf' -delete
 
 .PHONY: test-tsan all analyze check-format clean debug dist docs examples format hooks install test test-update test-asan
-.PHONY: appimage uninstall version
+.PHONY: appimage uninstall version $(ANALYZE)
