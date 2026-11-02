@@ -141,7 +141,7 @@ typedef enum Li_Type {
         LI_PTR,    /* .p, anything else, owned by the module that set it */
         LI_LIST,   /* .p, values in order, see li_list_* */
         LI_MAP,    /* .p, string keys to values, in key order, see li_map_* */
-        LI_REF,    /* .s, a variable: its name, "::name" for a global (var/var) */
+        LI_REF,    /* .s, a variable: its name, "::name" for a global (var/var); li_set copies it */
         LI_BYTES,  /* .p, bytes of its own (a C buffer), see li_bytes */
         LI_TYPE_COUNT,
         /* Custom types, records made in the editor (File > New type), come
@@ -330,7 +330,8 @@ Li_Value li_c_read(Li_Type t, const void *mem);
 int li_c_members(Li_Type t, Li_C_Member *out, int max);
 Li_Type li_type_named(const char *name); /* LI_NONE if there's none */
 
-/* A copy of V that owns what it points to (strings, lists, maps, records),
+/* A copy of V that owns what it points to (strings, variables' names,
+   bytes, lists, maps, records),
    and freeing one: what li_copy, li_list_pop or a module's own list gave.
    li_drop leaves *V as LI_NONE. */
 Li_Value li_copy(Li_Value v);

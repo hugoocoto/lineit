@@ -26,7 +26,8 @@ int type_field_count(Li_Type t);
 const char *type_field_type(Li_Type t, int field); /* its type, by name: "int32", "geo/point" */
 Li_Type type_named(const char *name);              /* by name or last part, LI_NONE if none (or two) */
 
-/* A copy of V that owns what it points to (strings, lists, maps, records),
+/* A copy of V that owns what it points to (strings, variables' names,
+ * bytes, lists, maps, records),
  * for whoever keeps it longer than the module that made it: free it with
  * value_drop. li_copy and li_drop for modules. */
 Li_Value value_dup(Li_Value v);

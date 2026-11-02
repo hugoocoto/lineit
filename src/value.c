@@ -31,6 +31,9 @@ Li_Value
 value_dup(Li_Value v)
 {
         if (v.type == LI_STRING) return li_string(strdup(v.s ? v.s : ""));
+        /* A variable's name too: var/var's is in its module, which goes on
+         * writing it (and goes when the square does) */
+        if (v.type == LI_REF) return (Li_Value) { .type = LI_REF, .s = strdup(v.s ? v.s : "") };
         if (v.type == LI_BYTES && v.p) return li_bytes(li_bytes_data(v), li_bytes_size(v));
         if (v.type == LI_LIST && v.p) {
                 List *l = v.p, *c = calloc(1, sizeof *c);
@@ -65,7 +68,7 @@ value_dup(Li_Value v)
 void
 value_drop(Li_Value v)
 {
-        if (v.type == LI_STRING || v.type == LI_BYTES) {
+        if (v.type == LI_STRING || v.type == LI_REF || v.type == LI_BYTES) {
                 free(v.p); /* .s is .p */
         } else if (v.type == LI_LIST && v.p) {
                 List *l = v.p;

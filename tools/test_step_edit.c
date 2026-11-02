@@ -1,8 +1,10 @@
 /* Tests changing the canvas while stepping: branches are stopped inside
  * squares (a loop between two ticks of its body), and deleting, cutting or
  * undoing them, or reloading their module, must not leave the branches to
- * go on in squares that are gone. Run it with `make test` from the repo
- * root (make test-asan finds what's used after it's freed). */
+ * go on in squares that are gone. And that every square has a copy of its
+ * module of its own, inside subgraphs too: branches run them at once. Run
+ * it with `make test` from the repo root (make test-asan finds what's used
+ * after it's freed). */
 
 /* The editor itself, without its main, and with fake time (built with
  * -DLINEIT_FAKE_TIME: GetTime is fake_time, see src/editor/editor.h) */
@@ -33,6 +35,31 @@ stepped(const char *example, int steps)
                 run_frame();
         }
         return stepping && sched_busy(sched_get());
+}
+
+/* The modules squares (and the ones inside subgraphs) have: each its own */
+static void
+handles_of(SquareList *list, Da(void *) * out)
+{
+        Da_foreach(sp, *list)
+        {
+                if ((*sp)->handle) Da_append(out, (*sp)->handle);
+                if ((*sp)->graph) handles_of(&(*sp)->graph->squares, out);
+        }
+}
+
+static bool
+handles_unique(void)
+{
+        Da(void *) h = { 0 };
+        bool ok      = true;
+        handles_of(&squares, (void *) &h);
+        for (int i = 0; i < h.count; i++)
+                for (int j = i + 1; j < h.count; j++)
+                        ok = ok && h.items[i] != h.items[j];
+        ok = ok && h.count > 10; /* the subgraphs' squares are there */
+        Da_destroy(&h);
+        return ok;
 }
 
 static void
@@ -104,6 +131,12 @@ main(void)
         frame();
         check("reloading the module of the square a branch is in stops the run", !stepping && !sched_busy(sched_get()));
         run_stop();
+
+        /* Two math/accumulate: the squares of their canvases have the same
+         * ids, and were given the same copy of their modules once */
+        canvas_clear(-1, NULL);
+        canvas_read_file("tests/scope.lua", READ_LOAD);
+        check("every square has a copy of its module of its own", handles_unique());
 
         canvas_clear(-1, NULL);
         unload_modules();

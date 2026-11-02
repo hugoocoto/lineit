@@ -12,7 +12,12 @@ square_open(Square *s, Module *m)
         }
         if (!tmp_dir_make()) return false;
 
-        snprintf(path, sizeof path, "%s/%d-%s.so", tmp_dir, s->id, m->label);
+        /* A name no other copy had: dlopen gives the one already open for a
+         * name it knows, and ids aren't unique (each instance of a subgraph
+         * has the same squares, each tab its own canvas): squares would share
+         * one copy, and its statics */
+        static long copies;
+        snprintf(path, sizeof path, "%s/%d-%s-%ld.so", tmp_dir, s->id, m->label, ++copies);
         if (!copy_file(m->lib ? m->lib : m->path, path)) {
                 fprintf(stderr, "modules: could not copy %s to %s\n", m->lib ? m->lib : m->path, path);
                 remove(path);
