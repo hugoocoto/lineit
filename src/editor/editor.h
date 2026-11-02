@@ -866,6 +866,7 @@ void input_text(Square *s, int i, char *buf, int size, bool exact);
 bool input_set_text(Square *s, int i, const char *text, Li_Type type);
 int input_find(Square *s, const char *name);
 void field_edit_start(Square *s, int i, bool param);
+bool field_edit_first(Square *s);
 bool field_typing(Square *s, int i, bool param);
 bool update_field(void);
 void option_choose(int id, void *arg);

@@ -47,16 +47,18 @@ canvas_add_module(int id, void *arg)
         (void) id;
         Square *s    = square_new(arg, menu.world);
         Square *from = menu.wire_from >= 0 ? square_get(menu.wire_from) : NULL;
-        if (!s || !from) return;
+        if (!s) return;
 
         /* The wire it was opened with goes to its first input that takes it */
-        Li_Type type = pin_info(from, PART_OUTPUT, menu.wire_pin)->type;
-        for (int i = 0; i < s->inputs.count; i++) {
+        Li_Type type = from ? pin_info(from, PART_OUTPUT, menu.wire_pin)->type : LI_NONE;
+        for (int i = 0; from && i < s->inputs.count; i++) {
                 if (s->inputs.items[i].kind != PIN_OPTIONS && types_compatible(type, s->inputs.items[i].type)) {
                         link_add(from, menu.wire_pin, s, i);
                         break;
                 }
         }
+        /* Dropped, typing goes to its first field: no click needed */
+        field_edit_first(s);
 }
 
 void

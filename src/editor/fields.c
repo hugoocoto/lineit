@@ -155,6 +155,30 @@ field_edit_start(Square *s, int i, bool param)
         field_edit.error  = false;
 }
 
+/* The first input of S from FROM with a field to type in: a typed value,
+ * not a checkbox or a list, and nothing wired to it. -1 if there's none. */
+static int
+typed_input_from(Square *s, int from)
+{
+        for (int i = Max(from, 0); i < s->inputs.count; i++) {
+                PinInfo *p = &s->inputs.items[i];
+                if (p->kind == PIN_VALUE && p->type != LI_BOOL && link_to(s->id, i) < 0) return i;
+        }
+        return -1;
+}
+
+/* A square just added: typing goes to its first field, its value selected,
+ * so what's typed replaces it (Esc keeps it). False if it has none. */
+bool
+field_edit_first(Square *s)
+{
+        int i = s ? typed_input_from(s, 0) : -1;
+        if (i < 0) return false;
+        field_edit_start(s, i, false);
+        field_edit.text.anchor = 0;
+        return true;
+}
+
 /* Field I of S (a param if PARAM) is being typed */
 bool
 field_typing(Square *s, int i, bool param)
@@ -269,8 +293,17 @@ update_field(void)
         if (!field_edit.square) return false;
 
         switch (text_input_update(&field_edit.text, &changed)) {
-        case TEXT_DONE:
-        case TEXT_NEXT: field_edit_apply(); break;
+        case TEXT_DONE: field_edit_apply(); break;
+        case TEXT_NEXT: {
+                /* Applied, typing goes on in the square's next field, if any */
+                Square *s = field_edit.square;
+                int next  = field_edit.param ? -1 : typed_input_from(s, field_edit.input + 1);
+                if (field_edit_apply() && next >= 0) {
+                        field_edit_start(s, next, false);
+                        field_edit.text.anchor = 0;
+                }
+                break;
+        }
         case TEXT_CANCEL: field_edit.square = NULL; return true;
         case TEXT_TYPING: break;
         }
