@@ -27,7 +27,7 @@ in the issue before writing it: it saves everyone's time.
 
 ## Setting up
 
-See [From source](README.md#from-source) for what to install, then:
+See [Install](README.md#install), from source, for what to install, then:
 
 ```sh
 git clone --recursive https://github.com/hugoocoto/lineit
@@ -36,6 +36,32 @@ make hooks          # run the tests before every push
 make -j"$(nproc)"   # or make debug, with the sanitizers, while working
 make -j"$(nproc)" test
 ```
+
+Cloned without `--recursive`: `git submodule update --init` (the small
+libraries in `thirdparty/`). LuaJIT works instead of Lua 5.1:
+`make LUA=luajit`. Run from the source tree, lineit uses the tree
+(`build/`, `modules/`, its `config.lua`); installed, it keeps your own
+things in `~/.config/lineit`, `~/.local/share/lineit` and
+`~/.cache/lineit`.
+
+| Command             | What it does                                                   |
+|---------------------|----------------------------------------------------------------|
+| `make`              | the editor, the modules and the runtime of Compile             |
+| `make WERROR=1`     | the same, failing on any warning, like CI                      |
+| `make debug`        | without optimizations, with AddressSanitizer and UBSan         |
+| `make test`         | run every canvas in `examples/` and `tests/`, compile and step them |
+| `make test-asan`    | the same, with AddressSanitizer and UBSan                      |
+| `make test-tsan`    | the same, with ThreadSanitizer: branches run in parallel       |
+| `make analyze`      | clang's static analyzer                                        |
+| `make format`       | format the C with clang-format (`make check-format` checks)    |
+| `make docs`         | `docs/*.typ` to PDF (needs typst)                              |
+| `make install`      | install it to `~/.local` (`PREFIX`, `DESTDIR`)                 |
+| `make appimage`     | `lineit-x86_64.AppImage` (downloads its pinned tools)          |
+| `make dist`         | `lineit-VERSION.tar.gz`, the source with the submodules        |
+| `make hooks`        | run `make test` before every `git push`                        |
+| `make clean`        | remove what the build made                                     |
+
+All of them run in parallel with `-j`.
 
 Editors that use clangd get the right flags from the `.clangd` files, and
 the code style from `.clang-format` and `.editorconfig`.
