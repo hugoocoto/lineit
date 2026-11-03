@@ -87,7 +87,7 @@ tab_switch(int i)
         /* Sizes may be old: the config or the fonts may have changed */
         Da_foreach(sp, squares)
         {
-                (*sp)->side = 0;
+                (*sp)->size = (Vector2) { 0 };
         }
         tab_title();
 }
@@ -241,7 +241,7 @@ tab_close(int i, bool force)
                 tab_swap(tabs.items[tab_cur]);
                 Da_foreach(sp, squares)
                 {
-                        (*sp)->side = 0;
+                        (*sp)->size = (Vector2) { 0 };
                 }
         }
         tab_title();

@@ -12,11 +12,12 @@ prompt_open(const char *label, const char *text, void (*done)(const char *))
         prompt.matches[0]  = '\0';
         prompt.hint        = NULL;
         prompt.no_complete = false;
+        prompt.exts        = ".lua";
         text_input_set(&prompt.input, text);
         menu.depth = 0;
 }
 
-/* Tab: complete what's typed with the folders and .lua files it can be,
+/* Tab: complete what's typed with the folders and files (prompt.exts) it can be,
  * as far as they all agree, and list them */
 static void
 prompt_complete(void)
@@ -35,7 +36,7 @@ prompt_complete(void)
                 const char *name = GetFileName(files.paths[i]);
                 bool is_dir      = DirectoryExists(files.paths[i]);
                 if (strncmp(name, start, strlen(start)) || (*name == '.' && *start != '.')) continue;
-                if (!is_dir && !IsFileExtension(name, ".lua")) continue;
+                if (!is_dir && prompt.exts && !IsFileExtension(name, prompt.exts)) continue;
                 Da_append(&found, strdup(TextFormat("%s%s", name, is_dir ? "/" : "")));
         }
         UnloadDirectoryFiles(files);

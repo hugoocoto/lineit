@@ -24,6 +24,13 @@ Or without the editor: `./lineit --compile examples/hello.lua`.
 | `collatz.lua`     | `flow/while` with a comparison as its condition, plus `flow/ifelse`   |
 | `fibonacci.lua`   | a list variable: `list/push`, `list/get` from the end, `list/length`  |
 | `pi.lua`          | branches in parallel calling C (`ffi/call`: libm's `pow`, `sqrt`, `atan`, libc's `snprintf`) |
+| `images.lua`      | `image/open` of a photo, edits (`resize`, `grayscale`, `crop`, `tint`...) and `image/save` |
+
+`images.lua` edits `symi.png`, "Colorful houses Symi 2" by Jebulon, CC0
+(public domain), from Wikimedia Commons:
+<https://commons.wikimedia.org/wiki/File:Colorful_houses_Symi_2.jpg>, made
+640 pixels wide and saved as PNG. Paths in a canvas are relative to its
+folder, so it finds the photo, and saves its edits next to it.
 
 Ctrl+S saves back to the file you opened, so copy one before experimenting
 if you want to keep the original.

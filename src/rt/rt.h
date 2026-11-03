@@ -55,12 +55,14 @@ typedef struct Rt_Type {
         int field_count;
         const char *const *fields;
         const char *const *field_types;
+        bool bytes; /* its values are bytes, see type_is_bytes */
 } Rt_Type;
 
 /* Given by main.c */
 extern const Rt_Type rt_types[];
 extern const int rt_type_count;
 extern const int rt_scope_count;
+extern const char rt_canvas_dir[]; /* where the canvas was, for li_path: "" if it had no file */
 /* The ticks between nodes, for branches: node I ticks rt_next[J] for J
  * from rt_next_first[I] to rt_next_first[I + 1] */
 extern const int rt_node_count;

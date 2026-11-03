@@ -71,6 +71,20 @@ squares_settle(void)
         got_free(mark);
 }
 
+/* What the squares set in the last run goes: a run starts from nothing,
+ * like a compiled program. Pure squares compute theirs again when read. */
+static void
+outputs_clear(void)
+{
+        for (int i = 0; i < prog.nodes.count; i++) {
+                Da_foreach(p, prog.nodes.items[i].square->outputs)
+                {
+                        value_drop(p->value);
+                        p->value = (Li_Value) { .type = LI_NONE };
+                }
+        }
+}
+
 /* A new run: from the declared values of the variables, the starts first
  * (as branches, see branches.h). False if it can't. */
 bool
@@ -89,6 +103,7 @@ run_begin(void)
         program_lower();
         squares_settle();
         program_lower();
+        outputs_clear();
         program_each(true);
         return true;
 }

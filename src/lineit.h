@@ -33,8 +33,11 @@
      void module_start(Li_Node *n);
         Run was pressed in the bar. Called once, before the first
         module_frame. Use it to set things up or start tick chains (entry).
-        A square with a tick input is set up: its start runs first, before
-        any branch. One with none starts a branch (see src/branches.h).
+        Every output is empty (LI_NONE) then: Run starts from nothing.
+        A square with a tick input, or with no tick pins at all (a pure
+        one, to forget what it kept), is set up: its start runs first,
+        before any branch. One with only tick outputs starts a branch (see
+        src/branches.h).
 
      void module_draw(Li_Node *n);
         Called once per frame, even when stopped, before drawing. Use it to
@@ -124,7 +127,7 @@
  * something is added (what older ones made still works), the major when
  * something changes or goes away (it doesn't). The patch is never checked.
  * See tools/lineit-pack --howto for packages. */
-#define LI_VERSION "0.0.1"
+#define LI_VERSION "0.0.2"
 
 #ifdef __cplusplus
 extern "C" {
@@ -143,6 +146,7 @@ typedef enum Li_Type {
         LI_MAP,    /* .p, string keys to values, in key order, see li_map_* */
         LI_REF,    /* .s, a variable: its name, "::name" for a global (var/var); li_set copies it */
         LI_BYTES,  /* .p, bytes of its own (a C buffer), see li_bytes */
+        /* (A custom type can be bytes too, see li_bytes) */
         LI_TYPE_COUNT,
         /* Custom types, records made in the editor (File > New type), come
            after these: LI_TYPE_COUNT and up. Their .p is the record, owned
@@ -230,9 +234,25 @@ void li_set_data(Li_Node *n, void *data);
 /* Text drawn inside the square, printf style */
 void li_text(Li_Node *n, const char *fmt, ...) LI_PRINTF(2, 3);
 
+/* A picture drawn inside the square, at the top under its text (li_text,
+   say what it is there: its size...), above the pins: WIDTH x HEIGHT pixels
+   of RGBA, 8 bits each, row by row (copied, and made small). The square
+   makes room for it the first time, so call it in module_init with NULL to
+   have the room from the start, empty. NULL later empties it. A compiled
+   program shows nothing. */
+void li_image(Li_Node *n, const unsigned char *rgba, int width, int height);
+
 /* A line in the output panel of the editor (and stdout), printf style.
    '\n' in it starts new lines. */
 void li_print(Li_Node *n, const char *fmt, ...) LI_PRINTF(2, 3);
+
+/* PATH, of a file the square reads or writes (typed in a field), as it
+   has to be opened: a relative one is relative to the folder of the canvas
+   (so a canvas and its files go together), an absolute one stays. In a
+   canvas never saved, and for "", PATH itself. Valid until the next call in
+   this thread. A compiled program finds them in the folder the canvas was
+   in when it was compiled. */
+const char *li_path(Li_Node *n, const char *path);
 
 /* Seconds since the program started */
 double li_time(void);
@@ -300,7 +320,11 @@ void li_map_clear(Li_Value *map); /* makes *MAP an empty map */
 
 /* Bytes (LI_BYTES): a buffer that's a value, copied like strings and freed
    with what has it. li_bytes makes one of SIZE bytes, a copy of DATA (all
-   zero if DATA is NULL): yours, li_drop it (or li_set it, which copies). */
+   zero if DATA is NULL): yours, li_drop it (or li_set it, which copies).
+   A custom type with `bytes = true` in its file (modules/image/
+   image.type.lua) is a buffer too: make one with li_bytes, fill it, and set
+   its .type to the type (li_type_named). Its copies share it, so don't
+   change it after that. li_bytes_size and li_bytes_data take both. */
 Li_Value li_bytes(const void *data, size_t size);
 size_t li_bytes_size(Li_Value v);
 unsigned char *li_bytes_data(Li_Value v); /* NULL if V isn't bytes */

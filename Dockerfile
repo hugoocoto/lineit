@@ -8,10 +8,8 @@
 # as big as the browser's window. Your canvases, config and compiled programs are in /work (see
 # scripts/docker-entrypoint.sh). Arguments after the image go to lineit.
 
-# Debian 13, pinned like the actions in CI (Dependabot updates both): glibc
-# 2.41, so the raylib in the repo links (it needs 2.38, see the Makefile).
-# On other machines than x86_64 there's no raylib in the repo: it's built
-# from its source.
+# Debian 13, pinned like the actions in CI (Dependabot updates both).
+# raylib is built from its source (see the Makefile), on any machine.
 FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config liblua5.1-0-dev libfontconfig-dev \
@@ -19,9 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
 WORKDIR /src
 COPY . .
-RUN raylib=repo; [ "$(uname -m)" = x86_64 ] || raylib=source; \
-    make -j"$(nproc)" RAYLIB=$raylib && \
-    make install RAYLIB=$raylib PREFIX=/usr DESTDIR=/out
+RUN make -j"$(nproc)" && make install PREFIX=/usr DESTDIR=/out
 
 FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 # lineit's libraries, software GL (llvmpipe) and what GLFW loads; a C

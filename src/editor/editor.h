@@ -271,6 +271,8 @@ typedef struct ModuleFns {
         const char *(*libs)(void);       /* the same */
 } ModuleFns;
 
+typedef struct Preview Preview; /* see preview.c */
+
 /* A square on the canvas, an instance of a module. Modules see it as an
  * opaque Li_Node. */
 struct Li_Node {
@@ -283,7 +285,7 @@ struct Li_Node {
         PinList outputs;
         PinList was;      /* the inputs before li_pins_reset, for their typed values */
         ParamList params; /* changed from the settings panel */
-        float side;       /* cached by square_side, 0 to recompute */
+        Vector2 size;     /* cached by square_size, 0 to recompute */
         float label_w;    /* longest input name, cached with side */
         float field_w;    /* widest input field, cached with side */
         bool selected;
@@ -291,6 +293,7 @@ struct Li_Node {
         double fired[16];      /* last time each tick output fired, for the tooltip */
         void *data;            /* module state, see li_set_data */
         char text[64];         /* drawn inside, see li_text */
+        Preview *preview;      /* a picture in it, see li_image */
         bool evaluating;       /* guards module_eval against cycles */
         int ir;                /* its node in the program, see program.c */
         struct Graph *graph;   /* a subgraph: its own canvas, see subgraphs.c */
@@ -468,6 +471,8 @@ typedef struct TypeDef {
         const char *label; /* "point" */
         Da(Field) fields;
         Color color;
+        bool bytes;      /* no fields: its values are bytes (bytes = true) */
+        long long mtime; /* of its file, for a bytes type (a record's is its modules') */
 } TypeDef;
 
 typedef Da(TypeDef *) TypesDa;
@@ -772,6 +777,7 @@ struct PromptState {
         char matches[1024]; /* what Tab found, shown below */
         const char *hint;   /* shown below while nothing else is, NULL: the default */
         bool no_complete;   /* Tab doesn't complete paths: it isn't one */
+        const char *exts;   /* the files Tab lists, ".lua" (IsFileExtension's), NULL: all */
 };
 
 extern struct PromptState prompt;
@@ -981,7 +987,7 @@ void got_free(int mark);
 Li_Value li_get(Li_Node *n, int input);
 Sched *sched_get(void);
 void li_tick(Li_Node *n, int output);
-bool square_is_ticked(Square *s);
+bool square_is_set_up(Square *s);
 bool program_each(bool start);
 
 /* ---- compile.c: Compile: the program, as C ---- */
@@ -1034,7 +1040,7 @@ void draw_tabs(void);
 
 /* ---- prompt.c: the prompt: a path typed for Open and Save as ---- */
 
-void prompt_open(const char *label, const char *text, void (*done)(const char *));
+void prompt_open(const char *label, const char *text, void (*done)(const char *)); /* of .lua files */
 bool update_prompt(void);
 void draw_prompt(void);
 
@@ -1042,6 +1048,8 @@ void draw_prompt(void);
 
 void file_save_as_done(const char *path);
 const char *file_dir(void);
+const char *canvas_file(const char *path, char *buf, int size);     /* where a square's PATH is */
+const char *canvas_relative(const char *path, char *buf, int size); /* how a square keeps PATH */
 void file_new(void);
 void file_open(void);
 void file_save_as(void);
@@ -1131,6 +1139,19 @@ float glow(double t);
 int link_hit(Vector2 p);
 void draw_canvas(void);
 
+/* ---- preview.c: pictures in squares: what a module shows with li_image ---- */
+
+float preview_height(Square *s); /* 0 if it has none */
+float preview_width(Square *s);  /* the least the square is */
+void preview_draw(Square *s);
+void preview_free(Square *s);
+
+/* ---- drop.c: files for squares: dropped on the window, or Choose file... ---- */
+
+void update_drop(void);
+bool square_takes_file(Square *s); /* it has a path to choose */
+void square_choose_file(int id, void *arg);
+
 /* ---- input.c: the mouse on the canvas: dragging, selecting, the camera ---- */
 
 Rectangle drag_box(void);
@@ -1143,7 +1164,7 @@ float square_text_band(void);
 float pin_label_gap(void);
 float field_width(PinInfo *p);
 float params_height(Square *s);
-float square_side(Square *s);
+Vector2 square_size(Square *s);
 Rectangle square_rect(Square *s);
 PinInfo *pin_info(Square *s, Part part, int i);
 Vector2 pin_pos(Square *s, Part part, int i);

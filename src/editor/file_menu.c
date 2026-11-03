@@ -26,6 +26,41 @@ file_dir(void)
         return dir;
 }
 
+/* PATH, of a file a square uses, as lineit finds it: relative to the
+ * folder of the canvas, if it's relative and the canvas has a file (else
+ * as it is, relative to the current folder) */
+const char *
+canvas_file(const char *path, char *buf, int size)
+{
+        if (!path || !*path || *path == '/' || !canvas_path || !strchr(canvas_path, '/')) return path;
+        snprintf(buf, size, "%s/%s", GetDirectoryPath(canvas_path), path);
+        return buf;
+}
+
+/* PATH (relative to the current folder, or absolute) as a square keeps
+ * it: relative to the folder of the canvas if it's in it, so they go
+ * together, absolute if not */
+const char *
+canvas_relative(const char *path, char *buf, int size)
+{
+        char dir[PATH_MAX], file[PATH_MAX], in[PATH_MAX];
+        const char *from = canvas_path && strchr(canvas_path, '/') ? GetDirectoryPath(canvas_path) : ".";
+        if (!realpath(path, file)) {
+                /* Not there yet (one to save): its folder is */
+                if (!realpath(GetDirectoryPath(path), in)) return path;
+                snprintf(file, sizeof file, "%s/%s", in, GetFileName(path));
+        }
+        if (realpath(from, dir)) {
+                size_t n = strlen(dir);
+                if (!strncmp(file, dir, n) && file[n] == '/') {
+                        snprintf(buf, size, "%s", file + n + 1);
+                        return buf;
+                }
+        }
+        snprintf(buf, size, "%s", file);
+        return buf;
+}
+
 void
 file_new(void)
 {

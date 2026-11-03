@@ -48,7 +48,7 @@ square_new_id(Module *m, Vector2 center, int id)
         for (int i = 0; s->fn.param && i < s->params.count; i++)
                 s->fn.param(s, i);
 
-        s->pos = Vector2SubtractValue(center, square_side(s) / 2);
+        s->pos = Vector2Subtract(center, Vector2Scale(square_size(s), 0.5f));
         Da_append(&squares, s);
         last_module = m;
         return s;
@@ -81,6 +81,7 @@ square_free(Square *s)
         if (panel.square == s) panel_close();
         if (field_edit.square == s) field_edit.square = NULL;
         if (s->fn.destroy) s->fn.destroy(s);
+        preview_free(s);
         pins_free(&s->inputs);
         pins_free(&s->was);
         Da_foreach(p, s->outputs)

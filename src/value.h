@@ -2,8 +2,8 @@
  * and li_format. Shared by the editor (src/editor/) and the programs
  * Compile makes (src/rt/rt.c), so both run canvases the same way.
  *
- * Whoever links it says what the custom types are: type_is_record and
- * type_field_name below. */
+ * Whoever links it says what the custom types are: type_is_record,
+ * type_is_bytes and type_field_name below. */
 
 #ifndef VALUE_H_
 #define VALUE_H_
@@ -21,6 +21,7 @@ typedef struct Record {
 
 /* Given by whoever links this */
 bool type_is_record(Li_Type t);
+bool type_is_bytes(Li_Type t);                     /* a custom type whose values are bytes (bytes = true) */
 const char *type_field_name(Li_Type t, int field); /* "?" if there's none */
 int type_field_count(Li_Type t);
 const char *type_field_type(Li_Type t, int field); /* its type, by name: "int32", "geo/point" */

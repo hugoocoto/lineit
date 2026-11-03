@@ -384,6 +384,12 @@ compile_main(FILE *f, const char *name, const char *from)
         fprintf(f, "};\n\n");
         fprintf(f, "const int rt_scope_count = %d;\n\n", scopes.count + 1);
 
+        /* Where li_path finds the files of the canvas: where it is now */
+        char dir[PATH_MAX];
+        fprintf(f, "const char rt_canvas_dir[] = ");
+        c_string(f, canvas_path && realpath(GetDirectoryPath(canvas_path), dir) ? dir : "");
+        fprintf(f, ";\n\n");
+
         /* Every type, so their ids are the editor's */
         fprintf(f, "const Rt_Type rt_types[] = {\n");
         for (int t = 0; t < types.count; t++) {
@@ -400,7 +406,7 @@ compile_main(FILE *f, const char *name, const char *from)
                         fprintf(f, "%s", k ? ", " : " ");
                         c_string(f, d->fields.items[k].type ? d->fields.items[k].type : "");
                 }
-                fprintf(f, "%s} },\n", d->fields.count ? " " : " NULL ");
+                fprintf(f, "%s}, %s },\n", d->fields.count ? " " : " NULL ", d->bytes ? "true" : "false");
         }
         if (!types.count) fprintf(f, "        { 0 },\n");
         fprintf(f, "};\nconst int rt_type_count = %d;\n\n", types.count);
@@ -460,7 +466,7 @@ compile_main(FILE *f, const char *name, const char *from)
         for (int e = 0; e < 2; e++) {
                 int count = 0;
                 for (int i = 0; i < prog.nodes.count; i++) {
-                        if (!node_has(i, each[e]) || (e == 0 && square_is_ticked(prog.nodes.items[i].square))) continue;
+                        if (!node_has(i, each[e]) || (e == 0 && square_is_set_up(prog.nodes.items[i].square))) continue;
                         fprintf(f, "static void\n%s_%d(void *arg)\n{\n        (void) arg;\n        rt_start(&N[%d], n%d_%s, %d);\n}\n\n",
                                 each[e], i, i, i, each[e], i);
                         count++;
@@ -473,13 +479,13 @@ compile_main(FILE *f, const char *name, const char *from)
                 for (int i = 0; e == 0 && i < prog.nodes.count; i++) {
                         if (is_decl(prog.nodes.items[i].square) && node_has(i, "eval"))
                                 fprintf(f, "        rt_pull(&N[%d], n%d_eval, 0, %d);\n", i, i, i);
-                        if (node_has(i, "start") && square_is_ticked(prog.nodes.items[i].square))
+                        if (node_has(i, "start") && square_is_set_up(prog.nodes.items[i].square))
                                 fprintf(f, "        rt_call(&N[%d], n%d_start);\n", i, i);
                 }
                 if (count) {
                         fprintf(f, "        static const Sched_Task tasks[] = {\n");
                         for (int i = 0; i < prog.nodes.count; i++)
-                                if (node_has(i, each[e]) && !(e == 0 && square_is_ticked(prog.nodes.items[i].square)))
+                                if (node_has(i, each[e]) && !(e == 0 && square_is_set_up(prog.nodes.items[i].square)))
                                         fprintf(f, "                { %s_%d, NULL, %d, -1 },\n", each[e], i, i);
                         fprintf(f, "        };\n        rt_run(tasks, %d);\n", count);
                 }

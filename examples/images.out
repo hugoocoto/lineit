@@ -1,0 +1,15 @@
+480x320 in, saved: true
+-- 13 squares, 16 links
+93 image/open: 640x427
+94 image/resize: 480x320
+95 image/grayscale: 480x320
+96 image/contrast: 480x320
+97 image/crop: 240x160
+98 image/tint: 240x160
+99 image/flip: 240x160
+100 flow/entry: 
+101 image/save: saved
+102 image/save: saved
+103 image/size: 480x320
+104 string/format: "480x320 in, saved: true"
+105 io/print: 480x320 in, saved: true

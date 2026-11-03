@@ -95,8 +95,12 @@ static char *
 run(const char *path)
 {
         output_clear();
-        now = 0;
-        if (!canvas_read_file(path, READ_LOAD)) return NULL;
+        now         = 0;
+        canvas_path = path; /* as the editor has it open: li_path reads from its folder */
+        if (!canvas_read_file(path, READ_LOAD)) {
+                canvas_path = NULL;
+                return NULL;
+        }
 
         alarm(TIMEOUT);
         running = false;
@@ -132,6 +136,7 @@ run(const char *path)
         write_squares(f, &squares, 0);
         fclose(f);
         canvas_clear(-1, NULL);
+        canvas_path = NULL;
         return buf;
 }
 
@@ -215,6 +220,13 @@ main(int argc, char **argv)
         bool compile = argc > 1 && !strcmp(argv[1], "-c");
         step         = argc > 1 && !strcmp(argv[1], "-s");
         int failed = 0, total = 0;
+        int first = 1 + update + compile + step;
+
+        /* A flag it doesn't know (--help) isn't a canvas */
+        if (first >= argc || argv[first][0] == '-') {
+                fprintf(stderr, "usage: %s [-u | -c | -s] CANVAS.lua...\n", argv[0]);
+                return 2;
+        }
 
         config_start("config.lua");
         /* Every line printed, to compare: the panel keeps only the last ones */
@@ -243,9 +255,14 @@ main(int argc, char **argv)
         static char bin_dir[PATH_MAX];
         snprintf(bin_dir, sizeof bin_dir, "build/test-bin/%s", GetFileName(argv[0]));
         cfg.compile.output = bin_dir;
-        for (int i = 1 + update + compile + step; i < argc; i++) {
+        for (int i = first; i < argc; i++) {
                 const char *path = argv[i];
                 char out[PATH_MAX];
+                if (!IsFileExtension(path, ".lua")) { /* nor its .out next to it */
+                        fprintf(stderr, "FAIL %s: not a canvas (.lua)\n", path);
+                        failed++, total++;
+                        continue;
+                }
                 snprintf(out, sizeof out, "%.*s.out", (int) (strlen(path) - strlen(GetFileExtension(path))), path);
                 current = path;
                 total++;

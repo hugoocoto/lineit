@@ -124,7 +124,7 @@ const Setting settings[] = {
         SETTING(canvas.zoom_min, SET_FLOAT, "Canvas", "Zoom", "Furthest out", .min = 0.01f, .max = 1),
         SETTING(canvas.zoom_max, SET_FLOAT, "Canvas", "Zoom", "Closest in", .min = 1, .max = 32),
         SETTING(canvas.zoom_speed, SET_FLOAT, "Canvas", "Zoom", "Zoom change per wheel step (logarithmic)", .min = 0.01f, .max = 2),
-        SETTING(canvas.square_size, SET_FLOAT, "Canvas", "Squares", "Minimum side, squares grow with their pins", .min = 8, .max = 1000),
+        SETTING(canvas.square_size, SET_FLOAT, "Canvas", "Squares", "Minimum width and height, squares grow with their pins", .min = 8, .max = 1000),
         SETTING(canvas.pin_spacing, SET_FLOAT, "Canvas", "Squares", "Distance between pins on the same side", .min = 4, .max = 500),
         SETTING(canvas.pin_radius, SET_FLOAT, "Canvas", "Squares", "Input and output circles", .min = 1, .max = 100),
         SETTING(canvas.pin_font_size, SET_INT, "Canvas", "Squares", "Names of the pins", .min = 4, .max = 120),
@@ -313,7 +313,7 @@ config_reload(void)
         /* Sizes depend on fonts, spacing and field width */
         Da_foreach(sp, squares)
         {
-                (*sp)->side = 0;
+                (*sp)->size = (Vector2) { 0 };
         }
         /* The old strings, now that nothing uses them */
         for (int i = 0; i < countof(settings); i++) {

@@ -9,6 +9,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* What .p of a LI_BYTES (and of a bytes type) points to. A bytes type's
+ * are shared by their copies, REFS of them. */
+typedef struct Bytes {
+        size_t size;
+        int refs;
+        unsigned char data[];
+} Bytes;
+
+static void
+bytes_hold(Bytes *b)
+{
+        __atomic_add_fetch(&b->refs, 1, __ATOMIC_RELAXED);
+}
+
+static void
+bytes_release(Bytes *b)
+{
+        if (__atomic_sub_fetch(&b->refs, 1, __ATOMIC_ACQ_REL) == 0) free(b);
+}
+
 /* What .p of a LI_LIST and a LI_MAP point to. Each owns its values. */
 typedef struct List {
         Da(Li_Value) items;
@@ -35,6 +55,11 @@ value_dup(Li_Value v)
          * writing it (and goes when the square does) */
         if (v.type == LI_REF) return (Li_Value) { .type = LI_REF, .s = strdup(v.s ? v.s : "") };
         if (v.type == LI_BYTES && v.p) return li_bytes(li_bytes_data(v), li_bytes_size(v));
+        /* A bytes type's are never changed once made: copies share them */
+        if (type_is_bytes(v.type) && v.p) {
+                bytes_hold(v.p);
+                return v;
+        }
         if (v.type == LI_LIST && v.p) {
                 List *l = v.p, *c = calloc(1, sizeof *c);
                 Da_foreach(it, l->items)
@@ -70,6 +95,8 @@ value_drop(Li_Value v)
 {
         if (v.type == LI_STRING || v.type == LI_REF || v.type == LI_BYTES) {
                 free(v.p); /* .s is .p */
+        } else if (type_is_bytes(v.type) && v.p) {
+                bytes_release(v.p);
         } else if (v.type == LI_LIST && v.p) {
                 List *l = v.p;
                 Da_foreach(it, l->items)
@@ -151,6 +178,9 @@ value_equal(Li_Value a, Li_Value b)
         }
         default: break;
         }
+        if (type_is_bytes(a.type))
+                return a.p == b.p || (li_bytes_size(a) == li_bytes_size(b) &&
+                                      !memcmp(li_bytes_data(a), li_bytes_data(b), li_bytes_size(a)));
         if (!type_is_record(a.type)) return true;
         Record *r = a.p, *s = b.p;
         if (!r || !s) return r == s;
@@ -553,6 +583,7 @@ li_format(Li_Value v, char *buf, int size)
         case LI_REF: return snprintf(buf, size, "%s", v.s ? v.s : "");
         case LI_BYTES: return snprintf(buf, size, "%zu bytes", li_bytes_size(v));
         default:
+                if (type_is_bytes(v.type)) return snprintf(buf, size, v.p ? "%zu bytes" : "-", li_bytes_size(v));
                 if (type_is_record(v.type)) return v.p ? record_format(v.p, buf, size) : snprintf(buf, size, "-");
                 return snprintf(buf, size, "-");
         }
@@ -560,16 +591,12 @@ li_format(Li_Value v, char *buf, int size)
 
 /* ---- Bytes ---- */
 
-typedef struct Bytes {
-        size_t size;
-        unsigned char data[];
-} Bytes;
-
 Li_Value
 li_bytes(const void *data, size_t size)
 {
         Bytes *b = malloc(sizeof *b + size + 1);
         b->size  = size;
+        b->refs  = 1;
         if (data)
                 memcpy(b->data, data, size);
         else
@@ -581,13 +608,13 @@ li_bytes(const void *data, size_t size)
 size_t
 li_bytes_size(Li_Value v)
 {
-        return v.type == LI_BYTES && v.p ? ((Bytes *) v.p)->size : 0;
+        return (v.type == LI_BYTES || type_is_bytes(v.type)) && v.p ? ((Bytes *) v.p)->size : 0;
 }
 
 unsigned char *
 li_bytes_data(Li_Value v)
 {
-        return v.type == LI_BYTES && v.p ? ((Bytes *) v.p)->data : NULL;
+        return (v.type == LI_BYTES || type_is_bytes(v.type)) && v.p ? ((Bytes *) v.p)->data : NULL;
 }
 
 /* ---- Records as C structs ---- */
@@ -726,7 +753,7 @@ li_c_write(Li_Type t, Li_Value v, void *mem)
                 case 'p':
                         *(void **) p = NULL;
                         if (f.type == LI_PTR) *(void **) p = f.p;
-                        if (f.type == LI_BYTES) *(void **) p = li_bytes_data(f);
+                        if (f.type == LI_BYTES || type_is_bytes(f.type)) *(void **) p = li_bytes_data(f);
                         break;
                 case 'r':
                         if (!li_c_write(rec, f, p)) memset(p, 0, size);

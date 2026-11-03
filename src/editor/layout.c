@@ -54,13 +54,13 @@ params_height(Square *s)
         return s->params.count * cfg.canvas.pin_spacing;
 }
 
-/* Always a square: as tall as the text, the pins and the params need, and
- * as wide as the longest input or param name, its field and the longest
- * output name side by side */
-float
-square_side(Square *s)
+/* As tall as the text, the preview, the pins and the params need, and as
+ * wide as the longest input or param name, its field and the longest
+ * output name side by side, or the preview */
+Vector2
+square_size(Square *s)
 {
-        if (s->side) return s->side;
+        if (s->size.x) return s->size;
 
         s->label_w = pins_label_width(&s->inputs);
         s->field_w = 0;
@@ -75,18 +75,19 @@ square_side(Square *s)
         }
 
         int pins     = Max(s->inputs.count, s->outputs.count);
-        float height = square_text_band() + (pins + 1) * cfg.canvas.pin_spacing + params_height(s);
+        float height = square_text_band() + preview_height(s) + (pins + 1) * cfg.canvas.pin_spacing + params_height(s);
         float width  = s->label_w + (s->field_w ? s->field_w + 6 : 0) + pins_label_width(&s->outputs) +
                        2 * pin_label_gap() + 12;
-        s->side      = fmaxf(fmaxf(height, width), cfg.canvas.square_size);
-        return s->side;
+        width        = fmaxf(width, preview_width(s));
+        s->size      = (Vector2) { fmaxf(width, cfg.canvas.square_size), fmaxf(height, cfg.canvas.square_size) };
+        return s->size;
 }
 
 Rectangle
 square_rect(Square *s)
 {
-        float side = square_side(s);
-        return (Rectangle) { s->pos.x, s->pos.y, side, side };
+        Vector2 size = square_size(s);
+        return (Rectangle) { s->pos.x, s->pos.y, size.x, size.y };
 }
 
 PinInfo *
@@ -97,16 +98,16 @@ pin_info(Square *s, Part part, int i)
 }
 
 /* Inputs on the left side, outputs on the right, centered vertically
- * between the text band and the params */
+ * between the text band and its preview, at the top, and the params */
 Vector2
 pin_pos(Square *s, Part part, int i)
 {
-        float side = square_side(s);
-        float band = square_text_band();
-        float room = side - band - params_height(s);
-        int count  = part == PART_INPUT ? s->inputs.count : s->outputs.count;
-        float y    = s->pos.y + band + room / 2 + (i - (count - 1) / 2.0f) * cfg.canvas.pin_spacing;
-        float x    = part == PART_INPUT ? s->pos.x : s->pos.x + side;
+        Vector2 size = square_size(s);
+        float top    = square_text_band() + preview_height(s);
+        float room   = size.y - top - params_height(s);
+        int count    = part == PART_INPUT ? s->inputs.count : s->outputs.count;
+        float y      = s->pos.y + top + room / 2 + (i - (count - 1) / 2.0f) * cfg.canvas.pin_spacing;
+        float x      = part == PART_INPUT ? s->pos.x : s->pos.x + size.x;
         return (Vector2) { x, y };
 }
 
@@ -116,7 +117,7 @@ field_rect(Square *s, int i)
 {
         Vector2 p = pin_pos(s, PART_INPUT, i);
         float h   = cfg.canvas.pin_font_size + 6;
-        square_side(s);
+        square_size(s);
         return (Rectangle) { p.x + pin_label_gap() + s->label_w + 6, p.y - h / 2, field_width(&s->inputs.items[i]), h };
 }
 
@@ -134,7 +135,7 @@ field_text_rect(Rectangle f, bool options)
 float
 param_y(Square *s, int i)
 {
-        return s->pos.y + square_side(s) - params_height(s) + (i + 0.5f) * cfg.canvas.pin_spacing;
+        return s->pos.y + square_size(s).y - params_height(s) + (i + 0.5f) * cfg.canvas.pin_spacing;
 }
 
 /* Field of param I, below the input fields */
@@ -142,7 +143,7 @@ Rectangle
 param_rect(Square *s, int i)
 {
         float h = cfg.canvas.pin_font_size + 6;
-        square_side(s);
+        square_size(s);
         return (Rectangle) { s->pos.x + pin_label_gap() + s->label_w + 6, param_y(s, i) - h / 2,
                              param_field_width(&s->params.items[i]), h };
 }

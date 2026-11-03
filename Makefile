@@ -34,11 +34,12 @@ LDFLAGS ?= $(HARDEN_LDFLAGS)
 # and gcc warns about every one that could, however big the buffer.
 WARN = -Wall -Wextra -Wformat=2 -Wshadow -Wno-format-truncation $(if $(WERROR),-Werror)
 
-# raylib: the one in the repo (raylib-6.0_linux_amd64, built with glibc 2.38,
-# so it doesn't link with an older one), or with `make RAYLIB=source` the same
-# version built here from its source (see below), with this machine's glibc.
-# CI builds the AppImage that way, on an old glibc, so it runs on more systems.
-RAYLIB ?= repo
+# raylib: built here from its source (see below), downloaded once and
+# checked, with this machine's glibc and the image formats RAYLIB_FORMATS
+# adds; or with `make RAYLIB=repo` the one in the repo
+# (raylib-6.0_linux_amd64: offline, but built with glibc 2.38, so it doesn't
+# link with an older one, and without those formats).
+RAYLIB ?= source
 RAYLIB_VERSION := 6.0
 ifeq ($(RAYLIB),source)
 RAYLIB_INCLUDE := build/raylib-$(RAYLIB_VERSION)/src
@@ -99,8 +100,10 @@ DEPS += $(shell pkg-config --libs libcrypto)
 # prerequisites when it reads it, an RT defined later would be empty there.
 RT = build/rt/liblineit-rt.a
 RT_H = src/lineit.h src/value.h src/branches.h src/rt/rt.h thirdparty/bt.h/bt.h thirdparty/cum.h/cum.h
+# And raylib, for the programs with image modules (modules/image/image.h)
+RT_RAYLIB = build/rt/libraylib.a build/rt/include/raylib.h
 
-all: $(OUT) $(MODULES) $(GRAPHS) $(RT)
+all: $(OUT) $(MODULES) $(GRAPHS) $(RT) $(RT_RAYLIB)
 
 $(CONFIG)/obj/%.o: %.c | $(RAYLIB_HEADERS)
 	@mkdir -p $(@D)
@@ -141,13 +144,17 @@ build/modules/%.lua: modules/%.lua
 	@mkdir -p $(dir $@)
 	ln -sfr $< $@
 
-$(CONFIG)/modules/%.so: modules/%.c src/lineit.h $(MODULES_H)
+$(CONFIG)/modules/%.so: modules/%.c src/lineit.h $(MODULES_H) | $(RAYLIB_HEADERS)
 	@mkdir -p $(@D)
-	$(CC) $(WARN) $(CFLAGS) -I./src -fPIC -shared $< $(LDFLAGS:-pie=) $(MODULE_LIBS) -o $@
+	$(CC) $(WARN) $(CFLAGS) -I./src $(MODULE_CFLAGS) -fPIC -shared $< $(LDFLAGS:-pie=) $(MODULE_LIBS) -o $@
 
 # What a module links with, if it needs more: ffi/call calls C functions
 # with libffi (see modules/ffi/call.c)
 $(CONFIG)/modules/ffi/%.so: MODULE_LIBS = $(shell pkg-config --libs libffi) -ldl
+# The image modules edit images with raylib: its header. They don't link it,
+# they use the editor's (-rdynamic); a compiled program links the copy in
+# build/rt (see modules/image/image.h).
+$(CONFIG)/modules/image/%.so: MODULE_CFLAGS = -isystem $(RAYLIB_INCLUDE)
 
 # Kept: made only through a pattern rule, make would remove them after
 .PRECIOUS: $(CONFIG)/modules/%.so
@@ -168,6 +175,14 @@ $(CONFIG)/rt/liblineit-rt.a: src/value.c src/branches.c src/rt/rt.c $(RT_H)
 
 $(RT): $(CONFIG)/rt/liblineit-rt.a build/.flags
 	$(call use,$<)
+
+build/rt/libraylib.a: $(RAYLIB_LIB)
+	@mkdir -p $(@D)
+	$(call use,$<)
+
+build/rt/include/raylib.h: $(RAYLIB_HEADERS)
+	@mkdir -p $(@D)
+	cp $(RAYLIB_INCLUDE)/raylib.h $@
 
 # examples/*.lua, see tools/gen_examples.c
 GEN_EXAMPLES = $(CONFIG)/gen_examples
@@ -195,7 +210,7 @@ $(FFI_TEST_LIB): tests/lib/ffitest.c
 	@mkdir -p $(@D)
 	$(CC) $(WARN) $(CFLAGS) -fPIC -shared $< $(LDFLAGS:-pie=) -lm -o $@
 
-test: $(RUN_TESTS) $(TEST_EXTRACT) $(TEST_STEP_EDIT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
+test: $(RUN_TESTS) $(TEST_EXTRACT) $(TEST_STEP_EDIT) $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(RT_RAYLIB) $(FFI_TEST_LIB)
 	./$(RUN_TESTS) $(TESTS)
 	+./$(RUN_TESTS) -c $(TESTS) # +: Compile runs make, which shares the jobs
 	./$(RUN_TESTS) -s $(TESTS)
@@ -205,7 +220,7 @@ test: $(RUN_TESTS) $(TEST_EXTRACT) $(TEST_STEP_EDIT) $(MODULES) $(GRAPHS) $(PACK
 # The same, with the editor built with AddressSanitizer and UBSan: any
 # memory error, leak or undefined behavior fails it
 
-test-asan: build/run_tests_asan build/test_extract_asan build/test_step_edit_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(FFI_TEST_LIB)
+test-asan: build/run_tests_asan build/test_extract_asan build/test_step_edit_asan $(MODULES) $(GRAPHS) $(PACKAGES) $(RT) $(RT_RAYLIB) $(FFI_TEST_LIB)
 	./build/run_tests_asan $(TESTS)
 	+./build/run_tests_asan -c $(TESTS)
 	./build/run_tests_asan -s $(TESTS)
@@ -243,7 +258,7 @@ ANALYZE = $(addprefix analyze/,$(ANALYZE_SRC))
 
 analyze: $(ANALYZE)
 
-$(ANALYZE): analyze/%: %
+$(ANALYZE): analyze/%: % | $(RAYLIB_HEADERS)
 	@echo "analyze $<"
 	@$(ANALYZE_CC) $(ANALYZE_FLAGS) $(CPPFLAGS) -Isrc $< -o /dev/null
 
@@ -283,7 +298,7 @@ version:
 #   share/lineit/modules          the C of the modules, for Compile
 #   share/lineit/config.lua       every setting, commented: copy it to
 #                                 ~/.config/lineit/config.lua to change them
-#   share/lineit/examples         the example canvases
+#   share/lineit/examples         the example canvases, and the photo of images.lua
 #   share/applications, share/icons
 #
 # Your own modules, compiled programs and the package cache go to
@@ -301,11 +316,11 @@ install: all
 	cp -RL build/modules $(INSTALL_DIR)/lib/lineit/modules
 	# What make test leaves there: not lineit's modules
 	rm -rf $(INSTALL_DIR)/lib/lineit/modules/test-extract $(PACKAGES:build/modules/%=$(INSTALL_DIR)/lib/lineit/modules/%)
-	install -m644 $(RT) $(INSTALL_DIR)/lib/lineit/rt/
+	install -m644 $(RT) build/rt/libraylib.a $(INSTALL_DIR)/lib/lineit/rt/
 	install -m644 build/rt/include/* $(INSTALL_DIR)/lib/lineit/rt/include/
 	cp -R modules $(INSTALL_DIR)/share/lineit/modules
 	install -m644 config.lua $(INSTALL_DIR)/share/lineit/config.lua
-	install -m644 examples/*.lua $(INSTALL_DIR)/share/lineit/examples/
+	install -m644 examples/*.lua examples/symi.png $(INSTALL_DIR)/share/lineit/examples/
 	install -m644 assets/lineit.desktop $(INSTALL_DIR)/share/applications/lineit.desktop
 	install -m644 assets/lineit.svg $(INSTALL_DIR)/share/icons/hicolor/scalable/apps/lineit.svg
 
@@ -387,9 +402,13 @@ $(RUNTIME):
 	@mkdir -p $(@D)
 	curl -fsSL -o $@ https://github.com/AppImage/type2-runtime/releases/download/$(RUNTIME_VERSION)/runtime-x86_64
 
-# raylib from its source, for RAYLIB=source: pinned and checked like the tools
+# raylib from its source, the default (RAYLIB=source): pinned and checked like the tools
 # above, it ends up in the AppImage too. Its own make, without lineit's
 # variables (make debug's CFLAGS, WERROR...).
+# More image formats than raylib's default (png, bmp, gif, qoi) for
+# image/open and image/save: jpg and tga (read and written), psd, hdr, pic
+# and pnm (read). Its config.h has a flag for each.
+RAYLIB_FORMATS := $(addprefix -DSUPPORT_FILEFORMAT_,JPG=1 TGA=1 PSD=1 HDR=1 PIC=1 PNM=1)
 RAYLIB_SHA256 := 2b3ee1e2120c7a0796b33062c7e9a694dd8a8caa56a96319ac8c8ecf54a90d0b
 RAYLIB_TAR := $(DL)/raylib-$(RAYLIB_VERSION).tar.gz
 
@@ -397,7 +416,8 @@ build/raylib-$(RAYLIB_VERSION)/src/libraylib.a: $(RAYLIB_TAR)
 	$(call check,$<,$(RAYLIB_SHA256))
 	rm -rf build/raylib-$(RAYLIB_VERSION)
 	tar -xzf $< -C build
-	env -u MAKEFLAGS -u MFLAGS $(MAKE) -C $(@D) -j"$$(nproc)" PLATFORM=PLATFORM_DESKTOP RAYLIB_LIBTYPE=STATIC
+	env -u MAKEFLAGS -u MFLAGS $(MAKE) -C $(@D) -j"$$(nproc)" PLATFORM=PLATFORM_DESKTOP RAYLIB_LIBTYPE=STATIC \
+		CUSTOM_CFLAGS='$(RAYLIB_FORMATS)'
 
 $(RAYLIB_TAR):
 	@mkdir -p $(@D)

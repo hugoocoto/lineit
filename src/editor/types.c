@@ -13,7 +13,13 @@
  *
  * modules/geo/point.type.lua is the type geo/point, with two modules next
  * to it: geo/make_point (its fields in, a point out) and geo/break_point (a
- * point in, its fields out). Fields are bool, int, float, string, any,
+ * point in, its fields out).
+ *
+ * A type with `bytes = true` and no fields is a buffer instead, filled by
+ * the modules that use it, like LI_BYTES but a type of its own: modules/
+ * image/image.type.lua is the images of the image/ modules. Its values are
+ * never changed once made, so copies share them (value_dup). It has no
+ * make and break squares. Fields are bool, int, float, string, any,
  * ptr, or another custom type, by its name; and, for a type that's a C
  * struct (see li_c_size), char, int8..int64, uint8..uint64, float32,
  * float64: ints and floats in lineit, of their size in C. */
@@ -219,9 +225,19 @@ type_read(const char *path, TypeDef *d, char **known, int nknown, char *why, int
                 snprintf(why, size, "it isn't valid Lua");
                 return false;
         }
-        bool ok = conf_version(conf, "lineit_type", &version, why, size);
-        ok      = ok && version_ok(version, "type file", why, size);
-        if (ok && !(ok = Conf_get_len(conf, &n, "fields") == CONF_OK)) snprintf(why, size, "it has no fields table");
+        bool ok   = conf_version(conf, "lineit_type", &version, why, size);
+        ok        = ok && version_ok(version, "type file", why, size);
+        int bytes = 0;
+        if (ok && Conf_get_bool(conf, &bytes, "bytes") != CONF_OK) bytes = 0;
+        d->bytes = bytes;
+        if (ok && d->bytes) {
+                if (Conf_get_len(conf, &n, "fields") == CONF_OK && n > 0) {
+                        snprintf(why, size, "a bytes type has no fields");
+                        ok = false;
+                }
+                n = 0;
+        } else if (ok && !(ok = Conf_get_len(conf, &n, "fields") == CONF_OK))
+                snprintf(why, size, "it has no fields table");
         for (int i = 1; ok && i <= n; i++) {
                 const char *name, *type;
                 char nbuf[64];
@@ -326,6 +342,8 @@ types_scan(bool reload, bool *menu_changed)
                 type_module_name(name, "break", break_name, sizeof break_name);
                 Module *make = module_find(make_name), *brk = module_find(break_name);
 
+                /* A bytes type has no modules to say it's unchanged */
+                if (d && d->bytes && (mtime == d->mtime || (reload && now - mtime < MODULE_SETTLE_NS))) continue;
                 /* Known and unchanged, or still being written */
                 if (d && make && brk && (mtime == make->mtime || (reload && now - mtime < MODULE_SETTLE_NS))) {
                         make->seen = brk->seen = true;
@@ -353,6 +371,12 @@ types_scan(bool reload, bool *menu_changed)
                 fields_free(&d->fields);
                 d->fields = read.fields;
                 d->color  = read.color;
+                d->bytes  = read.bytes;
+                d->mtime  = mtime;
+                if (d->bytes) {
+                        if (existed) set_status("Reloaded type %s", name);
+                        continue;
+                }
 
                 Li_Type t   = LI_TYPE_COUNT + type_index(d);
                 make        = type_module(d, t, "make", path, &type_make_fns, menu_changed);

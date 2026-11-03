@@ -289,6 +289,23 @@ li_text(Li_Node *n, const char *fmt, ...)
         (void) n, (void) fmt;
 }
 
+/* As in the editor: relative to the canvas, where it was when compiled */
+const char *
+li_path(Li_Node *n, const char *path)
+{
+        static _Thread_local char buf[4096 * 2];
+        (void) n;
+        if (!path || !*path || *path == '/' || !*rt_canvas_dir) return path;
+        snprintf(buf, sizeof buf, "%s/%s", rt_canvas_dir, path);
+        return buf;
+}
+
+void
+li_image(Li_Node *n, const unsigned char *rgba, int width, int height)
+{
+        (void) n, (void) rgba, (void) width, (void) height;
+}
+
 void
 li_print(Li_Node *n, const char *fmt, ...)
 {
@@ -382,7 +399,15 @@ type_get(Li_Type t)
 bool
 type_is_record(Li_Type t)
 {
-        return type_get(t) != NULL;
+        const Rt_Type *d = type_get(t);
+        return d && !d->bytes;
+}
+
+bool
+type_is_bytes(Li_Type t)
+{
+        const Rt_Type *d = type_get(t);
+        return d && d->bytes;
 }
 
 const char *

@@ -9,33 +9,33 @@
 -- another start than 27 in all of n's to try it.
 --
 -- Open it with: ./lineit -f examples/collatz.lua, then press Run.
-lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
+lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
 
-camera = { x = 855, y = 104.355469, offset_x = 640, offset_y = 344, zoom = 0.645090818 }
+camera = { x = 855, y = 105.75, offset_x = 640, offset_y = 344, zoom = 0.645090818 }
 
 squares = {
-        { id = 31, module = "flow/entry", x = -35, y = -35 },
-        { id = 32, module = "flow/while", x = 325.898407, y = -73.1015625, params = { { name = "max", value = "10000" }, }, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 33, module = "compare/compare", x = 226, y = 151, inputs = { { name = "op", value = "!=" }, { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "1" }, } },
-        { id = 34, module = "var/var", x = -35.1015625, y = 286.898438, params = { { name = "name", value = "n" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "27" }, } },
-        { id = 35, module = "var/get", x = 176.687485, y = 289.6875, inputs = { { name = "var", type = "ref", value = "" }, } },
-        { id = 36, module = "flow/ifelse", x = 609.898438, y = -55.1015625, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 37, module = "math/modulo", x = 380.109406, y = 314.109375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "2" }, } },
-        { id = 38, module = "compare/equal", x = 570.632812, y = 168.632812, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 39, module = "math/divide", x = 743.898499, y = -350.601562, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "2" }, } },
-        { id = 40, module = "var/var", x = 743.898499, y = -163.101562, params = { { name = "name", value = "n" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "27" }, } },
-        { id = 41, module = "var/set", x = 950.109375, y = -195.890625, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
-        { id = 42, module = "math/multiply", x = 632.6875, y = 394.6875, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "3" }, } },
-        { id = 43, module = "math/add", x = 814.84375, y = 300.84375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "1" }, } },
-        { id = 44, module = "var/var", x = 762.898438, y = 76.8984375, params = { { name = "name", value = "n" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "27" }, } },
-        { id = 45, module = "var/set", x = 950.109375, y = 74.109375, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
-        { id = 46, module = "var/var", x = 971.898438, y = 316.898438, params = { { name = "name", value = "steps" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 47, module = "var/get", x = 1164.6875, y = 319.6875, inputs = { { name = "var", type = "ref", value = "" }, } },
-        { id = 48, module = "math/add", x = 1327.84375, y = 180.84375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "1" }, } },
-        { id = 49, module = "var/var", x = 1180.89844, y = -208.101562, params = { { name = "name", value = "steps" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 50, module = "var/set", x = 1368.10938, y = -75.890625, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
-        { id = 51, module = "io/print", x = 1598.89844, y = -73.1015625, inputs = { { name = "value", type = "string", value = "" }, } },
-        { id = 52, module = "io/print", x = 534.898438, y = -313.101562, inputs = { { name = "value", type = "string", value = "" }, } },
+        { id = 31, module = "flow/entry", x = -32, y = -35 },
+        { id = 32, module = "flow/while", x = 325.898407, y = -71, params = { { name = "max", value = "10000" }, }, inputs = { { name = "cond", type = "bool", value = "false" }, } },
+        { id = 33, module = "compare/compare", x = 231.421875, y = 151, inputs = { { name = "op", value = "!=" }, { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "1" }, } },
+        { id = 34, module = "var/var", x = -35.1015625, y = 289, params = { { name = "name", value = "n" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "27" }, } },
+        { id = 35, module = "var/get", x = 176.687485, y = 325, inputs = { { name = "var", type = "ref", value = "" }, } },
+        { id = 36, module = "flow/ifelse", x = 609.898438, y = -47, inputs = { { name = "cond", type = "bool", value = "false" }, } },
+        { id = 37, module = "math/modulo", x = 380.109406, y = 343, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "2" }, } },
+        { id = 38, module = "compare/equal", x = 570.632812, y = 178, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
+        { id = 39, module = "math/divide", x = 743.898499, y = -324.5, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "2" }, } },
+        { id = 40, module = "var/var", x = 743.898499, y = -161, params = { { name = "name", value = "n" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "27" }, } },
+        { id = 41, module = "var/set", x = 950.109375, y = -179, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
+        { id = 42, module = "math/multiply", x = 632.6875, y = 418, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "3" }, } },
+        { id = 43, module = "math/add", x = 814.84375, y = 313, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "1" }, } },
+        { id = 44, module = "var/var", x = 762.898438, y = 79, params = { { name = "name", value = "n" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "27" }, } },
+        { id = 45, module = "var/set", x = 950.109375, y = 91, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
+        { id = 46, module = "var/var", x = 971.898438, y = 319, params = { { name = "name", value = "steps" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
+        { id = 47, module = "var/get", x = 1164.6875, y = 355, inputs = { { name = "var", type = "ref", value = "" }, } },
+        { id = 48, module = "math/add", x = 1327.84375, y = 193, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "1" }, } },
+        { id = 49, module = "var/var", x = 1180.89844, y = -206, params = { { name = "name", value = "steps" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
+        { id = 50, module = "var/set", x = 1368.10938, y = -59, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
+        { id = 51, module = "io/print", x = 1598.89844, y = -47, inputs = { { name = "value", type = "string", value = "" }, } },
+        { id = 52, module = "io/print", x = 534.898438, y = -287, inputs = { { name = "value", type = "string", value = "" }, } },
 }
 
 links = {

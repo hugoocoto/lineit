@@ -56,9 +56,11 @@ explained in a comment at its top.
 |-----------------------------------|---------------------------------------------------------|
 | Right click on the canvas         | Add a module: type to search, or browse "Add module"    |
 | Right click on a square           | Configure, disconnect, duplicate, delete, make subgraph |
+| Choose file... in a square's menu | Its path, relative to the canvas; Tab completes         |
 | Drag from an output to an input   | Wire them (drag a plugged input to move its wire)       |
 | Drag from an output to the canvas | Search a module to add there, wired to that output      |
 | Drag a plugged wire to the canvas | Remove it                                               |
+| Drop image files on the canvas    | An `image/open` for each (on a square: its path)        |
 | Click a wire, then Delete         | Remove it (Shift+click selects more)                    |
 | Click a field next to an input    | Type a value used while nothing is plugged in           |
 | Click a field low in a square     | Its settings (params); double click shows them too      |
@@ -163,19 +165,24 @@ without it, anyone who reaches port 6080 gets the editor, and Compile runs
 commands.
 
 **From source**, on Debian or Ubuntu (on Arch:
-`base-devel lua51 fontconfig libx11 zlib openssl libffi zip`):
+`base-devel lua51 fontconfig libx11 libxrandr libxinerama libxcursor libxi
+zlib openssl libffi zip curl`):
 
     sudo apt install build-essential pkg-config liblua5.1-0-dev lua5.1 \
-        libfontconfig1-dev libx11-dev zlib1g-dev libssl-dev libffi-dev zip
+        libfontconfig1-dev libx11-dev zlib1g-dev libssl-dev libffi-dev zip curl \
+        libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
     git clone --recursive https://github.com/hugoocoto/lineit
     cd lineit
     make -j"$(nproc)"
     ./lineit -f examples/hello.lua
 
-`make install` installs it in `~/.local` (`PREFIX`). The bundled raylib
-needs glibc 2.38; on older systems (Ubuntu 22.04, Debian 12) build it from
-source with `make RAYLIB=source`, which also needs
-`libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev`.
+`make install` installs it in `~/.local` (`PREFIX`). The first `make`
+downloads raylib's source (checked against its SHA-256) and builds it, so
+the `image/` squares read png, bmp, gif, qoi, jpg, tga, psd, hdr, pic and
+pnm, and write png, bmp, qoi, jpg and tga. Offline, `make RAYLIB=repo` uses
+the raylib in the repo instead: it needs glibc 2.38 (not Ubuntu 22.04 or
+Debian 12) and doesn't need the `libx*-dev` above but `libx11-dev`, and its
+images are only png, bmp, gif and qoi (and it writes png, bmp, qoi).
 
 # Configuration
 

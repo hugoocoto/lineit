@@ -87,8 +87,10 @@ main(int argc, char **argv)
                         update_shortcuts();
                         if (settings_shown())
                                 update_settings();
-                        else
+                        else {
+                                update_drop();
                                 update_mouse();
+                        }
                 }
                 run_frame();
                 decls_check();

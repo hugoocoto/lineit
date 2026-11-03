@@ -8,26 +8,26 @@
 -- prints the index.
 --
 -- Open it with: ./lineit -f examples/fizzbuzz.lua, then press Run.
-lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
+lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
 
-camera = { x = 674.550781, y = 116.132812, offset_x = 640, offset_y = 344, zoom = 0.800479472 }
+camera = { x = 676.050781, y = 124.5, offset_x = 640, offset_y = 344, zoom = 0.802084565 }
 
 squares = {
-        { id = 2, module = "flow/entry", x = -35, y = -35 },
-        { id = 3, module = "flow/loop", x = 114.109375, y = -75.890625, inputs = { { name = "from", type = "int", value = "1" }, { name = "to", type = "int", value = "101" }, } },
-        { id = 4, module = "math/modulo", x = 285.109375, y = 164.109375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "15" }, } },
-        { id = 5, module = "compare/equal", x = 418.632812, y = 333.632812, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 6, module = "flow/ifelse", x = 381.898438, y = -55.1015625, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 7, module = "io/print", x = 477.898438, y = -238.101562, inputs = { { name = "value", type = "string", value = "FizzBuzz" }, } },
-        { id = 8, module = "math/modulo", x = 570.109375, y = 164.109375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "3" }, } },
-        { id = 9, module = "compare/equal", x = 703.632812, y = 333.632812, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 10, module = "flow/ifelse", x = 666.898438, y = -55.1015625, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 11, module = "io/print", x = 762.898438, y = -238.101562, inputs = { { name = "value", type = "string", value = "Fizz" }, } },
-        { id = 12, module = "math/modulo", x = 855.109375, y = 164.109375, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "5" }, } },
-        { id = 13, module = "compare/equal", x = 988.632812, y = 333.632812, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 14, module = "flow/ifelse", x = 951.898499, y = -55.1015625, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 15, module = "io/print", x = 1047.89844, y = -238.101562, inputs = { { name = "value", type = "string", value = "Buzz" }, } },
-        { id = 16, module = "io/print", x = 1237.89844, y = 16.8984375, inputs = { { name = "value", type = "string", value = "" }, } },
+        { id = 2, module = "flow/entry", x = -32, y = -35 },
+        { id = 3, module = "flow/loop", x = 114.109375, y = -71, inputs = { { name = "from", type = "int", value = "1" }, { name = "to", type = "int", value = "101" }, } },
+        { id = 4, module = "math/modulo", x = 285.109375, y = 193, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "15" }, } },
+        { id = 5, module = "compare/equal", x = 418.632812, y = 343, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
+        { id = 6, module = "flow/ifelse", x = 381.898438, y = -47, inputs = { { name = "cond", type = "bool", value = "false" }, } },
+        { id = 7, module = "io/print", x = 477.898438, y = -212, inputs = { { name = "value", type = "string", value = "FizzBuzz" }, } },
+        { id = 8, module = "math/modulo", x = 570.109375, y = 193, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "3" }, } },
+        { id = 9, module = "compare/equal", x = 703.632812, y = 343, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
+        { id = 10, module = "flow/ifelse", x = 666.898438, y = -47, inputs = { { name = "cond", type = "bool", value = "false" }, } },
+        { id = 11, module = "io/print", x = 762.898438, y = -212, inputs = { { name = "value", type = "string", value = "Fizz" }, } },
+        { id = 12, module = "math/modulo", x = 855.109375, y = 193, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "5" }, } },
+        { id = 13, module = "compare/equal", x = 988.632812, y = 343, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
+        { id = 14, module = "flow/ifelse", x = 951.898499, y = -47, inputs = { { name = "cond", type = "bool", value = "false" }, } },
+        { id = 15, module = "io/print", x = 1047.89844, y = -212, inputs = { { name = "value", type = "string", value = "Buzz" }, } },
+        { id = 16, module = "io/print", x = 1237.89844, y = 43, inputs = { { name = "value", type = "string", value = "" }, } },
 }
 
 links = {

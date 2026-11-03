@@ -369,6 +369,67 @@ pi(void)
                    "var/var that start them at 0), so they don't race.");
 }
 
+/* The same, with its top at row Y: squares of a row with a preview have
+ * them in line */
+static Square *
+sq_top(const char *module, float x, float y)
+{
+        Square *s = sq(module, x, y);
+        s->pos.y  = y * 150;
+        return s;
+}
+
+static void
+images(void)
+{
+        /* Columns of 1.15: image squares are as wide as their preview */
+        Square *open   = in(sq_top("image/open", 0, 1), 0, "symi.png");
+        Square *resize = in(sq_top("image/resize", 1.15f, 1), 1, "480");
+        w(open, 0, resize, 0);
+
+        /* Gray, with more contrast */
+        Square *gray     = sq_top("image/grayscale", 2.3f, 0);
+        Square *contrast = in(sq_top("image/contrast", 3.45f, 0), 1, "25");
+        w(resize, 0, gray, 0);
+        w(gray, 0, contrast, 0);
+
+        /* The houses at its middle, warmer and mirrored */
+        Square *crop = in(in(in(in(sq_top("image/crop", 2.3f, 2), 1, "120"), 2, "110"), 3, "240"), 4, "160");
+        Square *tint = in(sq_top("image/tint", 3.45f, 2), 1, "#ffc080");
+        Square *flip = sq_top("image/flip", 4.6f, 2);
+        w(resize, 0, crop, 0);
+        w(crop, 0, tint, 0);
+        w(tint, 0, flip, 0);
+
+        Square *e     = sq_top("flow/entry", 4.6f, -0.75f);
+        Square *save1 = in(sq_top("image/save", 4.6f, 0), 2, "symi-gray.png");
+        Square *save2 = in(sq_top("image/save", 5.75f, 2), 2, "symi-houses.png");
+        w(e, 0, save1, 0);
+        w(contrast, 0, save1, 1);
+        w(save1, 0, save2, 0);
+        w(flip, 0, save2, 1);
+
+        /* What came in, and if it saved */
+        Square *size = sq_top("image/size", 2.3f, 4);
+        Square *fmt  = in(sq_top("string/format", 5.75f, 3.8f), 0, "{}x{} in, saved: {}");
+        Square *p    = sq_top("io/print", 6.9f, 3.8f);
+        w(resize, 0, size, 0);
+        w(size, 0, fmt, 1);
+        w(size, 1, fmt, 2);
+        w(save2, 1, fmt, 3);
+        w(save2, 0, p, 0);
+        w(fmt, 0, p, 1);
+        save("images", "Edits a photo, symi.png next to it (houses on Symi, by Jebulon, CC0:\n"
+                       "see examples/README.md): made 480 pixels wide, then two ways: gray with\n"
+                       "more contrast, and the houses at its middle, tinted warm and mirrored.\n"
+                       "Press Run and both are saved next to it too, as symi-gray.png and\n"
+                       "symi-houses.png: paths are relative to the canvas's folder.\n"
+                       "image/ squares are pure but save: they compute when read, and again\n"
+                       "only when an input changes. Each shows its image and its size, before\n"
+                       "Run too. Drop an image file on image/open (or Choose file... in its\n"
+                       "menu) to edit another one.");
+}
+
 int
 main(void)
 {
@@ -386,6 +447,7 @@ main(void)
         collatz();
         fibonacci();
         pi();
+        images();
 
         unload_modules();
         unload_fonts();

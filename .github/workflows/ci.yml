@@ -27,12 +27,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # What lineit builds with, and runs the tests with: they open a hidden
-  # window, so under Xvfb
+  # What lineit builds with (raylib from its source: the headers of the X11
+  # extensions), and runs the tests with: they open a hidden window, so
+  # under Xvfb
   APT_PACKAGES: >-
     build-essential pkg-config liblua5.1-0-dev lua5.1 libfontconfig1-dev
     libx11-dev zlib1g-dev libssl-dev libffi-dev zip clang xvfb xauth libgl1
     libgl1-mesa-dri libxrandr2 libxinerama1 libxcursor1 libxi6
+    libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
     fonts-dejavu-core
 
 jobs:
@@ -144,10 +146,8 @@ jobs:
     timeout-minutes: 30
     env:
       APPIMAGE_EXTRACT_AND_RUN: 1 # the runners have no FUSE
-      # The raylib in the repo needs glibc 2.38: build it here, with this one
-      # (see the Makefile). It needs the headers of the X11 extensions.
-      RAYLIB: source
-      RAYLIB_PACKAGES: libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+      # raylib from its source (the default, see the Makefile), with this
+      # runner's old glibc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -155,7 +155,7 @@ jobs:
           persist-credentials: false
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES $RAYLIB_PACKAGES
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES
 
       # The pinned AppImage tools and raylib's source (see the Makefile),
       # checked before every use whether they come from here or from the download

@@ -30,7 +30,15 @@ type_def(Li_Type t)
 bool
 type_is_record(Li_Type t)
 {
-        return type_def(t) != NULL;
+        TypeDef *d = type_def(t);
+        return d && !d->bytes;
+}
+
+bool
+type_is_bytes(Li_Type t)
+{
+        TypeDef *d = type_def(t);
+        return d && d->bytes;
 }
 
 const char *

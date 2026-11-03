@@ -54,6 +54,7 @@ square_menu_build(Square *s)
 {
         square_menu.count = 0;
         if (s->params.count) Da_append(&square_menu, (MenuItem) { .label = "Configure", .fn = square_configure });
+        if (square_takes_file(s)) Da_append(&square_menu, (MenuItem) { .label = "Choose file...", .fn = square_choose_file });
         if (s->module->builtin == &graph_fns) Da_append(&square_menu, (MenuItem) { .label = "Open in a new tab", .fn = square_open_tab });
         Da_append(&square_menu, (MenuItem) { .label = "Make subgraph...", .hint = "Ctrl+G", .fn = menu_subgraph });
         if (type_def(s->module->type)) Da_append(&square_menu, (MenuItem) { .label = "Edit type...", .fn = type_edit });

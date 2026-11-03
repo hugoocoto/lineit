@@ -5,13 +5,13 @@
 -- change it).
 --
 -- Open it with: ./lineit -f examples/hello.lua, then press Run.
-lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
+lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
 
-camera = { x = 114.050781, y = 12, offset_x = 640, offset_y = 344, zoom = 1 }
+camera = { x = 115.550781, y = 12, offset_x = 640, offset_y = 344, zoom = 1 }
 
 squares = {
-        { id = 0, module = "flow/entry", x = -35, y = -35 },
-        { id = 1, module = "io/print", x = 116.898438, y = -73.1015625, inputs = { { name = "value", type = "string", value = "Hello, world!" }, } },
+        { id = 0, module = "flow/entry", x = -32, y = -35 },
+        { id = 1, module = "io/print", x = 116.898438, y = -47, inputs = { { name = "value", type = "string", value = "Hello, world!" }, } },
 }
 
 links = {

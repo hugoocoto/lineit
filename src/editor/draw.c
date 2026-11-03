@@ -236,6 +236,7 @@ draw_square(Square *s, Hit hover, Color hover_tint)
         }
 
         draw_params(s);
+        preview_draw(s);
 
         /* Text in the band at the top. Cut to fit, so a long value doesn't
          * cover the pins or resize the square. */

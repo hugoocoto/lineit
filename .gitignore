@@ -6,3 +6,5 @@ docs/**/*.pdf
 /settings.lua
 /settings.lua.tmp
 .cache/
+# What examples/images.lua saves, next to it
+/examples/symi-*.png

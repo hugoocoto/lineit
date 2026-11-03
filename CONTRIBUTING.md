@@ -95,7 +95,7 @@ they do:
 
 ```
 the canvas         canvas.c squares.c links.c layout.c draw.c input.c selection.c undo.c
-squares' parts     fields.c panel.c text_input.c context_menu.c tooltips.c
+squares' parts     fields.c panel.c text_input.c context_menu.c tooltips.c drop.c preview.c
 the program        program.c run.c subgraphs.c decls.c compile.c
 modules and types  modules.c packages.c records.c types.c type_edit.c make_subgraph.c module_api.c
 the window         bar.c output.c menu.c tabs.c tab_strip.c prompt.c file_menu.c ask.c

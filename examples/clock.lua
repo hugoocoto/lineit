@@ -7,16 +7,16 @@
 -- seconds field to change the speed.
 --
 -- Open it with: ./lineit -f examples/clock.lua, then press Run.
-lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
+lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
 
-camera = { x = 314.050781, y = 69, offset_x = 640, offset_y = 344, zoom = 1 }
+camera = { x = 315.550781, y = 69, offset_x = 640, offset_y = 344, zoom = 1 }
 
 squares = {
-        { id = 17, module = "flow/entry", x = -35, y = -35 },
-        { id = 18, module = "flow/clock", x = 108.53125, y = -81.46875, inputs = { { name = "seconds", type = "float", value = "1" }, }, state = "0" },
-        { id = 19, module = "io/display", x = 402, y = -140 },
-        { id = 20, module = "compare/compare", x = 339.999969, y = 136, inputs = { { name = "op", value = ">=" }, { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "10" }, } },
-        { id = 21, module = "flow/ifelse", x = 552.898438, y = 79.8984375, inputs = { { name = "cond", type = "bool", value = "false" }, } },
+        { id = 17, module = "flow/entry", x = -32, y = -35 },
+        { id = 18, module = "flow/clock", x = 108.53125, y = -47, inputs = { { name = "seconds", type = "float", value = "1" }, }, state = "0" },
+        { id = 19, module = "io/display", x = 405, y = -140 },
+        { id = 20, module = "compare/compare", x = 345.421844, y = 136, inputs = { { name = "op", value = ">=" }, { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "10" }, } },
+        { id = 21, module = "flow/ifelse", x = 552.898438, y = 88, inputs = { { name = "cond", type = "bool", value = "false" }, } },
 }
 
 links = {

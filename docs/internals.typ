@@ -30,7 +30,7 @@
   #v(0.2em)
   #text(size: 12pt)[How the editor, the modules, Run and Compile work]
   #v(0.2em)
-  #text(size: 10pt, fill: luma(90))[For lineit 0.0.1 (`LI_VERSION`)]
+  #text(size: 10pt, fill: luma(90))[For lineit 0.0.2 (`LI_VERSION`)]
 ]
 
 #v(1em)
@@ -385,10 +385,12 @@ shows (`li_text`, 64 bytes), and things only the editor uses: whether it is
 selected, when a tick last reached it (to make it glow), cached sizes, and
 for subgraphs, its `Graph`.
 
-Squares are always square. `square_side` makes them as tall as their text
-and pins need and as wide as their pin names and fields need, and takes the
-largest. Inputs go on the left, outputs on the right, evenly spaced under a
-band at the top where the text is.
+`square_size` makes a square as tall as its text, preview, pins and params
+need, and as wide as its pin names and fields, or its preview, need
+(`canvas.square_size` the least of both). A band at the top has the text;
+under it goes the picture of `li_image`, if it has one, so the ones of a row
+of squares line up; then the pins, inputs on the left and outputs on the
+right, evenly spaced; then the params.
 
 The canvas is a list of squares in draw order (the last one on top) and a
 list of links.
@@ -523,8 +525,9 @@ Every frame of the editor, `run_frame`:
   @sec-tabs).
 
 Pressing Run sets `running`, clears the output panel if
-`output.clear_on_run` says so, lowers the canvas and calls `module_start` of
-every node once, before the first frame, so entry squares go first. Ticks
+`output.clear_on_run` says so, lowers the canvas, empties every output
+(`outputs_clear`: a run starts from nothing, as a compiled program does) and
+calls `module_start` of every node once, before the first frame, so entry squares go first. Ticks
 run to the end at once (they are calls), so if no node has `module_frame`
 nothing can happen after that: the run is over, and `running` is cleared
 right away, as a compiled program ends after start. With one (a clock) it
@@ -538,7 +541,9 @@ branch waiting for its children keeps its thread). The starts of a run
 (`module_start` of the nodes nothing ticks: entries) are branches,
 siblings, and so are the `module_frame` of a frame (`program_each`,
 `sched_run`). The `module_start` of a square with a tick input sets it up
-(random seeds), so those run first, on the main thread. `li_tick` of an
+(random seeds), and so does the one of a square with no tick pins, which
+starts nothing (`square_is_set_up`: a pure square forgetting what it kept),
+so those run first, on the main thread. `li_tick` of an
 output with one target calls it; with more, it forks a branch per target
 (`sched_fork`), runs the first on its own thread and returns when they're
 all done.
@@ -588,6 +593,31 @@ Compiled programs do the same: `nI_tickK` forks with `rt_fork` when it has
 more than one target, each target goes through `rt_tick` (merge, lock,
 call) and `start` and `frame` are `rt_run` of their nodes. `rt_next` gives
 the ticks between nodes, for merges, and `rt_pull` reads like `li_get`.
+
+== Images <sec-images>
+
+The `image/` modules (`modules/image/image.h`) carry an image as a value of
+`image/image`, a bytes type (`modules/image/image.type.lua`, see
+@sec-types): a header (`"LIMG"`, width, height, an id) and its pixels,
+RGBA. They edit it with raylib's `Image*` functions, which they find in the
+editor (it has raylib in it, `-rdynamic`); a compiled program links the copy
+of raylib in Compile's runtime (`module_libs`). A read of an image doesn't copy its pixels (its
+copies share them), but squares that show their value read it every frame,
+so a pure image square keeps what it made last and the inputs it made it
+from (`img_unchanged`), images by their id, new for every image a square
+makes: it computes again only when one changes. Each shows its image with
+`li_image` (`src/editor/preview.c`): a small copy, made a texture when the
+square is drawn, as squares compute in other threads. Edits compute in
+`module_draw` too, so their previews are there before Run. `image/open` reads its file again
+only when the file changes. The paths in their fields go through `li_path`:
+a relative one is relative to the canvas's folder (`canvas_file`, from
+`canvas_path`), so a canvas and its files go together; a compiled program
+has that folder as it was when compiled (`rt_canvas_dir`). Run empties the outputs, so `module_start`
+forgets what they kept. Dropping files on the canvas (`src/editor/drop.c`)
+makes an `image/open` per image, or sets the `path` of the square it's
+dropped on; Choose file... in a square's menu sets it with the prompt. Both
+keep it relative to the canvas if it's in its folder (`canvas_relative`),
+absolute if not.
 
 == Calling C <sec-ffi>
 
@@ -773,7 +803,12 @@ color = { 251, 146, 60 } -- of its wires, optional
 ```
 
 Fields are bool, int, float, string, any, or another custom type by its
-name. `modules/geo/point.type.lua` is the type `geo/point`, and `types_scan`
+name. A type file with `bytes = true` and no fields is a buffer instead,
+like `LI_BYTES` but a type of its own (`type_is_bytes`): the modules that use
+it fill it, find its id with `li_type_named` and declare their pins with it.
+It's never changed once made, so `value_dup` shares it (a count of its
+copies, in `Bytes`) instead of copying it. It has no make and break
+modules. `modules/image/image.type.lua` is one (see @sec-images). `modules/geo/point.type.lua` is the type `geo/point`, and `types_scan`
 adds two built-in modules next to it:
 
 - `geo/make_point`: an input per field (typed fields, with defaults), one

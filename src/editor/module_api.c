@@ -23,7 +23,7 @@ pin_store(PinInfo *p, Li_Value value)
 int
 li_input(Li_Node *n, const char *name, Li_Type type)
 {
-        n->side = 0;
+        n->size = (Vector2) { 0 };
         return pin_add(&n->inputs, name, type);
 }
 
@@ -41,7 +41,7 @@ li_pins_reset(Li_Node *n)
         pins_free(&n->was);
         n->was    = n->inputs; /* li_input_value takes their values back */
         n->inputs = (PinList) { 0 };
-        n->side   = 0;
+        n->size   = (Vector2) { 0 };
 }
 
 int
@@ -88,7 +88,7 @@ li_option(Li_Node *n, int input)
 int
 li_output(Li_Node *n, const char *name, Li_Type type)
 {
-        n->side = 0;
+        n->size = (Vector2) { 0 };
         return pin_add(&n->outputs, name, type);
 }
 
@@ -100,7 +100,7 @@ li_output_type(Li_Node *n, int output, Li_Type type)
         PinInfo *out = pin_info(n, PART_OUTPUT, output);
         if (out && out->type != type) {
                 out->type = type;
-                n->side   = 0; /* its field may change */
+                n->size   = (Vector2) { 0 }; /* its field may change */
         }
 }
 
@@ -110,7 +110,7 @@ li_input_type(Li_Node *n, int input, Li_Type type)
         PinInfo *in = pin_info(n, PART_INPUT, input);
         if (in && in->type != type) {
                 in->type = type;
-                n->side  = 0;
+                n->size  = (Vector2) { 0 };
         }
 }
 
@@ -161,6 +161,14 @@ li_print(Li_Node *n, const char *fmt, ...)
         output_append(buf, false);
         printf("%s\n", buf);
         pthread_mutex_unlock(&output_lock);
+}
+
+const char *
+li_path(Li_Node *n, const char *path)
+{
+        static _Thread_local char buf[PATH_MAX * 2];
+        (void) n;
+        return canvas_file(path, buf, sizeof buf);
 }
 
 double

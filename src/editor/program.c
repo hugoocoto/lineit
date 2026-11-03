@@ -520,16 +520,21 @@ frame_task(void *arg)
         sched_back(sched_get(), at);
 }
 
-/* Its start sets it up (random seeds): it has a tick input, others start
- * it. Starts of squares nothing ticks start chains (entries). */
+/* Its start sets it up (random seeds, what a pure square kept): it has a
+ * tick input, others start it, or no tick at all, it starts nothing.
+ * Starts of squares nothing ticks start chains (entries). */
 bool
-square_is_ticked(Square *s)
+square_is_set_up(Square *s)
 {
         Da_foreach(p, s->inputs)
         {
                 if (p->type == LI_TICK) return true;
         }
-        return false;
+        Da_foreach(p, s->outputs)
+        {
+                if (p->type == LI_TICK) return false;
+        }
+        return true;
 }
 
 /* module_frame of every node that has it, each a branch, in canvas order.
@@ -554,7 +559,7 @@ program_each(bool start)
         for (int i = 0; i < prog.nodes.count; i++) {
                 Square *s = prog.nodes.items[i].square;
                 if (start ? !s->fn.start : !s->fn.frame) continue;
-                if (start && square_is_ticked(s)) {
+                if (start && square_is_set_up(s)) {
                         Graph *was = scope_enter(prog.nodes.items[i].scope);
                         s->fn.start(s);
                         scope_enter(was);
