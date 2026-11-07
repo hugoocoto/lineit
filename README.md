@@ -6,9 +6,10 @@ program in the editor, step through it, or compile it to a native program.**
 [![CI](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml/badge.svg)](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/hugoocoto/lineit)](LICENSE)
 
-![The images example in the lineit editor: a photo opened, resized, made
-gray with more contrast, cropped, tinted and mirrored, each square showing
-its image, and two saves ticked by an entry](assets/screenshot.png)
+![A program made in lineit: an entry ticks a loop from 1 to 5, typed in
+its fields; each index goes into both inputs of a multiply, added from the
+search with a wire from the loop, and a print shows the product. A post-it
+note explains it. Run prints 1, 4, 9, 16 and 25](assets/demo.gif)
 
 # Try it
 
@@ -49,9 +50,10 @@ lineit is in alpha: expect breaking changes with any commit.
   Rust type, or a selection of squares made a module of its own (Ctrl+G).
   Packages (`.lipkg`) share them, on every OS as they are.
 
-![FizzBuzz in the lineit editor: a loop sends each index through three
-modulo and equal checks, and three ifelse squares pick what to print; the
-output below](assets/fizzbuzz.png)
+![The images example in the lineit editor: a photo opened, resized, made
+gray with more contrast, cropped, tinted and mirrored, each square showing
+its image, and two saves ticked by an entry; the output
+below](assets/screenshot.png)
 
 The canvases in [`examples/`](examples) show the rest, each explained in
 its corner.
@@ -91,6 +93,10 @@ The bar at the bottom runs, steps, compiles (More) and stops, and has
 **Output** (what the program prints) and **File**.
 
 # The language
+
+![FizzBuzz in the lineit editor: a loop sends each index through three
+modulo and equal checks, and three ifelse squares pick what to print; the
+output below](assets/fizzbuzz.png)
 
 **Squares and wires.** Each square is a module. Wires carry values, or
 ticks: the signal that says what runs next. A program starts at its

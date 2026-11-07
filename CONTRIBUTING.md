@@ -6,6 +6,7 @@ requests, against `main`.
 
 ## Building and testing
 
+    git config core.hooksPath scripts/hooks   # format, clippy and the tests before every push
     cargo build                          # everything
     cargo run -- examples/hello.lua      # the editor
     cargo test                           # unit tests, and every canvas in tests/ and examples/, run
@@ -13,8 +14,10 @@ requests, against `main`.
     cargo fmt --all
     cargo clippy --all-targets -- -D warnings
 
-CI runs all of it on Linux, macOS and Windows, and builds what's released
-(see `.github/workflows/ci.yml`).
+CI runs all of it on Linux, macOS and Windows, the tests again with
+AddressSanitizer and ThreadSanitizer (Rust nightly, see the workflow), and
+builds and checks what's released (see `.github/workflows/ci.yml`). The
+hook skips once with `git push --no-verify`.
 
 `LINEIT_HOME=DIR` makes lineit keep its config, modules, packages and
 builds in `DIR`, not in yours: useful to try things.
@@ -58,5 +61,7 @@ makes one of them wrong updates it in the same pull request.
 - The native module ABI is `lineit_rt::native::ABI`: a change to the C
   functions `export_modules!` makes, or to how values are encoded, raises
   it.
-- A release is a tag `vX.Y.Z` with the version in `Cargo.toml`; CI builds and
+- A release is a tag `vX.Y.Z` with the version in `Cargo.toml`
+  (`scripts/version.sh` prints it): bump it in a commit on main, then
+  `scripts/release.sh` tags it and pushes the tag, and CI builds and
   publishes it.
