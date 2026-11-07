@@ -14,6 +14,7 @@ use lineit_rt::Value;
 
 use super::canvas::{self, Action, CanvasState, Pending};
 use super::runner::{Cmd, Runner, State};
+use super::session::{self, Exe, Ready};
 use super::tab::Tab;
 use super::theme::{self, Theme};
 
@@ -73,8 +74,13 @@ pub struct App {
     theme: Theme,
     mode: RunMode,
     show_output: bool,
-    show_settings: bool,
     settings_query: String,
+    /// The section of the Settings tab to scroll to, chosen on its left.
+    settings_jump: Option<&'static str>,
+    /// The Settings tab's search takes the keyboard on the next frame.
+    settings_focus: bool,
+    /// The tab the strip last scrolled to.
+    tab_in_view: Option<u64>,
     search: Option<Search>,
     prompt: Option<Prompt>,
     compiling: Option<Compiling>,
@@ -82,6 +88,14 @@ pub struct App {
     /// When the module folders last changed, to reload them.
     modules_stamp: Option<std::time::SystemTime>,
     last_stamp_check: Instant,
+    /// The binary, to hand over to a rebuilt one (see session.rs).
+    exe: Option<Exe>,
+    /// Started by an older editor: tell it when this one is drawing.
+    ready: Ready,
+    /// What other `lineit FILE` commands send to this editor.
+    single: Option<super::single::Single>,
+    /// When config.lua and settings.lua last changed, to read them again.
+    config_stamp: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
     font_applied: String,
     /// The squares being made into a subgraph, waiting for its name.
     subgraph_of: BTreeSet<SquareId>,
@@ -115,9 +129,12 @@ fn stamp(dir: &Path) -> Option<std::time::SystemTime> {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext, files: Vec<PathBuf>) -> App {
+    pub fn new(cc: &eframe::CreationContext, start: Start) -> App {
         let cfg = Config::load(&lineit_core::paths::config_dir());
-        let dir = files.first().and_then(|f| f.parent()).map(Path::to_path_buf);
+        let dir = match &start {
+            Start::Files(files) => files.first().and_then(|f| f.parent()).map(Path::to_path_buf),
+            Start::Session(_) => None,
+        };
         let reg = Arc::new(lineit_core::registry(dir.as_deref()));
         let theme = Theme::from_config(&cfg);
         let mut app = App {
@@ -129,8 +146,10 @@ impl App {
             theme,
             mode: RunMode::Run,
             show_output: true,
-            show_settings: false,
             settings_query: String::new(),
+            settings_jump: None,
+            settings_focus: false,
+            tab_in_view: None,
             search: None,
             prompt: None,
             compiling: None,
@@ -141,13 +160,26 @@ impl App {
             subgraph_of: BTreeSet::new(),
             preview_job: None,
             previewed: HashMap::new(),
+            exe: Exe::current(),
+            ready: Ready::from_env(),
+            single: super::single::listen(cc.egui_ctx.clone()),
+            config_stamp: config_stamp(),
             cfg,
         };
         for e in app.cfg.errors.clone() {
             app.status(&format!("config: {e}"), true);
         }
-        for f in files {
-            app.open(&f);
+        match start {
+            Start::Files(files) => {
+                for f in files {
+                    app.open(&f);
+                }
+            }
+            Start::Session(s) => {
+                if let Err(e) = app.restore(&s.source, &cc.egui_ctx) {
+                    eprintln!("lineit: the session of the editor before: {e}");
+                }
+            }
         }
         if app.tabs.is_empty() {
             let t = Tab::empty(&app.reg);
@@ -159,6 +191,68 @@ impl App {
         app.modules_stamp = app.module_stamp();
         app.apply_style(&cc.egui_ctx);
         app
+    }
+
+    /// The tabs of a session an older editor wrote, and what was shown.
+    fn restore(&mut self, source: &str, ctx: &egui::Context) -> Result<(), String> {
+        let reg = self.reg.clone();
+        let (tabs, active, show_output) = lineit_core::file::with_data(source, "the session", |t| {
+            let mut tabs = Vec::new();
+            let list: mlua::Table = t.get("tabs").map_err(|e| e.to_string())?;
+            for tab in list.sequence_values::<mlua::Table>() {
+                tabs.push(Tab::from_session(&tab.map_err(|e| e.to_string())?, &reg)?);
+            }
+            let active = t.get::<Option<usize>>("active").ok().flatten().unwrap_or(1).saturating_sub(1);
+            let show_output = t.get::<Option<bool>>("show_output").ok().flatten().unwrap_or(true);
+            Ok((tabs, active, show_output))
+        })?;
+        let mut running = Vec::new();
+        for (t, run) in tabs {
+            self.add_tab(t);
+            if run {
+                running.push(self.tabs.len() - 1);
+            }
+        }
+        self.show_output = show_output;
+        // what was running runs again, from the start
+        for i in running {
+            self.active = i;
+            self.start(RunMode::Run, ctx);
+        }
+        self.active = active.min(self.tabs.len().saturating_sub(1));
+        Ok(())
+    }
+
+    /// Hands over to the rebuilt binary; closes this window if it took over.
+    fn hand_over(&mut self, ctx: &egui::Context) {
+        let Some(exe) = &self.exe else { return };
+        let tabs: Vec<String> = self.tabs.iter().map(|(_, t, _)| t.session()).collect();
+        let (pos, size) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.outer_rect.map(|r| [r.min.x, r.min.y]), v.inner_rect.map(|r| [r.width(), r.height()]))
+        });
+        let text = session::write(&tabs, self.active, self.show_output, &session::Window { pos, size });
+        match exe.hand_over(&text) {
+            Ok(()) => {
+                // the runs stop as their tabs go
+                self.tabs.clear();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(e) => {
+                self.status(&format!("lineit was rebuilt, and the new one didn't start ({e}): keeping this one"), true)
+            }
+        }
+    }
+
+    /// Reads config.lua and settings.lua again, and applies them.
+    fn reload_config(&mut self, ctx: &egui::Context) {
+        self.cfg = Config::load(&lineit_core::paths::config_dir());
+        self.theme = Theme::from_config(&self.cfg);
+        self.apply_style(ctx);
+        match self.cfg.errors.first().cloned() {
+            Some(e) => self.status(&format!("config: {e}"), true),
+            None => self.status("config read again", false),
+        }
     }
 
     fn tab(&mut self) -> &mut Tab {
@@ -215,11 +309,13 @@ impl App {
                 };
             }
         });
-        let path = self.cfg.text("font.path");
-        if path != self.font_applied {
-            self.font_applied = path.clone();
+        let name = self.cfg.text("font.name");
+        if name != self.font_applied {
+            self.font_applied = name.clone();
             let mut fonts = egui::FontDefinitions::default();
-            if !path.is_empty() {
+            // a name installed, or a file
+            // a name that isn't a font keeps the built-in one (Settings says so)
+            if let Some(path) = lineit_core::fonts::find(&name) {
                 match std::fs::read(&path) {
                     Ok(bytes) => {
                         fonts.font_data.insert("user".into(), Arc::new(egui::FontData::from_owned(bytes)));
@@ -227,7 +323,7 @@ impl App {
                             fonts.families.entry(family).or_default().insert(0, "user".into());
                         }
                     }
-                    Err(e) => self.status(&format!("font {path}: {e}"), true),
+                    Err(e) => self.status(&format!("font {}: {e}", path.display()), true),
                 }
             }
             ctx.set_fonts(fonts);
@@ -259,6 +355,9 @@ impl App {
     // ------------------------------------------------------------ files
 
     fn save(&mut self, ctx: &egui::Context) {
+        if self.tab().settings {
+            return;
+        }
         match self.tab().path.clone() {
             Some(p) => match self.tab().save_to(&p) {
                 Ok(()) => self.status(&format!("saved {}", p.display()), false),
@@ -330,7 +429,9 @@ impl App {
 
     fn close_tab(&mut self, i: usize) {
         let (_, t, _) = self.tabs.remove(i);
-        self.closed.push((t.canvas, t.path));
+        if !t.settings {
+            self.closed.push((t.canvas, t.path));
+        }
         if self.tabs.is_empty() {
             let t = Tab::empty(&self.reg);
             self.add_tab(t);
@@ -341,6 +442,9 @@ impl App {
     // ------------------------------------------------------------ run
 
     fn start(&mut self, mode: RunMode, ctx: &egui::Context) {
+        if self.tab().settings {
+            return;
+        }
         self.mode = mode;
         if mode == RunMode::Compile {
             self.compile(ctx);
@@ -543,10 +647,16 @@ impl App {
         }
         tab.selected.clear();
         tab.selected.insert(id);
+        // typing goes to its first field
+        let reg = self.reg.clone();
+        let (_, tab, state) = &mut self.tabs[self.active];
+        tab.update(&reg, true, true);
+        canvas::start_first(tab, &reg, state, id);
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let typing = ctx.memory(|m| m.focused().is_some());
+        // a field open (typed in, or a checkbox chosen) has the keys
+        let typing = ctx.memory(|m| m.focused().is_some()) || self.tabs[self.active].2.edit.is_some();
         let popup = self.search.is_some() || self.prompt.is_some();
         let cmd = Modifiers::COMMAND;
         let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
@@ -577,7 +687,7 @@ impl App {
             self.active = (self.active + 1) % self.tabs.len();
         }
         if key(cmd, Key::Comma) {
-            self.show_settings = !self.show_settings;
+            self.open_settings();
         }
         if key(Modifiers::SHIFT, Key::F5) {
             self.stop();
@@ -587,12 +697,16 @@ impl App {
         if key(Modifiers::NONE, Key::F10) {
             self.start(RunMode::Step, ctx);
         }
+        // in the Settings tab, Esc empties its search first
+        if self.tab().settings && !self.settings_query.is_empty() && key(Modifiers::NONE, Key::Escape) {
+            self.settings_query.clear();
+        }
         if key(Modifiers::NONE, Key::Escape) && self.search.take().is_none() && self.prompt.take().is_none() {
             self.tab().selected.clear();
             self.tab().selected_links.clear();
-            self.show_settings = false;
         }
-        if typing || popup {
+        // the Settings tab has no canvas to act on
+        if typing || popup || self.tab().settings {
             return;
         }
         if key(cmd_shift, Key::Z) || key(cmd, Key::Y) {
@@ -640,43 +754,27 @@ impl App {
 
     fn search_ui(&mut self, ctx: &egui::Context) {
         let Some(s) = &mut self.search else { return };
-        let words: Vec<String> = s.query.to_lowercase().split_whitespace().map(String::from).collect();
-        let mut matches: Vec<(&String, &Arc<dyn lineit_core::registry::Module>)> = self
-            .reg
-            .modules
-            .iter()
-            .filter(|(p, m)| {
-                let hay = format!("{} {}", p.to_lowercase(), m.doc().to_lowercase());
-                words.iter().all(|w| hay.contains(w.as_str()))
-            })
-            .collect();
-        let q = s.query.trim().to_lowercase();
-        matches.sort_by_key(|(p, _)| {
-            let last = p.rsplit('/').next().unwrap_or(p).to_lowercase();
-            let rank = if q.is_empty() || last == q {
-                0
-            } else if last.starts_with(&q) {
-                1
-            } else if p.contains(&q) {
-                2
-            } else {
-                3
-            };
-            (rank, if q.is_empty() { 0 } else { p.len() }, (*p).clone())
-        });
+        // words as typed match names with _ ("not equal" is not_equal)
+        let q = s.query.trim().to_lowercase().replace(' ', "_");
+        let mut matches: Vec<(usize, &String, &Arc<dyn lineit_core::registry::Module>)> =
+            self.reg.modules.iter().filter_map(|(p, m)| search_score(p, &q).map(|score| (score, p, m))).collect();
+        matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        let matches: Vec<(&String, &Arc<dyn lineit_core::registry::Module>)> =
+            matches.into_iter().map(|(_, p, m)| (p, m)).collect();
         s.selected = s.selected.min(matches.len().saturating_sub(1));
+        // the arrows, or Ctrl+N and Ctrl+P (Ctrl, not Cmd, on macOS too)
         let (up, down, enter) = ctx.input_mut(|i| {
-            (
-                i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                i.consume_key(Modifiers::NONE, Key::ArrowDown),
-                i.consume_key(Modifiers::NONE, Key::Enter),
-            )
+            let up = i.consume_key(Modifiers::NONE, Key::ArrowUp) | i.consume_key(Modifiers::CTRL, Key::P);
+            let down = i.consume_key(Modifiers::NONE, Key::ArrowDown) | i.consume_key(Modifiers::CTRL, Key::N);
+            (up, down, i.consume_key(Modifiers::NONE, Key::Enter))
         });
-        if up {
-            s.selected = s.selected.saturating_sub(1);
+        // round: up from the first goes to the last, down from the last to the first
+        let n = matches.len();
+        if up && n > 0 {
+            s.selected = (s.selected + n - 1) % n;
         }
-        if down && s.selected + 1 < matches.len() {
-            s.selected += 1;
+        if down && n > 0 {
+            s.selected = (s.selected + 1) % n;
         }
         let mut chosen: Option<String> = if enter { matches.get(s.selected).map(|(p, _)| (*p).clone()) } else { None };
         let mut close = false;
@@ -692,24 +790,37 @@ impl App {
                             .desired_width(f32::INFINITY),
                     );
                     r.request_focus();
-                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                        for (i, (p, m)) in matches.iter().enumerate().take(200) {
-                            let text = egui::RichText::new(format!("{p}  ")).strong();
-                            let resp = ui.selectable_label(i == s.selected, text).on_hover_text(m.doc());
-                            if i == s.selected && (up || down) {
-                                resp.scroll_to_me(None);
+                    // always 10 rows tall, with its scrollbar showing, so it's clear
+                    // when there are more
+                    let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                    // a solid bar, not egui's faint floating one
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                    egui::ScrollArea::vertical()
+                        .min_scrolled_height(10.0 * row)
+                        .max_height(10.0 * row)
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                        .show(ui, |ui| {
+                            for (i, (p, m)) in matches.iter().enumerate() {
+                                let resp = ui.selectable_label(i == s.selected, p.as_str()).on_hover_text(m.doc());
+                                if i == s.selected && (up || down) {
+                                    resp.scroll_to_me(None);
+                                }
+                                if resp.clicked() {
+                                    chosen = Some((*p).clone());
+                                }
                             }
-                            if resp.clicked() {
-                                chosen = Some((*p).clone());
+                            if matches.is_empty() {
+                                ui.weak("nothing matches");
                             }
-                            if i == s.selected {
-                                ui.label(egui::RichText::new(m.doc()).small().weak());
-                            }
-                        }
-                        if matches.is_empty() {
-                            ui.weak("nothing matches");
-                        }
-                    });
+                        });
+                    // what the selected one does, and how many there are
+                    ui.separator();
+                    let doc = matches.get(s.selected).map(|(_, m)| m.doc()).unwrap_or("");
+                    ui.add(egui::Label::new(egui::RichText::new(doc).small()).truncate());
+                    ui.weak(
+                        egui::RichText::new(format!("{} of {} modules", matches.len(), self.reg.modules.len())).small(),
+                    );
                 });
             });
         let clicked_outside = ctx.input(|i| i.pointer.any_pressed())
@@ -776,102 +887,284 @@ impl App {
         }
     }
 
-    fn settings_ui(&mut self, ctx: &egui::Context) {
-        if !self.show_settings {
-            return;
+    /// Shows the Settings tab, opened if it isn't.
+    fn open_settings(&mut self) {
+        self.settings_focus = true;
+        match self.tabs.iter().position(|(_, t, _)| t.settings) {
+            Some(i) => self.active = i,
+            None => {
+                let t = Tab::settings_tab(&self.reg);
+                self.add_tab(t);
+            }
         }
-        let mut open = true;
-        let mut changed = false;
+    }
+
+    /// The Settings tab: every setting, searched, in sections (listed on the
+    /// left, to go to one). A change is written to settings.lua and applies
+    /// at once; Reset takes it out of there, back to config.lua's or the
+    /// default.
+    fn settings_page(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let theme = self.theme.clone();
         let mut themes: Vec<String> = theme::NAMES.iter().map(|s| s.to_string()).collect();
         themes.extend(self.cfg.themes.keys().filter(|k| !theme::NAMES.contains(&k.as_str())).cloned());
-        egui::Window::new("Settings").open(&mut open).default_width(460.0).show(ctx, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.settings_query).hint_text("search").desired_width(f32::INFINITY),
+        let mut changed = false;
+        // Ctrl+F goes to the search, Esc empties it
+        if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
+            self.settings_focus = true;
+        }
+        ui.heading("Settings");
+        ui.add_space(4.0);
+        let search = egui::Frame::new()
+            .fill(theme.field)
+            .stroke(egui::Stroke::new(1.0, theme.border))
+            .inner_margin(egui::Margin::symmetric(8, 5))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.settings_query)
+                        .hint_text("Search settings: a name, a word of what it does...")
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY),
+                )
+            })
+            .inner;
+        if std::mem::take(&mut self.settings_focus) {
+            search.request_focus();
+        }
+        if search.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.settings_query.clear();
+        }
+        // every word somewhere: in its name, its section, its key or what it does
+        let words: Vec<String> = self.settings_query.to_lowercase().split_whitespace().map(String::from).collect();
+        let shown: Vec<&lineit_core::config::SettingDef> = SETTINGS
+            .iter()
+            .filter(|d| {
+                let hay = format!("{} {} {} {}", pretty(d.key), section(d.key), d.key, d.doc).to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .collect();
+        ui.horizontal(|ui| {
+            let count = if words.is_empty() {
+                format!("{} settings", SETTINGS.len())
+            } else {
+                format!("{} of {} settings", shown.len(), SETTINGS.len())
+            };
+            ui.label(egui::RichText::new(count).color(theme.dim).small());
+            ui.label(
+                egui::RichText::new(format!(" · changes are saved to {}", self.cfg.dir.join("settings.lua").display()))
+                    .color(theme.dim)
+                    .small(),
             );
-            ui.weak(format!("Saved to {}", self.cfg.dir.join("settings.lua").display()));
-            ui.separator();
-            egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                let q = self.settings_query.to_lowercase();
-                egui::Grid::new("settings").num_columns(2).striped(true).show(ui, |ui| {
-                    for d in SETTINGS {
-                        if !q.is_empty() && !d.key.contains(&q) && !d.doc.to_lowercase().contains(&q) {
-                            continue;
-                        }
-                        ui.label(d.key).on_hover_text(d.doc);
-                        let v = self.cfg.get(d.key);
-                        let new = match (&d.kind, v.clone()) {
-                            (SKind::Bool, SValue::Bool(mut b)) => {
-                                ui.checkbox(&mut b, "");
-                                SValue::Bool(b)
-                            }
-                            (SKind::Num { min, max, step }, SValue::Num(mut n)) => {
-                                ui.add(egui::DragValue::new(&mut n).range(*min..=*max).speed(*step));
-                                SValue::Num(n)
-                            }
-                            (SKind::Theme, SValue::Text(mut t)) => {
-                                egui::ComboBox::from_id_salt("theme").selected_text(&t).show_ui(ui, |ui| {
-                                    for name in &themes {
-                                        ui.selectable_value(&mut t, name.clone(), name);
-                                    }
-                                });
-                                SValue::Text(t)
-                            }
-                            (_, SValue::Text(mut t)) => {
-                                ui.text_edit_singleline(&mut t);
-                                SValue::Text(t)
-                            }
-                            (_, v) => v,
-                        };
-                        if new != v {
-                            self.cfg.set(d.key, new);
-                            changed = true;
-                        }
-                        ui.end_row();
+        });
+        ui.separator();
+        let mut sections: Vec<&'static str> = Vec::new();
+        for d in &shown {
+            let sec = section(d.key);
+            if !sections.contains(&sec) {
+                sections.push(sec);
+            }
+        }
+        // as wide as its widest entry, which never wraps, in whatever font
+        let entries: Vec<(&'static str, String)> = sections
+            .iter()
+            .map(|sec| (*sec, format!("{sec}  ({})", shown.iter().filter(|d| section(d.key) == *sec).count())))
+            .collect();
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let widest = entries
+            .iter()
+            .map(|(_, e)| ui.painter().layout_no_wrap(e.clone(), font.clone(), theme.text).size().x)
+            .fold(0.0, f32::max);
+        egui::Panel::left("settings sections").resizable(false).exact_size(widest + 32.0).show(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            for (sec, entry) in &entries {
+                if ui.selectable_label(false, entry).clicked() {
+                    self.settings_jump = Some(sec);
+                }
+            }
+        });
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for sec in &sections {
+                    let h = ui.heading(*sec);
+                    if self.settings_jump == Some(sec) {
+                        h.scroll_to_me(Some(egui::Align::TOP));
+                        self.settings_jump = None;
                     }
-                });
+                    egui::Grid::new(("settings", *sec)).num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
+                        for d in shown.iter().filter(|d| section(d.key) == *sec) {
+                            ui.vertical(|ui| {
+                                // wide enough for a description on a line or two
+                                ui.set_width(360.0);
+                                ui.label(pretty(d.key));
+                                ui.label(egui::RichText::new(d.doc).color(theme.dim).small());
+                            });
+                            let v = self.cfg.get(d.key);
+                            let new = match (&d.kind, v.clone()) {
+                                (SKind::Bool, SValue::Bool(mut b)) => {
+                                    ui.checkbox(&mut b, "");
+                                    SValue::Bool(b)
+                                }
+                                (SKind::Num { min, max, step }, SValue::Num(mut n)) => {
+                                    ui.add(egui::DragValue::new(&mut n).range(*min..=*max).speed(*step));
+                                    SValue::Num(n)
+                                }
+                                (SKind::Theme, SValue::Text(mut t)) => {
+                                    egui::ComboBox::from_id_salt("theme").selected_text(&t).show_ui(ui, |ui| {
+                                        for name in &themes {
+                                            ui.selectable_value(&mut t, name.clone(), name);
+                                        }
+                                    });
+                                    SValue::Text(t)
+                                }
+                                (SKind::Font, SValue::Text(mut t)) => {
+                                    // typed, with the fonts installed that match below it, to click
+                                    ui.vertical(|ui| {
+                                        // a grid cell shrinks to what's in it: this one is wide
+                                        ui.set_min_width(420.0);
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut t)
+                                                .hint_text("a font's name, or a .ttf/.otf file")
+                                                .desired_width(420.0),
+                                        );
+                                        if !t.trim().is_empty() && lineit_core::fonts::find(&t).is_none() {
+                                            ui.colored_label(
+                                                theme.error,
+                                                "No font installed is called that, and it isn't a file",
+                                            );
+                                        }
+                                        // until it's the name of a family: the closest ones, to click
+                                        let families = lineit_core::fonts::families();
+                                        if !t.trim().is_empty() && !families.contains(&t) {
+                                            let q = t.to_lowercase();
+                                            let mut hits: Vec<&String> =
+                                                families.iter().filter(|f| f.to_lowercase().contains(&q)).collect();
+                                            hits.sort_by_key(|f| (!f.to_lowercase().starts_with(&q), f.len()));
+                                            for f in hits.into_iter().take(8) {
+                                                if ui.selectable_label(false, f).clicked() {
+                                                    t = f.clone();
+                                                }
+                                            }
+                                        }
+                                    });
+                                    SValue::Text(t)
+                                }
+                                (_, SValue::Text(mut t)) => {
+                                    ui.add_sized([420.0, 22.0], egui::TextEdit::singleline(&mut t));
+                                    SValue::Text(t)
+                                }
+                                (_, v) => {
+                                    ui.label("");
+                                    v
+                                }
+                            };
+                            let default = (d.default)();
+                            let reset = ui.add_enabled(new != default, egui::Button::new("Reset"));
+                            if reset.on_hover_text("Back to the default").clicked() {
+                                self.cfg.set(d.key, default);
+                                changed = true;
+                            } else if new != v {
+                                self.cfg.set(d.key, new);
+                                changed = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(14.0);
+                }
+                if sections.is_empty() {
+                    ui.label(egui::RichText::new("No setting matches").color(theme.dim));
+                }
             });
         });
-        self.show_settings = open;
         if changed {
             if let Err(e) = self.cfg.save() {
                 self.status(&e, true);
             }
             self.theme = Theme::from_config(&self.cfg);
-            self.apply_style(ctx);
+            self.apply_style(&ctx);
         }
     }
 
     // ------------------------------------------------------------ bars
 
     fn tabs_ui(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme.clone();
         egui::Panel::top("tabs").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let mut close = None;
-                for (i, (_, t, _)) in self.tabs.iter().enumerate() {
-                    let r = ui.selectable_label(i == self.active, t.title());
-                    let r = match &t.path {
-                        Some(p) => r.on_hover_text(p.display().to_string()),
-                        None => r,
-                    };
-                    if r.clicked() {
-                        self.active = i;
-                    }
-                    if r.middle_clicked() {
-                        close = Some(i);
-                    }
-                    if ui.small_button("×").on_hover_text("Close (Ctrl+W)").clicked() {
-                        close = Some(i);
-                    }
-                    ui.separator();
-                }
-                if ui.button("+").on_hover_text("New tab (Ctrl+T)").clicked() {
-                    let t = Tab::empty(&self.reg);
-                    self.add_tab(t);
-                }
-                if let Some(i) = close {
-                    self.close_tab(i);
-                }
-            });
+            // too many to fit: they share the width, their titles cut short;
+            // so many that even that doesn't fit, the strip scrolls
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let x_w = 16.0;
+            let chrome = 8.0 + 6.0 + x_w + 6.0 + 2.0;
+            let natural: f32 = self
+                .tabs
+                .iter()
+                .map(|(_, t, _)| ui.painter().layout_no_wrap(t.title(), font.clone(), theme.text).size().x + chrome)
+                .sum();
+            let room = ui.available_width() - 40.0;
+            let max_title =
+                if natural > room { Some(((room / self.tabs.len() as f32) - chrome).max(48.0)) } else { None };
+            egui::ScrollArea::horizontal()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let mut close = None;
+                        for (i, (_, t, _)) in self.tabs.iter().enumerate() {
+                            // a tab is one box: its title and its ×, filled when it's the one
+                            // shown. The box takes clicks first, so the × (made after) is on top.
+                            let active = i == self.active;
+                            let text = if active { theme.text } else { theme.dim };
+                            let mut job = egui::text::LayoutJob::simple_singleline(t.title(), font.clone(), text);
+                            if let Some(w) = max_title {
+                                job.wrap = egui::text::TextWrapping::truncate_at_width(w);
+                            }
+                            let title = ui.painter().layout_job(job);
+                            let size = vec2(8.0 + title.size().x + 6.0 + x_w + 6.0, title.size().y + 8.0);
+                            let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+                            // the tab shown comes into view when it changes
+                            if active && self.tab_in_view != Some(self.tabs[i].0) {
+                                r.scroll_to_me(None);
+                            }
+                            if active {
+                                ui.painter().rect_filled(rect, 0.0, theme.header);
+                            } else if r.hovered() {
+                                ui.painter().rect_filled(rect, 0.0, theme.header.gamma_multiply(0.5));
+                            }
+                            ui.painter().galley(rect.left_center() + vec2(8.0, -title.size().y / 2.0), title, text);
+                            let x_rect = egui::Rect::from_center_size(
+                                rect.right_center() - vec2(6.0 + x_w / 2.0, 0.0),
+                                vec2(x_w, x_w),
+                            );
+                            // drawn centered by hand: a button's text sits by its baseline
+                            let x = ui.interact(x_rect, egui::Id::unique(("tab x", i)), egui::Sense::click());
+                            let x_color = if x.hovered() { theme.text } else { text };
+                            ui.painter().text(x_rect.center(), egui::Align2::CENTER_CENTER, "×", font.clone(), x_color);
+                            if x.on_hover_text("Close (Ctrl+W)").clicked() {
+                                close = Some(i);
+                            }
+                            let r = match &t.path {
+                                Some(p) => r.on_hover_text(p.display().to_string()),
+                                None => r,
+                            };
+                            if r.clicked() {
+                                self.active = i;
+                            }
+                            if r.middle_clicked() {
+                                close = Some(i);
+                            }
+                        }
+                        ui.add_space(6.0);
+                        let plus = ui.add(egui::Button::new(egui::RichText::new("+").color(theme.dim)).frame(false));
+                        if plus.on_hover_text("New tab (Ctrl+T)").clicked() {
+                            let t = Tab::empty(&self.reg);
+                            self.add_tab(t);
+                        }
+                        self.tab_in_view = Some(self.tabs[self.active].0);
+                        if let Some(i) = close {
+                            self.close_tab(i);
+                        }
+                    });
+                });
         });
     }
 
@@ -881,41 +1174,57 @@ impl App {
             ui.horizontal(|ui| {
                 let state = self.tab().run.as_ref().map(|r| r.state());
                 let live = matches!(state, Some(State::Running | State::Paused));
-                if live {
-                    if ui.button("Stop").on_hover_text("Shift+F5").clicked() {
-                        self.stop();
-                    }
-                    if ui.button("Step").on_hover_text("Run the next square of each branch (F10)").clicked() {
-                        self.start(RunMode::Step, &ctx);
-                    }
-                    if state == Some(State::Paused) && ui.button("Run").on_hover_text("Go on running (F5)").clicked() {
-                        self.start(RunMode::Run, &ctx);
-                    }
-                } else {
-                    let label = match self.mode {
-                        RunMode::Run => "Run",
-                        RunMode::Step => "Step",
-                        RunMode::Compile => "Compile",
-                    };
-                    if ui.button(label).on_hover_text("F5 runs, F10 steps").clicked() {
-                        let m = self.mode;
-                        self.start(m, &ctx);
-                    }
-                    ui.menu_button("More", |ui| {
-                        if ui.button("Run (F5)").clicked() {
-                            self.start(RunMode::Run, &ctx);
-                            ui.close();
+                // Run, Step and Compile are for canvases
+                let canvas = !self.tab().settings;
+                ui.add_enabled_ui(canvas, |ui| {
+                    if live {
+                        if ui.button("Stop").on_hover_text("Shift+F5").clicked() {
+                            self.stop();
                         }
-                        if ui.button("Step (F10)").clicked() {
+                        if ui.button("Step").on_hover_text("Run the next square of each branch (F10)").clicked() {
                             self.start(RunMode::Step, &ctx);
-                            ui.close();
                         }
-                        if ui.button("Compile").clicked() {
-                            self.start(RunMode::Compile, &ctx);
-                            ui.close();
+                        if state == Some(State::Paused)
+                            && ui.button("Run").on_hover_text("Go on running (F5)").clicked()
+                        {
+                            self.start(RunMode::Run, &ctx);
                         }
-                    });
-                }
+                    } else {
+                        let label = match self.mode {
+                            RunMode::Run => "Run",
+                            RunMode::Step => "Step",
+                            RunMode::Compile => "Compile",
+                        };
+                        // one button, its v choosing what it does: no gap between them
+                        let gap = ui.spacing().item_spacing.x;
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        if ui.button(label).on_hover_text("F5 runs, F10 steps").clicked() {
+                            let m = self.mode;
+                            self.start(m, &ctx);
+                        }
+                        // its arrow drawn: the fonts have no ▴
+                        let arrow = ui.menu_button("   ", |ui| {
+                            if ui.button("Run (F5)").clicked() {
+                                self.start(RunMode::Run, &ctx);
+                                ui.close();
+                            }
+                            if ui.button("Step (F10)").clicked() {
+                                self.start(RunMode::Step, &ctx);
+                                ui.close();
+                            }
+                            if ui.button("Compile").clicked() {
+                                self.start(RunMode::Compile, &ctx);
+                                ui.close();
+                            }
+                        });
+                        let c = arrow.response.rect.center();
+                        let color = ui.style().interact(&arrow.response).text_color();
+                        // pointing up: the menu opens above it
+                        let tri = vec![c + vec2(-4.0, 2.0), c + vec2(0.0, -3.0), c + vec2(4.0, 2.0)];
+                        ui.painter().add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
+                        ui.spacing_mut().item_spacing.x = gap;
+                    }
+                });
                 ui.separator();
                 let compiling = self.compiling.is_some();
                 let theme = self.theme.clone();
@@ -991,12 +1300,8 @@ impl App {
                             self.cfg.set("save.autosave", SValue::Bool(auto));
                             let _ = self.cfg.save();
                         }
-                        if ui.button("Reload modules").clicked() {
-                            self.reload_modules();
-                            ui.close();
-                        }
                         if ui.button("Settings (Ctrl+,)").clicked() {
-                            self.show_settings = true;
+                            self.open_settings();
                             ui.close();
                         }
                         ui.separator();
@@ -1008,6 +1313,52 @@ impl App {
                 });
             });
         });
+    }
+
+    /// The strip with what's typed in a field, all of it, wrapped, above
+    /// the output: what it's for, and its keys.
+    fn editor_ui(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme.clone();
+        let state = &mut self.tabs[self.active].2;
+        let Some(e) = state.edit.as_mut().filter(|e| !e.choose && !e.multiline) else {
+            state.strip = None;
+            return;
+        };
+        // over the bottom of the canvas, so the canvas doesn't move
+        let Some(canvas) = state.rect else { return };
+        let ctx = ui.ctx().clone();
+        let panel = egui::Area::new(egui::Id::unique("lineit field editor"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(canvas.left_bottom())
+            .show(&ctx, |ui| {
+                egui::Frame::new().fill(theme.panel).stroke(egui::Stroke::new(1.0, theme.border)).inner_margin(6).show(
+                    ui,
+                    |ui| {
+                        ui.set_width(canvas.width() - 14.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&e.title).color(theme.dim));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if e.error {
+                                    ui.colored_label(theme.error, "not valid: fix it, or Esc");
+                                } else {
+                                    ui.colored_label(theme.dim, "Enter or Esc applies, Tab next");
+                                }
+                            });
+                        });
+                        let r = ui.add(
+                            egui::TextEdit::multiline(&mut e.text)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(1),
+                        );
+                        if r.changed() {
+                            e.error = false;
+                        }
+                    },
+                );
+            });
+        state.strip = Some(panel.response.rect);
     }
 
     fn output_ui(&mut self, ui: &mut egui::Ui) {
@@ -1107,6 +1458,93 @@ impl App {
     }
 }
 
+/// NEEDLE as a subsequence of HAY (its letters in order, maybe with others
+/// between: "l/" is in "list/push" and "logic/and"): the length of the
+/// shortest part of HAY that has it, None if none does. Both lower case.
+fn fuzzy_span(hay: &str, needle: &str) -> Option<usize> {
+    let hay: Vec<char> = hay.chars().collect();
+    let needle: Vec<char> = needle.chars().collect();
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let mut best: Option<usize> = None;
+    for start in 0..hay.len() {
+        if hay[start] != needle[0] {
+            continue;
+        }
+        let (mut q, mut i) = (1, start + 1);
+        while q < needle.len() && i < hay.len() {
+            if hay[i] == needle[q] {
+                q += 1;
+            }
+            i += 1;
+        }
+        if q < needle.len() {
+            break; // later starts can't have it either
+        }
+        best = Some(best.map_or(i - start, |b| b.min(i - start)));
+    }
+    best
+}
+
+/// How well module PATH matches the search Q (lower case), lower is
+/// better, None if it doesn't: its name exactly, then paths that start
+/// with Q ("im" finds image/...), names that start with it, names with it,
+/// paths with it, and last paths with its letters in that order, tighter
+/// first.
+fn search_score(path: &str, q: &str) -> Option<usize> {
+    let path = path.to_lowercase();
+    let name = path.rsplit('/').next().unwrap_or(&path);
+    if name == q {
+        Some(0)
+    } else if path.starts_with(q) {
+        Some(1)
+    } else if name.starts_with(q) {
+        Some(2)
+    } else if name.contains(q) {
+        Some(3)
+    } else if path.contains(q) {
+        Some(4)
+    } else {
+        fuzzy_span(&path, q).map(|span| 5 + span)
+    }
+}
+
+/// The section of the Settings tab setting KEY goes in.
+fn section(key: &str) -> &'static str {
+    match key.split_once('.').map(|(t, _)| t) {
+        Some("font") => "Font",
+        Some("canvas") => "Canvas",
+        Some("save") => "Saving",
+        Some("output") => "Output",
+        Some("window") => "Window",
+        _ => "General",
+    }
+}
+
+/// "canvas.grid_step" as "Grid step".
+fn pretty(key: &str) -> String {
+    let name = key.rsplit('.').next().unwrap_or(key).replace('_', " ");
+    let mut c = name.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => name,
+    }
+}
+
+/// What the editor starts with: files to open, or the session of the editor
+/// it takes over from.
+pub enum Start {
+    Files(Vec<PathBuf>),
+    Session(session::Session),
+}
+
+fn config_stamp() -> (Option<std::time::SystemTime>, Option<std::time::SystemTime>) {
+    let dir = lineit_core::paths::config_dir();
+    let m = |f: &str| std::fs::metadata(dir.join(f)).and_then(|m| m.modified()).ok();
+    (m("config.lua"), m("settings.lua"))
+}
+
 /// The files and folders the path being typed could go on with.
 fn completions(text: &str) -> Vec<String> {
     let (dir, prefix) = match text.rfind(['/', '\\']) {
@@ -1148,17 +1586,55 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll();
+        {
+            let reg = self.reg.clone();
+            let (_, tab, state) = &mut self.tabs[self.active];
+            canvas::edit_keys(&ctx, tab, &reg, state);
+        }
         self.shortcuts(&ctx);
 
-        // modules changed on disk: Lua modules and subgraphs reload as you edit them
-        if self.last_stamp_check.elapsed() > Duration::from_secs(2) {
+        self.ready.frame();
+        // files sent by `lineit FILE`: open, in tabs (none: a new tab)
+        let sent: Vec<Option<PathBuf>> =
+            self.single.as_ref().map(|s| std::mem::take(&mut *s.inbox.lock().unwrap())).unwrap_or_default();
+        if !sent.is_empty() {
+            for p in sent {
+                match p {
+                    Some(p) => self.open(&p),
+                    None => {
+                        let t = Tab::empty(&self.reg);
+                        self.add_tab(t);
+                    }
+                }
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        // what changed on disk, once a second: the binary (handed over to),
+        // the config, modules and packages, and the canvases open
+        if self.last_stamp_check.elapsed() > Duration::from_secs(1) {
             self.last_stamp_check = Instant::now();
+            if self.exe.as_mut().is_some_and(|e| e.rebuilt()) {
+                self.hand_over(&ctx);
+                if self.tabs.is_empty() {
+                    return;
+                }
+            }
+            let c = config_stamp();
+            if c != self.config_stamp {
+                self.config_stamp = c;
+                self.reload_config(&ctx);
+            }
             let s = self.module_stamp();
             if s != self.modules_stamp {
                 self.modules_stamp = s;
                 self.reload_modules();
             }
+            let reg = self.reg.clone();
+            for (_, t, _) in &mut self.tabs {
+                t.reload_from_disk(&reg);
+            }
         }
+        ctx.request_repaint_after(Duration::from_secs(1));
         if self.cfg.bool("save.autosave") && self.last_autosave.elapsed().as_secs_f64() > self.cfg.num("save.interval")
         {
             self.last_autosave = Instant::now();
@@ -1181,7 +1657,9 @@ impl eframe::App for App {
                 let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
                 if ext == "lua" {
                     self.open(&path);
-                } else if ["png", "jpg", "jpeg", "gif", "bmp", "qoi", "tga"].contains(&ext.as_str()) {
+                } else if !self.tab().settings
+                    && ["png", "jpg", "jpeg", "gif", "bmp", "qoi", "tga"].contains(&ext.as_str())
+                {
                     let cam = self.tab().canvas.camera.clone();
                     let world = pos_world(&cam, at, ctx.content_rect().center()) + vec2(0.0, n);
                     let tab_dir = self.tab().dir();
@@ -1201,6 +1679,7 @@ impl eframe::App for App {
         self.tabs_ui(ui);
         self.bar_ui(ui);
         self.output_ui(ui);
+        self.editor_ui(ui);
 
         let (values, current): (HashMap<(SquareId, String), Value>, BTreeSet<SquareId>) = match &self.tab().run {
             Some(r) => {
@@ -1215,23 +1694,28 @@ impl eframe::App for App {
             self.previews(&ctx, &values);
         }
         let mut actions = Vec::new();
-        egui::CentralPanel::no_frame().show(ui, |ui| {
-            let reg = self.reg.clone();
-            let (tab_id, tab, state) = &mut self.tabs[self.active];
-            let mut cx = canvas::Ctx {
-                tab,
-                tab_id: *tab_id,
-                reg: &reg,
-                theme: &self.theme,
-                cfg: &self.cfg,
-                state,
-                actions: Vec::new(),
-                values,
-                current,
-            };
-            canvas::show(ui, &mut cx);
-            actions = cx.actions;
-        });
+        if self.tab().settings {
+            egui::CentralPanel::default().show(ui, |ui| self.settings_page(ui));
+        } else {
+            egui::CentralPanel::no_frame().show(ui, |ui| {
+                let reg = self.reg.clone();
+                let (tab_id, tab, state) = &mut self.tabs[self.active];
+                let mut cx = canvas::Ctx {
+                    tab,
+                    tab_id: *tab_id,
+                    reg: &reg,
+                    theme: &self.theme,
+                    cfg: &self.cfg,
+                    state,
+                    actions: Vec::new(),
+                    values,
+                    current,
+                    pending: self.search.as_ref().and_then(|s| s.pending.clone().map(|p| (p, s.at))),
+                };
+                canvas::show(ui, &mut cx);
+                actions = cx.actions;
+            });
+        }
         for a in actions {
             match a {
                 Action::Search { at, screen, pending } => {
@@ -1264,7 +1748,6 @@ impl eframe::App for App {
         }
         self.search_ui(&ctx);
         self.prompt_ui(&ctx);
-        self.settings_ui(&ctx);
 
         let settling = ctx.input(|i| i.pointer.any_down()) || ctx.memory(|m| m.focused().is_some());
         let reg = self.reg.clone();
@@ -1282,4 +1765,23 @@ impl eframe::App for App {
 fn pos_world(cam: &lineit_core::model::Camera, screen: Pos2, origin: Pos2) -> Pos2 {
     let v = canvas::View { origin, cam: vec2(cam.x, cam.y), zoom: cam.zoom };
     v.to_world(screen)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_score;
+
+    fn order(q: &str, paths: &[&str]) -> Vec<String> {
+        let mut v: Vec<(usize, &str)> = paths.iter().filter_map(|p| search_score(p, q).map(|s| (s, *p))).collect();
+        v.sort();
+        v.into_iter().map(|(_, p)| p.to_string()).collect()
+    }
+
+    #[test]
+    fn search_order() {
+        let paths = ["string/trim", "value/time", "image/open", "image/blur", "math/add", "map/delete"];
+        assert_eq!(order("im", &paths), ["image/blur", "image/open", "string/trim", "value/time"]);
+        assert_eq!(order("add", &paths), ["math/add"]);
+        assert_eq!(order("mdl", &paths), ["map/delete"]);
+    }
 }

@@ -3,6 +3,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
+
+use lineit_core::file::{quote, read_canvas, write_canvas};
 
 use lineit_core::lower::{self, Lowered};
 use lineit_core::model::{Canvas, Link, SquareId};
@@ -33,6 +36,15 @@ pub struct Tab {
     pub status: Option<(String, bool)>,
     /// Goes up each time the canvas is lowered again.
     pub generation: u64,
+    /// When its file was last changed, as far as this tab knows: if it
+    /// changes again, something else changed it.
+    pub disk: Option<SystemTime>,
+    /// It's the Settings tab, not a canvas.
+    pub settings: bool,
+}
+
+fn mtime(p: &Path) -> Option<SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
 impl Tab {
@@ -53,16 +65,24 @@ impl Tab {
             output: Vec::new(),
             status: None,
             generation: 0,
+            disk: None,
+            settings: false,
         }
+    }
+
+    /// The Settings tab (see `App::settings_page`).
+    pub fn settings_tab(reg: &Registry) -> Tab {
+        let mut t = Tab::new(Canvas::default(), None, reg);
+        t.settings = true;
+        t
     }
 
     /// A new canvas, with an entry.
     pub fn empty(reg: &Registry) -> Tab {
         let mut c = Canvas::default();
         c.add(lineit_core::model::Square::new(1, "flow/entry", -100.0, -40.0));
-        let mut t = Tab::new(c, None, reg);
-        t.saved = Canvas::default();
-        t
+        // its entry isn't a change: nothing to save until something is done
+        Tab::new(c, None, reg)
     }
 
     pub fn open(path: &Path, reg: &Registry) -> Result<Tab, String> {
@@ -85,17 +105,113 @@ impl Tab {
             canvas.camera.y = (y0 + y1) / 2.0 - top / 2.0 / zoom;
             canvas.camera.zoom = zoom;
         }
-        Ok(Tab::new(canvas, Some(path.to_path_buf()), reg))
+        let mut t = Tab::new(canvas, Some(path.to_path_buf()), reg);
+        t.disk = mtime(path);
+        Ok(t)
+    }
+
+    /// If its file was changed by something else: read it again, keeping the
+    /// camera, as a change that undo takes back. With unsaved changes it
+    /// isn't read, and the bar says so. Whether it was read.
+    pub fn reload_from_disk(&mut self, reg: &Arc<Registry>) -> bool {
+        let Some(path) = self.path.clone() else { return false };
+        let now = mtime(&path);
+        if now.is_none() || now == self.disk {
+            return false;
+        }
+        self.disk = now;
+        if self.dirty() {
+            self.status = Some((
+                format!("{} changed on disk; you have changes here: saving overwrites it", path.display()),
+                true,
+            ));
+            return false;
+        }
+        let read = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|src| read_canvas(&src, &path.display().to_string()));
+        match read {
+            Ok(mut c) => {
+                c.camera = self.canvas.camera.clone();
+                self.undo.push(self.canvas.clone());
+                self.redo.clear();
+                self.canvas = c;
+                self.saved = self.canvas.clone();
+                self.committed = self.canvas.clone();
+                self.update(reg, false, true);
+                self.status =
+                    Some((format!("{} changed on disk: read again (Ctrl+Z takes it back)", path.display()), false));
+                true
+            }
+            Err(e) => {
+                self.status = Some((format!("{} changed on disk, and can't be read: {e}", path.display()), true));
+                false
+            }
+        }
+    }
+
+    /// The tab as a Lua table, for a session (see `session.rs`): its
+    /// canvas, file, what was saved, selection, history and output.
+    pub fn session(&self) -> String {
+        if self.settings {
+            return "{ settings = true }".into();
+        }
+        let list = |v: &[Canvas]| v.iter().map(|c| quote(&write_canvas(c))).collect::<Vec<_>>().join(", ");
+        let mut t = String::from("{ ");
+        if let Some(p) = &self.path {
+            t.push_str(&format!("path = {}, ", quote(&p.to_string_lossy())));
+        }
+        t.push_str(&format!("canvas = {}, ", quote(&write_canvas(&self.canvas))));
+        t.push_str(&format!("saved = {}, ", quote(&write_canvas(&self.saved))));
+        let sel: Vec<String> = self.selected.iter().map(|s| s.to_string()).collect();
+        t.push_str(&format!("selected = {{ {} }}, ", sel.join(", ")));
+        t.push_str(&format!("running = {}, ", self.is_running()));
+        t.push_str(&format!("undo = {{ {} }}, redo = {{ {} }}, ", list(&self.undo), list(&self.redo)));
+        let out: Vec<String> = self.output.iter().map(|l| quote(l)).collect();
+        t.push_str(&format!("output = {{ {} }} }}", out.join(", ")));
+        t
+    }
+
+    /// A tab from what [`Tab::session`] wrote. Whether it was running.
+    pub fn from_session(t: &mlua::Table, reg: &Registry) -> Result<(Tab, bool), String> {
+        if t.get::<Option<bool>>("settings").ok().flatten() == Some(true) {
+            return Ok((Tab::settings_tab(reg), false));
+        }
+        let text = |k: &str| t.get::<Option<String>>(k).map_err(|e| e.to_string());
+        let canvas = |src: &str| read_canvas(src, "the session");
+        let canvas_text = text("canvas")?.ok_or("a tab with no canvas")?;
+        let path = text("path")?.map(PathBuf::from);
+        let mut tab = Tab::new(canvas(&canvas_text)?, path.clone(), reg);
+        if let Some(saved) = text("saved")? {
+            tab.saved = canvas(&saved)?;
+        }
+        let list = |k: &str| -> Result<Vec<Canvas>, String> {
+            match t.get::<Option<Vec<String>>>(k).map_err(|e| e.to_string())? {
+                Some(v) => v.iter().map(|c| canvas(c)).collect(),
+                None => Ok(Vec::new()),
+            }
+        };
+        tab.undo = list("undo")?;
+        tab.redo = list("redo")?;
+        tab.selected =
+            t.get::<Option<Vec<SquareId>>>("selected").ok().flatten().unwrap_or_default().into_iter().collect();
+        tab.output = t.get::<Option<Vec<String>>>("output").ok().flatten().unwrap_or_default();
+        tab.disk = path.as_deref().and_then(mtime);
+        let running = t.get::<Option<bool>>("running").ok().flatten().unwrap_or(false);
+        Ok((tab, running))
     }
 
     pub fn title(&self) -> String {
+        if self.settings {
+            return "Settings".into();
+        }
         let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
         let name = name.unwrap_or_else(|| "new canvas".into());
         if self.dirty() { format!("{name} •") } else { name }
     }
 
     pub fn dirty(&self) -> bool {
-        strip_camera(&self.canvas) != strip_camera(&self.saved)
+        !self.settings && strip_camera(&self.canvas) != strip_camera(&self.saved)
     }
 
     pub fn dir(&self) -> PathBuf {
@@ -113,6 +229,7 @@ impl Tab {
         std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
         self.path = Some(path.to_path_buf());
         self.saved = self.canvas.clone();
+        self.disk = mtime(path);
         Ok(())
     }
 

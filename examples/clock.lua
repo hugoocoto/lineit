@@ -1,7 +1,7 @@
 -- lineit canvas
 return {
         lineit = 1,
-        doc = "A clock ticks every half second while the program runs; a counter counts the ticks, and at 10 flow/stop ends the program. Without a stop, a program with a clock runs until you press Stop.",
+        doc = "A clock ticks every half second while the program runs; a counter counts the ticks, and at 10 flow/stop ends the program. Without a stop, a program with a clock runs until you press Stop. io/display shows on its square how long it has been running (value/time).",
         camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/clock", x = 0, y = 0, fields = { interval = "0.5" } },
@@ -11,8 +11,12 @@ return {
                 { id = 5, module = "compare/greater_equal", x = 560, y = 128, fields = { b = "10" } },
                 { id = 6, module = "flow/ifelse", x = 1120, y = 0 },
                 { id = 7, module = "flow/stop", x = 1400, y = 0 },
+                { id = 8, module = "value/time", x = 0, y = 106 },
+                { id = 9, module = "io/display", x = 560, y = 256 },
         },
         links = {
+                { 2, "then", 9, "tick" },
+                { 8, "seconds", 9, "value" },
                 { 1, "tick", 2, "tick" },
                 { 2, "then", 4, "tick" },
                 { 2, "count", 3, "1" },

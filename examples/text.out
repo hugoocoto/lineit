@@ -1,0 +1,17 @@
+concat: lineit
+length of añadir: 6
+upper: SHOUT
+lower: quiet
+trim: spaces
+find na in banana: 2
+last 3 of lineit: eit
+replace: a + b + c
+repeat: ababab
+split: ["red", "green", "blue"]
+last part: blue
+parts: 3
+joined: red / green / blue
+format: lineit has 6 letters
+constant: 0.5
+" 42 " as an int, times 2: 84
+3.5 as a string: 3.5

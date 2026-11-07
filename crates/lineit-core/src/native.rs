@@ -77,21 +77,26 @@ struct Lib {
     free_buf: FreeBufFn,
 }
 
-/// Libraries stay loaded once loaded: unloading Rust code that may have
-/// left threads or statics behind isn't safe.
-fn libs() -> &'static Mutex<HashMap<PathBuf, Arc<Lib>>> {
-    static LIBS: OnceLock<Mutex<HashMap<PathBuf, Arc<Lib>>>> = OnceLock::new();
+type LibKey = (PathBuf, Option<std::time::SystemTime>);
+
+/// The libraries loaded, by file and when it was built: a rebuilt one is
+/// loaded again, so a change to a Rust module shows on the next run. The
+/// old ones stay loaded: unloading Rust code that may have left threads or
+/// statics behind isn't safe.
+fn libs() -> &'static Mutex<HashMap<LibKey, Arc<Lib>>> {
+    static LIBS: OnceLock<Mutex<HashMap<LibKey, Arc<Lib>>>> = OnceLock::new();
     LIBS.get_or_init(Default::default)
 }
 
 fn load(path: &Path) -> Result<Arc<Lib>, String> {
     let mut libs = libs().lock().unwrap();
-    if let Some(l) = libs.get(path) {
+    let key = (path.to_path_buf(), std::fs::metadata(path).and_then(|m| m.modified()).ok());
+    if let Some(l) = libs.get(&key) {
         return Ok(l.clone());
     }
     // a copy, so building it again while it's loaded works (Windows locks
-    // a loaded file)
-    let copy = path.with_extension(format!("{}.loaded", libs.len()));
+    // a loaded file), named for this process: another editor may have its own
+    let copy = path.with_extension(format!("{}-{}.loaded", std::process::id(), libs.len()));
     std::fs::copy(path, &copy).map_err(|e| format!("{}: {e}", copy.display()))?;
     let err = |e: libloading::Error| format!("{}: {e}", path.display());
     unsafe {
@@ -112,7 +117,7 @@ fn load(path: &Path) -> Result<Arc<Lib>, String> {
         let free = *lib.get::<FreeFn>(b"lineit_native_free").map_err(err)?;
         let free_buf = *lib.get::<FreeBufFn>(b"lineit_native_free_buf").map_err(err)?;
         let l = Arc::new(Lib { _lib: lib, new, call, free, free_buf });
-        libs.insert(path.to_path_buf(), l.clone());
+        libs.insert(key, l.clone());
         Ok(l)
     }
 }

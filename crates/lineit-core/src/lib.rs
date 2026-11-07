@@ -5,6 +5,7 @@
 pub mod codegen;
 pub mod config;
 pub mod file;
+pub mod fonts;
 pub mod interp;
 pub mod ir;
 pub mod lower;

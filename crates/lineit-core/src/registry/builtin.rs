@@ -188,6 +188,12 @@ pub fn all() -> Vec<Arc<dyn Module>> {
     io(&mut m);
     images(&mut m);
     graph(&mut m);
+    m.push(
+        b("note", "A note for whoever reads the canvas, like a post-it: it does nothing. Double click it to write")
+            .param("text", ParamKind::Text, "")
+            .fixed(Signature::new())
+            .done(),
+    );
     m
 }
 

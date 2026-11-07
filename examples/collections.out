@@ -1,0 +1,13 @@
+pushed and inserted: ["a", "b", "c", "d"]
+last set to D: ["a", "b", "c", "D"]
+item 0: a
+item 1: b
+item 2: c
+item 3: D
+removed the first: ["b", "c", "D"]
+popped: D
+2 left, the second is c
+cleared: []
+set two: {"ana": 31, "bo": 27}
+bo is 27, has cy: false, keys ["bo"], 1 of them
+cleared: {}

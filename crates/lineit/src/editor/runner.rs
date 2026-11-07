@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,6 +49,9 @@ pub struct View {
 pub struct Runner {
     tx: Sender<Cmd>,
     pub view: Arc<Mutex<View>>,
+    /// Stops the program right away, even in the middle of a fan-out, when
+    /// the thread that runs it isn't reading commands.
+    stop: Arc<AtomicBool>,
 }
 
 impl Runner {
@@ -63,10 +67,12 @@ impl Runner {
             ops: 0,
         }));
         let v = view.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
         std::thread::Builder::new()
             .name("lineit run".into())
             .spawn(move || {
-                let r = work(prog, dir, first, &rx, &v, &ctx);
+                let r = work(prog, dir, first, flag, &rx, &v, &ctx);
                 let mut view = v.lock().unwrap();
                 match r {
                     Ok(state) => view.state = state,
@@ -79,10 +85,13 @@ impl Runner {
                 ctx.request_repaint();
             })
             .expect("a thread for the run");
-        Runner { tx, view }
+        Runner { tx, view, stop }
     }
 
     pub fn send(&self, c: Cmd) {
+        if c == Cmd::Stop {
+            self.stop.store(true, Ordering::Relaxed);
+        }
         let _ = self.tx.send(c);
     }
 
@@ -97,20 +106,15 @@ impl Runner {
 
 impl Drop for Runner {
     fn drop(&mut self) {
-        let _ = self.tx.send(Cmd::Stop);
+        self.send(Cmd::Stop);
     }
 }
 
 fn publish(it: &mut Interp, view: &Mutex<View>, state: State, ctx: &egui::Context) {
     let squares: Vec<SquareId> = it.current().into_iter().map(|n| it.program().nodes[n as usize].square).collect();
-    let mut values = HashMap::new();
-    for (i, s) in it.program().slots.iter().enumerate() {
-        if let Some((sq, pin)) = &s.shows {
-            values.insert((*sq, pin.clone()), it.w.slots[i].clone());
-        }
-    }
+    let values = it.w.shown();
     let mut v = view.lock().unwrap();
-    v.output.append(&mut it.w.output);
+    v.output.extend(it.w.take_output());
     v.current = squares;
     v.values = values;
     v.state = state;
@@ -123,11 +127,32 @@ fn work(
     prog: Program,
     dir: PathBuf,
     first: Cmd,
+    stop: Arc<AtomicBool>,
     rx: &Receiver<Cmd>,
-    view: &Mutex<View>,
+    view: &Arc<Mutex<View>>,
     ctx: &egui::Context,
 ) -> Result<State, String> {
     let mut it = Interp::new(prog, dir)?;
+    it.set_stop(stop);
+    // while branches run on threads this one waits for them: another one
+    // shows what they print and set meanwhile
+    let done = Arc::new(AtomicBool::new(false));
+    let _done = SetOnDrop(done.clone());
+    {
+        let (w, view, ctx, done) = (it.w.clone(), view.clone(), ctx.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(100));
+                let out = w.take_output();
+                let values = w.shown();
+                let mut v = view.lock().unwrap();
+                v.output.extend(out);
+                v.values = values;
+                drop(v);
+                ctx.request_repaint();
+            }
+        });
+    }
     it.start()?;
     let mut stepping = first == Cmd::Step;
     let mut last = Instant::now();
@@ -189,5 +214,14 @@ fn work(
             }
             it.tick_clocks(false)?;
         }
+    }
+}
+
+/// Sets its flag when it goes, however the run ends.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 }

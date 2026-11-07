@@ -11,6 +11,7 @@ repository.workspace = true
 lineit-core = { path = "../lineit-core" }
 lineit-rt = { path = "../lineit-rt" }
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+mlua = { version = "0.12", features = ["lua54", "vendored", "send"] }
 
 [lints]
 workspace = true

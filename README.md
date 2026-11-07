@@ -67,6 +67,7 @@ its corner.
 | Click a wire, then Delete            | Remove it (Shift+click selects more)                 |
 | Type in a field next to an input     | The value it has while nothing is wired to it        |
 | Right click on a square              | Duplicate, copy, disconnect, make a subgraph, delete |
+| Add a `note` square, double click it | A post-it to write on: Enter is a new line, Esc done |
 | Drag on the canvas, or Shift+click   | Select with a box, or add to the selection           |
 | Right or middle drag / mouse wheel   | Pan / zoom                                           |
 | Drop files on the window             | Canvases open; images become `image/open` squares    |
@@ -185,7 +186,8 @@ Rust on Windows already does.
 
 # Configuration
 
-**File > Settings** (Ctrl+,) has every setting, searchable, and applies
+**File > Settings** (Ctrl+,) opens the Settings tab: every setting, in
+sections, with a search (Ctrl+F) and a Reset for each. It applies
 changes at once: they're saved to `settings.lua` in the config folder.
 `config.lua` there, if you write one, is read before it, and is real Lua:
 `lineit config` prints one with every setting. Themes: `dark`, `light`,

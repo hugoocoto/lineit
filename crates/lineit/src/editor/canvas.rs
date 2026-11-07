@@ -22,7 +22,7 @@ use super::theme::Theme;
 
 pub const HEADER: f32 = 26.0;
 pub const ROW: f32 = 22.0;
-pub const PIN: f32 = 5.5;
+pub const PIN: f32 = 7.0;
 
 #[derive(Clone, Copy)]
 pub struct View {
@@ -107,6 +107,241 @@ pub struct CanvasState {
     pub drag: Option<Drag>,
     /// Images on squares, by square and output, with the image they show.
     pub previews: HashMap<(SquareId, String), (egui::TextureHandle, lineit_rt::Image)>,
+    /// The field being typed in, if any.
+    pub edit: Option<FieldEdit>,
+    /// Where the strip that shows what's typed is (see `App::editor_ui`).
+    pub strip: Option<Rect>,
+    /// Where the canvas was drawn, on the screen: the strip goes over its
+    /// bottom.
+    pub rect: Option<Rect>,
+}
+
+/// A field of a square: an input's (by its name) or a param's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldKey {
+    pub sq: SquareId,
+    pub name: String,
+    pub param: bool,
+}
+
+/// What a field's text has to be.
+#[derive(Clone, Debug)]
+enum Check {
+    /// Anything: inputs that take any type get it from what's typed.
+    Any,
+    Is(Type),
+    Param(ParamKind),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum FieldKind {
+    Typed,
+    Bool,
+    Choice(Vec<String>),
+}
+
+/// Typing in a field: what's typed applies on Enter, on Esc, on Tab (which
+/// goes on to the square's next field) or on a click away. If it isn't
+/// valid, Enter and Tab keep the field open, in red; Esc and a click away
+/// leave the value as it was. A checkbox or a list that Tab gets to is CHOOSE: Space or Enter
+/// toggles it, or goes to its next option.
+pub struct FieldEdit {
+    pub key: FieldKey,
+    pub text: String,
+    pub error: bool,
+    /// Just opened: it takes the keyboard, its text selected.
+    pub fresh: bool,
+    pub choose: bool,
+    /// "math/add > b (int)", for the strip.
+    pub title: String,
+    /// A note's text: Enter is a new line, and it's typed on the note itself.
+    pub multiline: bool,
+    check: Check,
+    /// Where it was drawn, on the screen.
+    pub rect: Option<Rect>,
+}
+
+/// The fields of square ID, in Tab order: its inputs that take one and
+/// have nothing wired, then its params, with what each is, its check, its
+/// title and its value now.
+fn fields(tab: &Tab, reg: &Registry, id: SquareId) -> Vec<(FieldKey, FieldKind, Check, String, String)> {
+    let mut v = Vec::new();
+    let Some(sq) = tab.canvas.square(id) else { return v };
+    if let Some(info) = tab.lowered.squares.get(&id) {
+        for (i, pin) in info.sig.inputs.iter().enumerate() {
+            let Some(default) = &pin.field else { continue };
+            if tab.canvas.links_into(id, &pin.name).next().is_some() {
+                continue;
+            }
+            let ty = info.in_types[i].clone();
+            let kind = if ty == Some(Type::Bool) { FieldKind::Bool } else { FieldKind::Typed };
+            let check = match &pin.ty {
+                PinTy::Data(lineit_core::registry::TExpr::T(t)) => Check::Is(t.clone()),
+                _ => Check::Any,
+            };
+            let ty_name = ty.map(|t| t.to_string()).unwrap_or_else(|| "any".into());
+            let title = format!("{}  >  {} ({ty_name})", sq.module, pin.name);
+            let now = sq.fields.get(&pin.name).cloned().unwrap_or_else(|| default.clone());
+            v.push((FieldKey { sq: id, name: pin.name.clone(), param: false }, kind, check, title, now));
+        }
+    }
+    if let Some(m) = reg.get(&sq.module) {
+        for def in m.params() {
+            let kind = match &def.kind {
+                ParamKind::Bool => FieldKind::Bool,
+                ParamKind::Choice(c) => FieldKind::Choice(c.clone()),
+                _ => FieldKind::Typed,
+            };
+            let title = format!("{}  >  {} (param)", sq.module, def.name);
+            let now = sq.params.get(&def.name).cloned().unwrap_or_else(|| def.default.clone());
+            v.push((
+                FieldKey { sq: id, name: def.name.clone(), param: true },
+                kind,
+                Check::Param(def.kind.clone()),
+                title,
+                now,
+            ));
+        }
+    }
+    v
+}
+
+/// Starts typing in field KEY (or choosing, for a checkbox or a list).
+pub fn start_edit(tab: &Tab, reg: &Registry, state: &mut CanvasState, key: &FieldKey) {
+    let Some((key, kind, check, title, now)) = fields(tab, reg, key.sq).into_iter().find(|f| f.0 == *key) else {
+        return;
+    };
+    let choose = kind != FieldKind::Typed;
+    let multiline = tab.canvas.square(key.sq).is_some_and(|s| s.module == NOTE);
+    state.edit =
+        Some(FieldEdit { key, text: now, error: false, fresh: true, choose, title, check, multiline, rect: None });
+}
+
+/// A square just added: typing goes to its first field to type in, its
+/// value selected, so what's typed replaces it.
+pub fn start_first(tab: &Tab, reg: &Registry, state: &mut CanvasState, id: SquareId) {
+    if let Some((key, ..)) = fields(tab, reg, id).into_iter().find(|f| f.1 == FieldKind::Typed) {
+        start_edit(tab, reg, state, &key);
+    }
+}
+
+fn valid(check: &Check, text: &str, reg: &Registry) -> bool {
+    match check {
+        Check::Any => true,
+        Check::Is(Type::Str) => true,
+        Check::Is(t) => Value::parse(text, t).is_some(),
+        Check::Param(ParamKind::Int) => lineit_rt::value::parse_int(text.trim()).is_some(),
+        Check::Param(ParamKind::Float) => lineit_rt::value::parse_float(text.trim()).is_some(),
+        Check::Param(ParamKind::Type { allow_tick }) => {
+            (*allow_tick && text.trim() == "tick") || Type::parse(text, &|n| reg.records.get(n).cloned()).is_some()
+        }
+        Check::Param(_) => true,
+    }
+}
+
+fn write_field(tab: &mut Tab, key: &FieldKey, text: String) {
+    if let Some(sq) = tab.canvas.square_mut(key.sq) {
+        if key.param {
+            sq.params.insert(key.name.clone(), text);
+        } else {
+            sq.fields.insert(key.name.clone(), text);
+        }
+    }
+}
+
+/// Applies what's typed: true if it was valid (then the field closes).
+fn apply(tab: &mut Tab, reg: &Registry, state: &mut CanvasState) -> bool {
+    let Some(e) = &mut state.edit else { return true };
+    if e.choose {
+        state.edit = None;
+        return true;
+    }
+    if !valid(&e.check, &e.text, reg) {
+        e.error = true;
+        return false;
+    }
+    let (key, text) = (e.key.clone(), e.text.clone());
+    state.edit = None;
+    write_field(tab, &key, text);
+    true
+}
+
+/// Typing goes on in the square's next field (DIR -1: the one before),
+/// round.
+fn edit_next(tab: &Tab, reg: &Registry, state: &mut CanvasState, key: &FieldKey, dir: i32) {
+    let list = fields(tab, reg, key.sq);
+    let Some(i) = list.iter().position(|f| f.0 == *key) else { return };
+    let n = list.len() as i32;
+    let next = list[((i as i32 + dir).rem_euclid(n)) as usize].0.clone();
+    start_edit(tab, reg, state, &next);
+}
+
+/// The keys of the field being typed in. Before anything else reads the
+/// keyboard, so Enter, Tab and Esc are the field's.
+pub fn edit_keys(ctx: &egui::Context, tab: &mut Tab, reg: &Registry, state: &mut CanvasState) {
+    let Some(e) = &state.edit else { return };
+    let (key, choose, multiline) = (e.key.clone(), e.choose, e.multiline);
+    let k = |m: egui::Modifiers, k: egui::Key| ctx.input_mut(|i| i.consume_key(m, k));
+    let none = egui::Modifiers::NONE;
+    let back = k(egui::Modifiers::SHIFT, egui::Key::Tab);
+    let tab_key = !back && k(none, egui::Key::Tab);
+    // Esc applies what's typed, as Enter does; if it isn't valid the field
+    // goes back to what it was
+    if k(none, egui::Key::Escape) {
+        if !apply(tab, reg, state) {
+            state.edit = None;
+        }
+        return;
+    }
+    if choose {
+        if k(none, egui::Key::Space) || k(none, egui::Key::Enter) {
+            let list = fields(tab, reg, key.sq);
+            if let Some((_, kind, _, _, now)) = list.into_iter().find(|f| f.0 == key) {
+                let next = match kind {
+                    FieldKind::Bool => (now.trim() != "true").to_string(),
+                    FieldKind::Choice(c) => {
+                        let i = c.iter().position(|x| *x == now).map_or(0, |i| (i + 1) % c.len().max(1));
+                        c.get(i).cloned().unwrap_or(now)
+                    }
+                    FieldKind::Typed => now,
+                };
+                write_field(tab, &key, next);
+            }
+        }
+        if tab_key || back {
+            edit_next(tab, reg, state, &key, if back { -1 } else { 1 });
+        }
+        return;
+    }
+    // a note's Enter is a new line: Esc or a click away keeps it
+    if multiline {
+        return;
+    }
+    if k(none, egui::Key::Enter) {
+        apply(tab, reg, state);
+    } else if (tab_key || back) && apply(tab, reg, state) {
+        edit_next(tab, reg, state, &key, if back { -1 } else { 1 });
+    }
+}
+
+/// A field that isn't being typed in: a box with its text.
+fn draw_field_box(painter: &egui::Painter, r: Rect, text: &str, font: FontId, theme: &Theme, chosen: bool) {
+    painter.rect_filled(r, 0.0, theme.field);
+    let stroke = if chosen { Stroke::new(2.0, theme.step) } else { Stroke::new(1.0, theme.border) };
+    painter.rect_stroke(r, 0.0, stroke, StrokeKind::Inside);
+    let clip = painter.with_clip_rect(r.shrink(2.0).intersect(painter.clip_rect()));
+    clip.text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, font, theme.text);
+}
+
+/// A checkbox: a box, filled when ON.
+fn draw_check(painter: &egui::Painter, r: Rect, on: bool, theme: &Theme, chosen: bool) {
+    let b = Rect::from_center_size(pos2(r.left() + r.height() / 2.0, r.center().y), Vec2::splat(r.height() * 0.8));
+    painter.rect_filled(b, 0.0, theme.field);
+    let stroke = if chosen { Stroke::new(2.0, theme.step) } else { Stroke::new(1.0, theme.border) };
+    painter.rect_stroke(b, 0.0, stroke, StrokeKind::Inside);
+    if on {
+        painter.rect_filled(b.shrink(b.width() * 0.25), 0.0, theme.accent);
+    }
 }
 
 pub struct Ctx<'a> {
@@ -121,11 +356,27 @@ pub struct Ctx<'a> {
     pub values: HashMap<(SquareId, String), Value>,
     /// Squares the run is stopped before.
     pub current: BTreeSet<SquareId>,
+    /// The wire the module search was opened with, by dropping it on the
+    /// canvas, and where it was dropped: drawn until the search closes.
+    pub pending: Option<(Pending, Pos2)>,
 }
 
-fn bezier(a: Pos2, b: Pos2, zoom: f32) -> [Pos2; 4] {
-    let d = ((b.x - a.x).abs() * 0.5).clamp(30.0 * zoom, 200.0 * zoom);
+/// The curve of a wire from A to B, as the C editor drew it: its control
+/// points half the larger of the two distances out, along the pins.
+fn bezier(a: Pos2, b: Pos2, _zoom: f32) -> [Pos2; 4] {
+    let d = (b.x - a.x).abs().max((b.y - a.y).abs()) * 0.5;
     [a, a + vec2(d, 0.0), b - vec2(d, 0.0), b]
+}
+
+/// A pin as the C editor drew it: a dark circle, with a dot of its color if
+/// it's wired and a ring if not. Ticks too.
+fn draw_pin(painter: &egui::Painter, p: Pos2, r: f32, color: Color32, border: Color32, wired: bool) {
+    painter.circle_filled(p, r, border);
+    if wired {
+        painter.circle_filled(p, r * 0.7, color);
+    } else {
+        painter.circle_stroke(p, r * 0.575, Stroke::new(r * 0.25, color));
+    }
 }
 
 fn bezier_point(p: &[Pos2; 4], t: f32) -> Pos2 {
@@ -182,6 +433,55 @@ fn extra_height(sq: &Square, info: Option<&SquareInfo>, cx: &Ctx, width: f32) ->
     0.0
 }
 
+/// How wide a square is: as its title, its rows (an input's label and
+/// field, an output's label) and its params need, at most MAX. Squares
+/// that show something (images, a value) take MAX.
+fn square_width(painter: &egui::Painter, sq: &Square, info: Option<&SquareInfo>, params: usize, max: f32) -> f32 {
+    let w =
+        |t: &str, size: f32| painter.layout_no_wrap(t.to_string(), FontId::proportional(size), Color32::WHITE).size().x;
+    let mut need = w(&short(&sq.module, 30), 13.0) + 16.0;
+    if let Some(info) = info {
+        if sq.module == "io/display" || info.out_types.iter().any(|t| t.as_ref() == Some(&Type::Image)) {
+            return max;
+        }
+        for i in 0..info.sig.inputs.len().max(info.sig.outputs.len()) {
+            // fields are counted wired or not, so wiring doesn't resize it
+            let left = info.sig.inputs.get(i).map_or(0.0, |p| {
+                // a field as wide as its value, so it shows
+                let field = p.field.as_ref().map_or(0.0, |d| {
+                    let value = sq.fields.get(&p.name).unwrap_or(d);
+                    let mono = painter.layout_no_wrap(value.clone(), FontId::monospace(12.0), Color32::WHITE).size().x;
+                    6.0 + (mono + 12.0).max(FIELD_MIN)
+                });
+                10.0 + w(&p.name, 12.0) + field
+            });
+            let right = info.sig.outputs.get(i).map_or(0.0, |p| 10.0 + w(&p.name, 12.0));
+            need = need.max(left + right + 16.0);
+        }
+    }
+    if params > 0 {
+        need = need.max(PARAM_LABEL + 90.0);
+    }
+    need.clamp(80.0, max)
+}
+
+/// The module of notes: post-its on the canvas, for people.
+pub const NOTE: &str = "note";
+const NOTE_FILL: Color32 = Color32::from_rgb(255, 236, 140);
+const NOTE_TEXT: Color32 = Color32::from_rgb(52, 44, 20);
+
+/// A note's text, as laid out at zoom 1 in a note WIDTH wide.
+fn note_galley(painter: &egui::Painter, text: &str, width: f32, z: f32) -> std::sync::Arc<egui::Galley> {
+    let (shown, color) =
+        if text.is_empty() { ("Double click to write", NOTE_TEXT.gamma_multiply(0.5)) } else { (text, NOTE_TEXT) };
+    painter.layout(shown.to_string(), FontId::proportional(14.0 * z), color, (width - 20.0) * z)
+}
+
+/// The least width of a field next to its input.
+const FIELD_MIN: f32 = 56.0;
+/// Where the field of a param starts, from the left of its square.
+const PARAM_LABEL: f32 = 70.0;
+
 fn short(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -194,6 +494,7 @@ fn short(s: &str, max: usize) -> String {
 
 pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
     let (rect, bg) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    cx.state.rect = Some(rect);
     let theme = cx.theme.clone();
     let painter = ui.painter_at(rect);
     let zoom_min = cx.cfg.num("canvas.zoom_min") as f32;
@@ -265,11 +566,28 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
     for sq in &cx.tab.canvas.squares {
         let info = cx.tab.lowered.squares.get(&sq.id);
         let params = cx.reg.get(&sq.module).map(|m| m.params().len()).unwrap_or(0);
-        let extra = extra_height(sq, info, cx, width);
-        geos.insert(sq.id, geometry(sq, info, params, width, extra));
+        if sq.module == NOTE {
+            // as tall as its text (what's being typed, while it's typed)
+            let text = match &cx.state.edit {
+                Some(e) if e.key.sq == sq.id => e.text.clone(),
+                _ => sq.params.get("text").cloned().unwrap_or_default(),
+            };
+            let h = (note_galley(&painter, &text, width, 1.0).size().y + 20.0).max(60.0);
+            let r = Rect::from_min_size(pos2(sq.x, sq.y), vec2(width, h));
+            geos.insert(
+                sq.id,
+                Geo { rect: r, ins: vec![], outs: vec![], params_top: r.bottom(), extra_top: r.bottom() },
+            );
+            continue;
+        }
+        let w = square_width(&painter, sq, info, params, width);
+        let extra = extra_height(sq, info, cx, w);
+        geos.insert(sq.id, geometry(sq, info, params, w, extra));
     }
+    // a copy, so the canvas can change while the pins are looked up
+    let infos = cx.tab.lowered.squares.clone();
     let pin_pos = |id: SquareId, name: &str, output: bool| -> Option<(Pos2, Option<Type>)> {
-        let info = cx.tab.lowered.squares.get(&id)?;
+        let info = infos.get(&id)?;
         let g = geos.get(&id)?;
         if output {
             let i = info.sig.output_index(name)?;
@@ -305,6 +623,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         }
     }
     let wired: BTreeSet<(SquareId, String)> = cx.tab.canvas.links.iter().map(|l| (l.to, l.input.clone())).collect();
+    let wired_from: BTreeSet<(SquareId, String)> =
+        cx.tab.canvas.links.iter().map(|l| (l.from, l.output.clone())).collect();
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let shift = ui.input(|i| i.modifiers.shift);
 
@@ -313,6 +633,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
     let mut move_by: Option<Vec2> = None;
     let mut snap = false;
     let mut field_changes: Vec<(SquareId, String, String, bool)> = Vec::new();
+    let mut field_clicks: Vec<FieldKey> = Vec::new();
     for id in ids {
         let sq = cx.tab.canvas.square(id).unwrap().clone();
         let g = &geos[&id];
@@ -323,31 +644,48 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         let info = cx.tab.lowered.squares.get(&id).cloned();
         let module = cx.reg.get(&sq.module).cloned();
         let selected = cx.tab.selected.contains(&id);
-        let r = CornerRadius::same((6.0 * z).clamp(0.0, 255.0) as u8);
-        painter.rect_filled(srect, r, theme.square);
+        let r = CornerRadius::ZERO;
+        let note = sq.module == NOTE;
+        let editing_note = note && cx.state.edit.as_ref().is_some_and(|e| e.key.sq == id);
         let header = Rect::from_min_size(srect.min, vec2(srect.width(), HEADER * z));
-        painter.rect_filled(header, CornerRadius { nw: r.nw, ne: r.ne, sw: 0, se: 0 }, theme.header);
+        if note {
+            // a post-it: yellow, a shadow, its text
+            painter.rect_filled(srect.translate(vec2(3.0, 4.0) * z), r, Color32::from_black_alpha(70));
+            painter.rect_filled(srect, r, NOTE_FILL);
+            if !editing_note {
+                let text = sq.params.get("text").cloned().unwrap_or_default();
+                let g = note_galley(&painter, &text, srect.width() / z, z);
+                painter.galley(srect.min + vec2(10.0, 10.0) * z, g, NOTE_TEXT);
+            }
+        } else {
+            painter.rect_filled(srect, r, theme.square);
+            painter.rect_filled(header, r, theme.header);
+        }
         let border = if cx.current.contains(&id) {
             Stroke::new(3.0, theme.step)
         } else if problems.contains_key(&id) {
             Stroke::new(2.0, theme.error)
         } else if selected {
             Stroke::new(2.0, theme.selection)
+        } else if note {
+            Stroke::new(1.0, NOTE_FILL.gamma_multiply(0.7))
         } else {
-            Stroke::new(1.0, theme.border)
+            Stroke::new(2.0, theme.border)
         };
         painter.rect_stroke(srect, r, border, StrokeKind::Outside);
         let title = match &module {
             Some(_) => sq.module.clone(),
             None => format!("? {}", sq.module),
         };
-        painter.text(
-            header.left_center() + vec2(8.0 * z, 0.0),
-            Align2::LEFT_CENTER,
-            short(&title, 30),
-            font(13.0),
-            theme.text,
-        );
+        if !note {
+            painter.text(
+                header.left_center() + vec2(8.0 * z, 0.0),
+                Align2::LEFT_CENTER,
+                short(&title, 30),
+                font(13.0),
+                theme.text,
+            );
+        }
 
         // the square itself: select, move, its menu
         let resp = ui.interact(srect, Id::unique(("square", cx.tab_id, id)), Sense::click_and_drag());
@@ -409,6 +747,19 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             }
         });
 
+        if note {
+            if resp.double_clicked() && !editing_note {
+                if !apply(cx.tab, cx.reg, cx.state) {
+                    cx.state.edit = None;
+                }
+                start_edit(cx.tab, cx.reg, cx.state, &FieldKey { sq: id, name: "text".into(), param: true });
+            }
+            if let Some(e) = cx.state.edit.as_mut().filter(|e| e.key.sq == id) {
+                note_edit(ui, e, srect, z, cx.tab_id);
+            }
+            continue;
+        }
+
         // pins, and the fields of unwired inputs
         if let Some(info) = &info {
             let show_widgets = z >= 0.55;
@@ -417,19 +768,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 let ty = info.in_types[i].clone();
                 let color = theme.of(ty.as_ref());
                 let is_wired = wired.contains(&(id, pin.name.clone()));
-                if pin.ty == PinTy::Tick {
-                    let s = PIN * z * 1.1;
-                    let tri = vec![p + vec2(-s, -s), p + vec2(s, 0.0), p + vec2(-s, s)];
-                    painter.add(egui::Shape::convex_polygon(
-                        tri,
-                        if is_wired { color } else { theme.square },
-                        Stroke::new(1.5, color),
-                    ));
-                } else if is_wired {
-                    painter.circle_filled(p, PIN * z, color);
-                } else {
-                    painter.circle(p, PIN * z, theme.square, Stroke::new(1.5, color));
-                }
+                draw_pin(&painter, p, PIN * z, color, theme.pin_border, is_wired);
                 let label = painter.layout_no_wrap(pin.name.clone(), font(12.0), theme.dim);
                 let label_w = label.size().x;
                 painter.galley(p + vec2(10.0 * z, -label.size().y / 2.0), label, theme.dim);
@@ -458,51 +797,43 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 }
                 // its field
                 if let (Some(default), false) = (&pin.field, is_wired) {
-                    let has_out = i < info.sig.outputs.len();
                     let left = p.x + 10.0 * z + label_w + 6.0 * z;
-                    let right = if has_out { srect.center().x + 18.0 * z } else { srect.right() - 10.0 * z };
+                    // up to the label of the output on its row, if there's one
+                    let right = match info.sig.outputs.get(i) {
+                        Some(o) => {
+                            let ow = painter.layout_no_wrap(o.name.clone(), font(12.0), theme.dim).size().x;
+                            srect.right() - 10.0 * z - ow - 10.0 * z
+                        }
+                        None => srect.right() - 10.0 * z,
+                    };
                     if right - left < 16.0 * z {
                         continue;
                     }
                     let frect = Rect::from_min_max(pos2(left, p.y - 9.0 * z), pos2(right, p.y + 9.0 * z));
                     let current = sq.fields.get(&pin.name).cloned().unwrap_or_else(|| default.clone());
-                    if !show_widgets {
-                        painter.rect_filled(frect, 2.0, theme.field);
-                        continue;
-                    }
-                    if ty == Some(Type::Bool) {
-                        let mut b = current.trim() == "true";
-                        if ui.put(frect, egui::Checkbox::without_text(&mut b)).changed() {
-                            field_changes.push((id, pin.name.clone(), b.to_string(), false));
-                        }
-                    } else {
-                        let mut text = current.clone();
-                        let resp = ui.put(
-                            frect,
-                            egui::TextEdit::singleline(&mut text)
-                                .id(Id::unique(("field", cx.tab_id, id, i)))
-                                .font(mono(12.0))
-                                .margin(vec2(3.0 * z, 1.0))
-                                .background_color(theme.field),
-                        );
-                        if text != current {
-                            field_changes.push((id, pin.name.clone(), text, false));
-                        }
-                        let _ = resp;
-                    }
+                    let key = FieldKey { sq: id, name: pin.name.clone(), param: false };
+                    let kind = if ty == Some(Type::Bool) { FieldKind::Bool } else { FieldKind::Typed };
+                    field(
+                        ui,
+                        &painter,
+                        (&mut cx.state.edit, &theme, cx.tab_id),
+                        key,
+                        kind,
+                        frect,
+                        &current,
+                        mono(12.0),
+                        z,
+                        &mut field_changes,
+                        &mut field_clicks,
+                    );
                 }
             }
             for (o, pin) in info.sig.outputs.iter().enumerate() {
                 let p = view.to_screen(g.outs[o]);
                 let ty = info.out_types[o].clone();
                 let color = theme.of(ty.as_ref());
-                if pin.ty == PinTy::Tick {
-                    let s = PIN * z * 1.1;
-                    let tri = vec![p + vec2(-s, -s), p + vec2(s, 0.0), p + vec2(-s, s)];
-                    painter.add(egui::Shape::convex_polygon(tri, color, Stroke::new(1.5, color)));
-                } else {
-                    painter.circle_filled(p, PIN * z, color);
-                }
+                let out_wired = wired_from.contains(&(id, pin.name.clone()));
+                draw_pin(&painter, p, PIN * z, color, theme.pin_border, out_wired);
                 painter.text(p - vec2(10.0 * z, 0.0), Align2::RIGHT_CENTER, &pin.name, font(12.0), theme.dim);
                 let pin_resp = ui.interact(
                     Rect::from_center_size(p, Vec2::splat(PIN * z * 3.0)),
@@ -556,30 +887,22 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                         if chosen != current {
                             field_changes.push((id, def.name.clone(), chosen, true));
                         }
-                    } else if def.kind == ParamKind::Bool {
-                        let mut b = current.trim() == "true";
-                        if ui.put(frect, egui::Checkbox::without_text(&mut b)).changed() {
-                            field_changes.push((id, def.name.clone(), b.to_string(), true));
-                        }
                     } else {
-                        let mut text = current.clone();
-                        let hint = match def.kind {
-                            ParamKind::Type { .. } => "int, str, list<float>...",
-                            ParamKind::Var => "a variable",
-                            _ => "",
-                        };
-                        ui.put(
+                        let key = FieldKey { sq: id, name: def.name.clone(), param: true };
+                        let kind = if def.kind == ParamKind::Bool { FieldKind::Bool } else { FieldKind::Typed };
+                        field(
+                            ui,
+                            &painter,
+                            (&mut cx.state.edit, &theme, cx.tab_id),
+                            key,
+                            kind,
                             frect,
-                            egui::TextEdit::singleline(&mut text)
-                                .id(Id::unique(("param", cx.tab_id, id, k)))
-                                .font(mono(12.0))
-                                .hint_text(hint)
-                                .margin(vec2(3.0 * z, 1.0))
-                                .background_color(theme.field),
+                            &current,
+                            mono(12.0),
+                            z,
+                            &mut field_changes,
+                            &mut field_clicks,
                         );
-                        if text != current {
-                            field_changes.push((id, def.name.clone(), text, true));
-                        }
                     }
                 }
             }
@@ -631,6 +954,28 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             }
         }
     }
+    // a field clicked: typing starts there (what was typed elsewhere applies)
+    if let Some(key) = field_clicks.pop() {
+        if !apply(cx.tab, cx.reg, cx.state) {
+            cx.state.edit = None;
+        }
+        start_edit(cx.tab, cx.reg, cx.state, &key);
+        if let Some(e) = &mut cx.state.edit
+            && e.choose
+        {
+            // a click on a checkbox toggles it at once
+            e.fresh = false;
+        }
+    } else if let Some(e) = &cx.state.edit {
+        // a click anywhere else applies what's valid, and the click goes on
+        let away = ui.input(|i| i.pointer.any_pressed())
+            && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| {
+                !e.rect.is_some_and(|r| r.contains(p)) && !cx.state.strip.is_some_and(|r| r.contains(p))
+            });
+        if away && !apply(cx.tab, cx.reg, cx.state) {
+            cx.state.edit = None;
+        }
+    }
     if let Some(d) = move_by {
         let sel = cx.tab.selected.clone();
         for sq in cx.tab.canvas.squares.iter_mut().filter(|s| sel.contains(&s.id)) {
@@ -679,6 +1024,23 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         && let Some(p) = bg.interact_pointer_pos()
     {
         cx.actions.push(Action::Search { at: view.to_world(p), screen: p, pending: None });
+    }
+
+    // the wire the search is open for, to where it was dropped
+    if let Some((p, at)) = &cx.pending {
+        let at = view.to_screen(*at);
+        match p {
+            Pending::From(sq, out, ty) => {
+                if let Some((a, _)) = pin_pos(*sq, out, true) {
+                    draw_wire(&painter, view.to_screen(a), at, theme.of(ty.as_ref()), wire_w, z);
+                }
+            }
+            Pending::To(sq, input, ty) => {
+                if let Some((b, _)) = pin_pos(*sq, input, false) {
+                    draw_wire(&painter, at, view.to_screen(b), theme.of(ty.as_ref()), wire_w, z);
+                }
+            }
+        }
     }
 
     // what's being dragged
@@ -786,4 +1148,106 @@ pub fn first_fit(info: &SquareInfo, ty: &Option<Type>, output: bool) -> Option<S
         }
     }
     if ty.is_some() { fallback } else { None }
+}
+
+/// A note being typed on: its text, on the note, a new line with Enter.
+fn note_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64) {
+    e.rect = Some(r);
+    let id = Id::unique(("note", tab_id, e.key.sq));
+    let inner = r.shrink(10.0 * z);
+    let resp = ui.put(inner, |ui: &mut egui::Ui| {
+        ui.add(
+            egui::TextEdit::multiline(&mut e.text)
+                .id(id)
+                .font(FontId::proportional(14.0 * z))
+                .frame(egui::Frame::NONE)
+                .margin(Vec2::ZERO)
+                .desired_width(inner.width())
+                .desired_rows(1)
+                .text_color(NOTE_TEXT),
+        )
+    });
+    if e.fresh {
+        e.fresh = false;
+        resp.request_focus();
+        // the cursor at the end, to go on writing
+        if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
+            let end = egui::text::CCursor::new(e.text.chars().count());
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+            st.store(ui.ctx(), id);
+        }
+    }
+}
+
+/// A field of a square: typed in only while it's being edited (then a text
+/// box, which has the keyboard), a box with its value otherwise. A click on
+/// one starts typing in it; on a checkbox, toggles it.
+#[allow(clippy::too_many_arguments)]
+fn field(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    (edit, theme, tab_id): (&mut Option<FieldEdit>, &Theme, u64),
+    key: FieldKey,
+    kind: FieldKind,
+    r: Rect,
+    current: &str,
+    font: FontId,
+    z: f32,
+    changes: &mut Vec<(SquareId, String, String, bool)>,
+    clicks: &mut Vec<FieldKey>,
+) {
+    let editing = edit.as_ref().is_some_and(|e| e.key == key);
+    let chosen = editing && edit.as_ref().is_some_and(|e| e.choose);
+    if kind == FieldKind::Bool {
+        draw_check(painter, r, current.trim() == "true", theme, chosen);
+        let resp = ui.interact(r, Id::unique(("field", tab_id, &key.sq, &key.name, key.param)), Sense::click());
+        if resp.clicked() {
+            changes.push((key.sq, key.name.clone(), (current.trim() != "true").to_string(), key.param));
+        }
+        return;
+    }
+    if !editing || chosen || z < 0.55 {
+        draw_field_box(painter, r, current, font, theme, chosen);
+        let resp = ui.interact(r, Id::unique(("field", tab_id, &key.sq, &key.name, key.param)), Sense::click());
+        if resp.clicked() {
+            clicks.push(key);
+        }
+        return;
+    }
+    let e = edit.as_mut().unwrap();
+    e.rect = Some(r);
+    let id = Id::unique(("editing", tab_id, &key.sq, &key.name, key.param));
+    // the box drawn here, the text box in it without its own (whose
+    // least height is more than a field's when zoomed out)
+    painter.rect_filled(r, 0.0, theme.field);
+    let text = &mut e.text;
+    let resp = ui.put(r, |ui: &mut egui::Ui| {
+        ui.spacing_mut().interact_size.y = r.height();
+        ui.add(
+            egui::TextEdit::singleline(text)
+                .id(id)
+                .font(font)
+                .frame(egui::Frame::NONE)
+                .margin(vec2(3.0 * z, 0.0))
+                .desired_width(r.width())
+                .text_color(theme.text),
+        )
+    });
+    if e.fresh {
+        e.fresh = false;
+        resp.request_focus();
+        if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
+            let all = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(e.text.chars().count()),
+            );
+            st.cursor.set_char_range(Some(all));
+            st.store(ui.ctx(), id);
+        }
+    }
+    if resp.changed() {
+        e.error = false;
+    }
+    let edge = if e.error { theme.error } else { theme.step };
+    painter.rect_stroke(r, 0.0, Stroke::new(2.0, edge), StrokeKind::Outside);
 }

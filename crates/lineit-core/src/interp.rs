@@ -1,13 +1,17 @@
 //! Runs the IR: Run and Step in the editor, and `lineit run`.
 //!
 //! Each handler is first flattened into ops with jumps, so a branch is just
-//! a stack of frames, each an op index and its locals. Branches are tasks
-//! that take turns on one thread: the same canvas always runs the same way,
-//! and [`Interp::step`] can stop every one of them before its next square.
-//! (A compiled program runs them on threads, for real.)
+//! a stack of frames, each an op index and its locals.
+//!
+//! Run runs branches on threads, in parallel, as compiled programs do: the
+//! program's state ([`World`]) has a lock for each slot and each Lua or Rust
+//! module, so two branches only wait for each other where they use the same
+//! one. Step runs them as tasks that take turns on one thread, so it can
+//! stop every one of them before its next square, all together.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use lineit_rt::Ext;
@@ -127,18 +131,49 @@ struct Frame {
     pending: Vec<Fire>,
 }
 
-/// The meets of one fan-out, and which ones were reached.
+/// The meets of one fan-out, and which ones were reached (by branches on
+/// any thread).
 struct Meets {
     ids: Vec<HandlerId>,
-    arrived: Vec<bool>,
+    arrived: Vec<AtomicBool>,
+}
+
+impl Meets {
+    fn new(ids: &[HandlerId]) -> Arc<Meets> {
+        Arc::new(Meets { ids: ids.to_vec(), arrived: ids.iter().map(|_| AtomicBool::new(false)).collect() })
+    }
+
+    /// The meets reached, last first: pushed as frames in this order, the
+    /// first runs first.
+    fn reached_last_first(&self) -> Vec<HandlerId> {
+        self.ids.iter().zip(&self.arrived).rev().filter(|(_, a)| a.load(Ordering::Relaxed)).map(|(h, _)| *h).collect()
+    }
+}
+
+/// A cache line of its own: slots that different branches change, next to
+/// each other, would make their threads wait for each other's caches.
+#[repr(align(128))]
+pub struct Padded<T>(pub T);
+
+impl<T> std::ops::Deref for Padded<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// A lock that a branch that panicked while holding it doesn't poison: the
+/// program goes on with what's there.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct Task {
     frames: Vec<Frame>,
-    /// The fan-outs it's inside of, innermost last (indexes in `meets`).
-    inside: Vec<usize>,
+    /// The fan-outs it's inside of, innermost last.
+    inside: Vec<Arc<Meets>>,
     /// Waiting for this many branches, of the fan-out with these meets.
-    waiting: Option<(usize, usize)>,
+    waiting: Option<(usize, Arc<Meets>)>,
     parent: Option<usize>,
     done: bool,
     /// It ran a square in this step.
@@ -155,26 +190,58 @@ pub enum Status {
     Paused,
 }
 
-/// The program's state: what its ops read and change.
+/// The program's state: what its ops read and change, shared by the
+/// branches running on threads. A lock each, so they only wait for each
+/// other on the same slot or module; two branches that read and change one
+/// at once can lose a change, as the language says.
 pub struct World {
     prog: Arc<Program>,
-    pub slots: Vec<Value>,
-    exts: Vec<Box<dyn Ext>>,
+    pub slots: Vec<Padded<Mutex<Value>>>,
+    exts: Vec<Mutex<Box<dyn Ext>>>,
     /// Per instance in the program: its module and its instance in it.
     ext_instances: Vec<(usize, usize)>,
     /// What it printed, for the caller to take.
-    pub output: Vec<String>,
-    started: Instant,
+    pub output: Mutex<Vec<String>>,
+    started: Mutex<Instant>,
     /// Relative paths are from here.
     pub base_dir: PathBuf,
+    /// Set to end the program: every branch, on every thread, stops at its
+    /// next op. Stop sets it from another thread; `flow/stop` from inside.
+    pub stop: Arc<AtomicBool>,
+}
+
+impl World {
+    pub fn slot(&self, s: usize) -> Value {
+        lock(&self.slots[s]).clone()
+    }
+
+    /// What it printed since the last time.
+    pub fn take_output(&self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.output))
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    /// The value of each output that shows on a square of the canvas, by
+    /// square and output.
+    pub fn shown(&self) -> std::collections::HashMap<(crate::model::SquareId, String), Value> {
+        let mut m = std::collections::HashMap::new();
+        for (i, s) in self.prog.slots.iter().enumerate() {
+            if let Some((sq, pin)) = &s.shows {
+                m.insert((*sq, pin.clone()), self.slot(i));
+            }
+        }
+        m
+    }
 }
 
 pub struct Interp {
     prog: Arc<Program>,
     code: Arc<Vec<Code>>,
     tasks: Vec<Task>,
-    meets: Vec<Meets>,
-    pub w: World,
+    pub w: Arc<World>,
     /// When each clock ticks next, in seconds since the start.
     clock_next: Vec<f64>,
     /// How many ops ran, all in all.
@@ -201,10 +268,10 @@ fn new_frame(code: &[Code], h: HandlerId) -> Frame {
 
 /// A call from TASK to H: a frame for it, unless it's a meet the task
 /// stops at. TAIL: the caller has nothing left, so its frame goes.
-fn call(task: &mut Task, meets: &mut [Meets], code: &[Code], h: HandlerId, tail: bool) -> Result<(), String> {
-    for &m in task.inside.iter().rev() {
-        if let Ok(i) = meets[m].ids.binary_search(&h) {
-            meets[m].arrived[i] = true;
+fn call(task: &mut Task, code: &[Code], h: HandlerId, tail: bool) -> Result<(), String> {
+    for m in task.inside.iter().rev() {
+        if let Ok(i) = m.ids.binary_search(&h) {
+            m.arrived[i].store(true, Ordering::Relaxed);
             return Ok(());
         }
     }
@@ -219,21 +286,17 @@ fn call(task: &mut Task, meets: &mut [Meets], code: &[Code], h: HandlerId, tail:
 }
 
 /// The ops of one task, until it's out of LEFT, done, or fans out.
-fn run_ops(
-    task: &mut Task,
-    meets: &mut [Meets],
-    w: &mut World,
-    code: &[Code],
-    left: &mut u64,
-    stepping: bool,
-) -> Result<Next, String> {
+fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: bool) -> Result<Next, String> {
     while *left > 0 {
         *left -= 1;
+        if (*left).is_multiple_of(1024) && w.stopped() {
+            return Ok(Next::Stop);
+        }
         let Some(frame) = task.frames.last_mut() else { return Ok(Next::Done) };
         if let Some(f) = frame.pending.pop() {
             match f.targets.len() {
                 0 => {}
-                1 => call(task, meets, code, f.targets[0], false)?,
+                1 => call(task, code, f.targets[0], false)?,
                 _ => return Ok(Next::FanOut(f)),
             }
             continue;
@@ -256,7 +319,7 @@ fn run_ops(
                     Expr::Local(l) => frame.locals[*l as usize].clone(),
                     _ => w.eval(e, &frame.locals)?,
                 };
-                w.slots[*s as usize] = v;
+                *lock(&w.slots[*s as usize]) = v;
             }
             Op::Let(l, e) => {
                 let v = w.eval(e, &frame.locals)?;
@@ -264,7 +327,7 @@ fn run_ops(
             }
             Op::Print(e) => {
                 let v = w.eval(e, &frame.locals)?;
-                w.output.push(v.str().to_string());
+                lock(&w.output).push(v.str().to_string());
             }
             Op::Do(effect, args) => {
                 let args = args.iter().map(|a| w.eval(a, &frame.locals)).collect::<Result<Vec<_>, _>>()?;
@@ -295,7 +358,7 @@ fn run_ops(
                 0 => {}
                 1 => {
                     let tail = is_tail(&code[h].ops, pc + 1);
-                    call(task, meets, code, fire.targets[0], tail)?;
+                    call(task, code, fire.targets[0], tail)?;
                 }
                 _ => return Ok(Next::FanOut(fire.clone())),
             },
@@ -309,10 +372,10 @@ fn run_ops(
                 let (m, inst) = w.ext_instances[*instance];
                 let tys: Vec<Type> = outputs.iter().map(|(_, s)| w.prog.slots[*s as usize].ty.clone()).collect();
                 let outs: Vec<(&str, &Type)> = outputs.iter().zip(&tys).map(|((n, _), t)| (n.as_str(), t)).collect();
-                let (got, fired) = w.exts[m].tick(inst, input.as_deref(), &args, &outs)?;
+                let (got, fired) = lock(&w.exts[m]).tick(inst, input.as_deref(), &args, &outs)?;
                 for ((_, s), v) in outputs.iter().zip(got) {
                     if let Some(v) = v {
-                        w.slots[*s as usize] = v;
+                        *lock(&w.slots[*s as usize]) = v;
                     }
                 }
                 let mut list = Vec::new();
@@ -337,6 +400,63 @@ fn run_ops(
     Ok(Next::Budget)
 }
 
+/// Runs TASK on this thread until it's done, its fan-outs on threads of
+/// their own. Stops early if the program is stopped.
+fn run_branch(task: &mut Task, w: &World, code: &[Code]) -> Result<(), String> {
+    loop {
+        let mut left = 1 << 20;
+        match run_ops(task, w, code, &mut left, false)? {
+            Next::Budget => {}
+            Next::Done => return Ok(()),
+            Next::FanOut(f) => fan_out(task, &f, w, code)?,
+            Next::Stop => {
+                w.stop.store(true, Ordering::Relaxed);
+                task.frames.clear();
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// The branches of FIRE, from TASK: each on a thread (the first on this
+/// one), all to the end. Then the meets they reached go on TASK, to run one
+/// after the other.
+fn fan_out(task: &mut Task, fire: &Fire, w: &World, code: &[Code]) -> Result<(), String> {
+    let meets = Meets::new(&fire.meets);
+    let mut inside = task.inside.clone();
+    inside.push(meets.clone());
+    let branch = |h: HandlerId, inside: Vec<Arc<Meets>>| -> Result<(), String> {
+        let mut t = Task { frames: Vec::new(), inside, waiting: None, parent: None, done: false, entered: false };
+        call(&mut t, code, h, false)?;
+        run_branch(&mut t, w, code)
+    };
+    let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+        let others: Vec<_> = fire.targets[1..]
+            .iter()
+            .map(|&h| {
+                let inside = inside.clone();
+                std::thread::Builder::new()
+                    .name("lineit branch".into())
+                    .stack_size(64 << 20)
+                    .spawn_scoped(scope, move || branch(h, inside))
+                    .expect("a thread for a branch")
+            })
+            .collect();
+        let mut results = vec![branch(fire.targets[0], inside.clone())];
+        for t in others {
+            results.push(t.join().unwrap_or_else(|_| Err("a branch panicked".into())));
+        }
+        results
+    });
+    for r in results {
+        r?;
+    }
+    for h in meets.reached_last_first() {
+        call(task, code, h, false)?;
+    }
+    Ok(())
+}
+
 impl Interp {
     pub fn new(prog: Program, base_dir: PathBuf) -> Result<Interp, String> {
         let code = prog.handlers.iter().map(compile).collect();
@@ -358,19 +478,19 @@ impl Interp {
         let prog = Arc::new(prog);
         Ok(Interp {
             clock_next: vec![0.0; prog.clocks.len()],
-            w: World {
-                slots: prog.slots.iter().map(|s| s.init.clone()).collect(),
+            w: Arc::new(World {
+                slots: prog.slots.iter().map(|s| Padded(Mutex::new(s.init.clone()))).collect(),
                 prog: prog.clone(),
-                exts,
+                exts: exts.into_iter().map(Mutex::new).collect(),
                 ext_instances,
-                output: Vec::new(),
-                started: Instant::now(),
+                output: Mutex::new(Vec::new()),
+                started: Mutex::new(Instant::now()),
                 base_dir,
-            },
+                stop: Arc::new(AtomicBool::new(false)),
+            }),
             prog,
             code: Arc::new(code),
             tasks: Vec::new(),
-            meets: Vec::new(),
             ops_run: 0,
         })
     }
@@ -379,13 +499,21 @@ impl Interp {
         &self.prog
     }
 
+    /// Makes STOP the flag that stops the program (see [`World::stop`]), to
+    /// set from another thread. Only before it starts.
+    pub fn set_stop(&mut self, stop: Arc<AtomicBool>) {
+        if let Some(w) = Arc::get_mut(&mut self.w) {
+            w.stop = stop;
+        }
+    }
+
     pub fn eval(&mut self, e: &Expr, locals: &[Value]) -> Result<Value, String> {
         self.w.eval(e, locals)
     }
 
     /// Starts the program: its entries, as branches if there are several.
     pub fn start(&mut self) -> Result<(), String> {
-        self.w.started = Instant::now();
+        *lock(&self.w.started) = Instant::now();
         let starts = self.prog.starts.clone();
         self.root(&starts)?;
         for i in 0..self.prog.clocks.len() {
@@ -416,13 +544,13 @@ impl Interp {
 
     /// Seconds until the next clock ticks, if there's a clock.
     pub fn next_clock(&self) -> Option<f64> {
-        let now = self.w.started.elapsed().as_secs_f64();
+        let now = lock(&self.w.started).elapsed().as_secs_f64();
         self.clock_next.iter().map(|t| (t - now).max(0.0)).min_by(f64::total_cmp)
     }
 
     /// Ticks the clocks that are due (or the next one, with FORCE).
     pub fn tick_clocks(&mut self, force: bool) -> Result<(), String> {
-        let now = self.w.started.elapsed().as_secs_f64();
+        let now = lock(&self.w.started).elapsed().as_secs_f64();
         let next = self.clock_next.iter().cloned().fold(f64::INFINITY, f64::min);
         for i in 0..self.clock_next.len() {
             if self.clock_next[i] <= now || (force && self.clock_next[i] <= next) {
@@ -493,7 +621,6 @@ impl Interp {
     fn gc(&mut self) {
         if self.is_idle() {
             self.tasks.clear();
-            self.meets.clear();
         }
     }
 
@@ -508,37 +635,31 @@ impl Interp {
             }
             self.tasks[t].done = true;
             let Some(p) = self.tasks[t].parent else { return };
-            let (left, m) = self.tasks[p].waiting.expect("a parent waits");
+            let (left, m) = self.tasks[p].waiting.clone().expect("a parent waits");
             if left > 1 {
                 self.tasks[p].waiting = Some((left - 1, m));
                 return;
             }
             self.tasks[p].waiting = None;
             // the meets that were reached run now, one after the other
-            let reached: Vec<HandlerId> =
-                self.meets[m].ids.iter().zip(&self.meets[m].arrived).filter(|(_, a)| **a).map(|(h, _)| *h).collect();
-            for h in reached.into_iter().rev() {
-                let Interp { tasks, meets, code, .. } = self;
+            for h in m.reached_last_first() {
                 // can't fail: it's not a tail call, and the frames are few
-                let _ = call(&mut tasks[p], meets, code, h, false);
+                let _ = call(&mut self.tasks[p], &self.code, h, false);
             }
             t = p;
         }
     }
 
-    /// Fires FIRE from task T: a call, or branches.
+    /// Fires FIRE from task T: a call, or branches, as tasks that take turns
+    /// (for Step).
     fn fire(&mut self, t: usize, fire: &Fire) -> Result<(), String> {
         match fire.targets.len() {
             0 => {}
-            1 => {
-                let Interp { tasks, meets, code, .. } = self;
-                call(&mut tasks[t], meets, code, fire.targets[0], false)?;
-            }
+            1 => call(&mut self.tasks[t], &self.code, fire.targets[0], false)?,
             n => {
-                self.meets.push(Meets { ids: fire.meets.clone(), arrived: vec![false; fire.meets.len()] });
-                let m = self.meets.len() - 1;
+                let m = Meets::new(&fire.meets);
                 let mut inside = self.tasks[t].inside.clone();
-                inside.push(m);
+                inside.push(m.clone());
                 self.tasks[t].waiting = Some((n, m));
                 let entered = self.tasks[t].entered;
                 for &h in &fire.targets {
@@ -550,7 +671,7 @@ impl Interp {
                         done: false,
                         entered,
                     };
-                    call(&mut task, &mut self.meets, &self.code, h, false)?;
+                    call(&mut task, &self.code, h, false)?;
                     self.tasks.push(task);
                 }
                 for c in self.tasks.len() - n..self.tasks.len() {
@@ -570,7 +691,7 @@ impl Interp {
                 return Ok(());
             }
             let before = left;
-            let next = run_ops(task, &mut self.meets, &mut self.w, &code, &mut left, stepping);
+            let next = run_ops(task, &self.w, &code, &mut left, stepping);
             self.ops_run += before - left;
             match next? {
                 Next::Budget => return Ok(()),
@@ -578,64 +699,80 @@ impl Interp {
                     self.settle(t);
                     return Ok(());
                 }
-                Next::FanOut(f) => self.fire(t, &f)?,
-                Next::Stop => {
-                    for task in &mut self.tasks {
-                        task.done = true;
-                        task.frames.clear();
+                // stepping, branches take turns; running, they're threads
+                Next::FanOut(f) if stepping => self.fire(t, &f)?,
+                Next::FanOut(f) => {
+                    let w = self.w.clone();
+                    fan_out(&mut self.tasks[t], &f, &w, &code)?;
+                    if w.stopped() {
+                        self.stop_all();
+                        return Ok(());
                     }
-                    self.clock_next.clear();
+                }
+                Next::Stop => {
+                    self.w.stop.store(true, Ordering::Relaxed);
+                    self.stop_all();
                     return Ok(());
                 }
             }
         }
     }
+
+    /// The program ends: every branch, and the clocks.
+    fn stop_all(&mut self) {
+        for task in &mut self.tasks {
+            task.done = true;
+            task.frames.clear();
+        }
+        self.clock_next.clear();
+    }
 }
 
 impl World {
     #[inline(never)]
-    fn effect(&mut self, effect: &Effect, mut a: Vec<Value>) {
+    fn effect(&self, effect: &Effect, mut a: Vec<Value>) {
         let elem = |s: SlotId, prog: &Program| match &prog.slots[s as usize].ty {
             Type::List(t) | Type::Map(t) => (**t).clone(),
             _ => Type::Int,
         };
         match effect {
-            Effect::ListPush(s) => self.slots[*s as usize].list_mut().push(a.remove(0)),
+            Effect::ListPush(s) => lock(&self.slots[*s as usize]).list_mut().push(a.remove(0)),
             Effect::ListPop { list, into } => {
                 let ty = elem(*list, &self.prog);
-                let v = self.slots[*list as usize].list_mut().pop().unwrap_or_else(|| Value::default_of(&ty));
-                self.slots[*into as usize] = v;
+                let v = lock(&self.slots[*list as usize]).list_mut().pop().unwrap_or_else(|| Value::default_of(&ty));
+                *lock(&self.slots[*into as usize]) = v;
             }
             Effect::ListSet(s) => {
                 let v = a.remove(1);
-                lineit_rt::list::set(self.slots[*s as usize].list_mut(), a[0].int(), v);
+                lineit_rt::list::set(lock(&self.slots[*s as usize]).list_mut(), a[0].int(), v);
             }
             Effect::ListInsert(s) => {
                 let v = a.remove(1);
-                lineit_rt::list::insert(self.slots[*s as usize].list_mut(), a[0].int(), v);
+                lineit_rt::list::insert(lock(&self.slots[*s as usize]).list_mut(), a[0].int(), v);
             }
-            Effect::ListRemove(s) => lineit_rt::list::remove(self.slots[*s as usize].list_mut(), a[0].int()),
-            Effect::ListClear(s) => self.slots[*s as usize].list_mut().clear(),
+            Effect::ListRemove(s) => lineit_rt::list::remove(lock(&self.slots[*s as usize]).list_mut(), a[0].int()),
+            Effect::ListClear(s) => lock(&self.slots[*s as usize]).list_mut().clear(),
             Effect::MapSet(s) => {
                 let v = a.remove(1);
-                self.slots[*s as usize].map_mut().insert(a[0].str().to_string(), v);
+                lock(&self.slots[*s as usize]).map_mut().insert(a[0].str().to_string(), v);
             }
             Effect::MapDelete(s) => {
-                self.slots[*s as usize].map_mut().remove(a[0].str());
+                lock(&self.slots[*s as usize]).map_mut().remove(a[0].str());
             }
-            Effect::MapClear(s) => self.slots[*s as usize].map_mut().clear(),
+            Effect::MapClear(s) => lock(&self.slots[*s as usize]).map_mut().clear(),
             Effect::ImageSave { ok } => {
-                self.slots[*ok as usize] = Value::Bool(img::save(a[0].image(), a[1].str()));
+                let saved = img::save(a[0].image(), a[1].str());
+                *lock(&self.slots[*ok as usize]) = Value::Bool(saved);
             }
         }
     }
 
     /// The value of E. The common cases are here, and small, so the
     /// recursion is cheap; the rest are in [`World::eval_rest`].
-    pub fn eval(&mut self, e: &Expr, locals: &[Value]) -> Result<Value, String> {
+    pub fn eval(&self, e: &Expr, locals: &[Value]) -> Result<Value, String> {
         Ok(match e {
             Expr::Const(v) => v.clone(),
-            Expr::Slot(s) => self.slots[*s as usize].clone(),
+            Expr::Slot(s) => self.slot(*s as usize),
             Expr::Local(l) => locals[*l as usize].clone(),
             Expr::Un(op, a) => un(*op, self.eval(a, locals)?),
             Expr::Bin(op, a, b) => {
@@ -653,7 +790,7 @@ impl World {
     }
 
     #[inline(never)]
-    fn eval_rest(&mut self, e: &Expr, locals: &[Value]) -> Result<Value, String> {
+    fn eval_rest(&self, e: &Expr, locals: &[Value]) -> Result<Value, String> {
         Ok(match e {
             Expr::Const(_) | Expr::Slot(_) | Expr::Local(_) | Expr::Un(..) | Expr::Bin(..) => unreachable!(),
             Expr::Default(t) => Value::default_of(t),
@@ -670,29 +807,30 @@ impl World {
             }
             Expr::ListGet(s, i) => {
                 let i = self.eval(i, locals)?.int();
-                let l = self.slots[*s as usize].list();
+                let slot = lock(&self.slots[*s as usize]);
+                let l = slot.list();
                 match index(l.len(), i) {
                     Some(i) => l[i].clone(),
                     None => Value::default_of(&elem_type(&self.prog.slots[*s as usize].ty)),
                 }
             }
-            Expr::ListLen(s) => Value::Int(self.slots[*s as usize].list().len() as i64),
+            Expr::ListLen(s) => Value::Int(lock(&self.slots[*s as usize]).list().len() as i64),
             Expr::MapGet(s, k) => {
                 let k = self.eval(k, locals)?;
-                match &self.slots[*s as usize] {
+                match &*lock(&self.slots[*s as usize]) {
                     Value::Map(m) if m.contains_key(k.str()) => m[k.str()].clone(),
                     _ => Value::default_of(&elem_type(&self.prog.slots[*s as usize].ty)),
                 }
             }
             Expr::MapHas(s, k) => {
                 let k = self.eval(k, locals)?;
-                Value::Bool(matches!(&self.slots[*s as usize], Value::Map(m) if m.contains_key(k.str())))
+                Value::Bool(matches!(&*lock(&self.slots[*s as usize]), Value::Map(m) if m.contains_key(k.str())))
             }
-            Expr::MapKeys(s) => match &self.slots[*s as usize] {
+            Expr::MapKeys(s) => match &*lock(&self.slots[*s as usize]) {
                 Value::Map(m) => Value::List(Arc::new(m.keys().map(|k| Value::Str(k.as_str().into())).collect())),
                 _ => Value::List(Arc::default()),
             },
-            Expr::MapLen(s) => Value::Int(match &self.slots[*s as usize] {
+            Expr::MapLen(s) => Value::Int(match &*lock(&self.slots[*s as usize]) {
                 Value::Map(m) => m.len() as i64,
                 _ => 0,
             }),
@@ -710,7 +848,7 @@ impl World {
                     .map(|(n, e)| Ok((n.as_str(), self.eval(e, locals)?)))
                     .collect::<Result<Vec<_>, String>>()?;
                 let (m, inst) = self.ext_instances[*instance];
-                self.exts[m].eval(inst, &args, &[(output.as_str(), ty)])?.remove(0)
+                lock(&self.exts[m]).eval(inst, &args, &[(output.as_str(), ty)])?.remove(0)
             }
         })
     }
@@ -751,7 +889,7 @@ impl World {
             Func::Clamp(Num::Float) => Value::Float(ops::float_clamp(fl(0), fl(1), fl(2))),
             Func::Random(Num::Int) => Value::Int(rand::int(i(0), i(1))),
             Func::Random(Num::Float) => Value::Float(rand::float(fl(0), fl(1))),
-            Func::Time => Value::Float(self.started.elapsed().as_secs_f64()),
+            Func::Time => Value::Float(lock(&self.started).elapsed().as_secs_f64()),
             Func::ListAt(t) => {
                 let l = a[0].list();
                 match index(l.len(), i(1)) {
@@ -882,7 +1020,7 @@ pub fn run_to_end(
     let started = Instant::now();
     loop {
         let st = it.run(100_000)?;
-        for line in it.w.output.drain(..) {
+        for line in it.w.take_output() {
             print(&line);
         }
         if st == Status::Idle {

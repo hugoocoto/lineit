@@ -1,0 +1,15 @@
+true and false: false
+true or false: true
+true xor true: false
+true nand true: false
+false nor false: true
+true xnor true: true
+not true: false
+2 less 3: true
+3 less_equal 3: true
+2 greater 3: false
+3 greater_equal 3: true
+apple equal apple: true
+1.5 not_equal 1.5: false
+apple less banana: true
+7 > 5 selects: big

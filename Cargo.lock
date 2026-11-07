@@ -1121,6 +1121,7 @@ dependencies = [
  "eframe",
  "lineit-core",
  "lineit-rt",
+ "mlua",
 ]
 
 [[package]]

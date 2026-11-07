@@ -22,6 +22,8 @@ pub struct Theme {
     pub error: Color32,
     pub step: Color32,
     pub panel: Color32,
+    /// The dark circle around pins.
+    pub pin_border: Color32,
     pub tick: Color32,
     pub int: Color32,
     pub float: Color32,
@@ -56,6 +58,7 @@ pub fn dark() -> Theme {
         error: c(240, 90, 90),
         step: c(250, 210, 70),
         panel: c(32, 34, 39),
+        pin_border: c(15, 15, 17),
         tick: c(230, 230, 235),
         int: c(100, 150, 250),
         float: c(80, 200, 220),
@@ -85,6 +88,7 @@ fn light() -> Theme {
         error: c(210, 40, 40),
         step: c(220, 160, 0),
         panel: c(232, 232, 228),
+        pin_border: c(60, 62, 70),
         tick: c(40, 42, 48),
         int: c(40, 90, 210),
         float: c(0, 140, 160),
@@ -188,6 +192,7 @@ impl Theme {
                 "error" => &mut self.error,
                 "step" => &mut self.step,
                 "panel" => &mut self.panel,
+                "pin_border" => &mut self.pin_border,
                 "tick" => &mut self.tick,
                 "int" => &mut self.int,
                 "float" => &mut self.float,
@@ -230,6 +235,18 @@ impl Theme {
         v.selection.bg_fill = self.selection.gamma_multiply(0.45);
         v.hyperlink_color = self.accent;
         v.widgets.noninteractive.bg_stroke.color = self.border;
+        // square corners everywhere, as the canvas has
+        v.window_corner_radius = egui::CornerRadius::ZERO;
+        v.menu_corner_radius = egui::CornerRadius::ZERO;
+        for w in [
+            &mut v.widgets.noninteractive,
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.open,
+        ] {
+            w.corner_radius = egui::CornerRadius::ZERO;
+        }
         v
     }
 }

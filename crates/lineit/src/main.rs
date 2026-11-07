@@ -11,7 +11,9 @@ const HELP: &str = "\
 lineit: a visual programming language
 
 Usage:
-    lineit [FILE...]                open the editor, with these canvases
+    lineit [FILE...]                open these canvases (none: a new one) in tabs of the
+                                    editor running, or in a new editor if none is
+    lineit --new [FILE...]          open them in a new editor, even if one is running
     lineit run FILE [--for SECONDS] run a canvas here, without the editor
     lineit check FILE               say what's wrong with a canvas, if anything
     lineit compile FILE [-o OUT]    compile a canvas to a program (needs cargo)
@@ -195,7 +197,15 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
-        _ if cmd.starts_with('-') && cmd != "-" => Err(format!("{cmd}: no such option (see lineit --help)")),
-        _ => editor::run(args.iter().map(PathBuf::from).collect()),
+        // an older editor handing over to this one (see editor/session.rs)
+        "--restore" => editor::restore(&one_file(rest, &[])?),
+        _ if cmd.starts_with('-') && cmd != "-" && cmd != "--new" && cmd != "-n" => {
+            Err(format!("{cmd}: no such option (see lineit --help)"))
+        }
+        _ => {
+            let new = args.iter().any(|a| a == "--new" || a == "-n");
+            let files = args.iter().filter(|a| *a != "--new" && *a != "-n").map(PathBuf::from).collect();
+            editor::run(files, new)
+        }
     }
 }

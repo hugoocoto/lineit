@@ -30,6 +30,8 @@ pub enum Kind {
     Text,
     /// One of the themes.
     Theme,
+    /// A font: a name, or a file.
+    Font,
 }
 
 pub struct SettingDef {
@@ -60,9 +62,9 @@ pub const SETTINGS: &[SettingDef] = &[
         default: || SValue::Num(14.0),
     },
     SettingDef {
-        key: "font.path",
-        doc: "A .ttf or .otf file for the text (empty: the built-in font)",
-        kind: Kind::Text,
+        key: "font.name",
+        doc: "The font of the text: one installed, by its name (Iosevka NFM), or a .ttf or .otf file. Empty: the built-in one",
+        kind: Kind::Font,
         default: || SValue::Text(String::new()),
     },
     SettingDef { key: "canvas.grid", doc: "Draw the grid", kind: Kind::Bool, default: || SValue::Bool(true) },
@@ -80,7 +82,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         key: "canvas.square_width",
-        doc: "Width of a square",
+        doc: "The widest a square gets: they're as wide as what's in them",
         kind: num!(120.0, 400.0, 10.0),
         default: || SValue::Num(200.0),
     },
@@ -100,7 +102,7 @@ pub const SETTINGS: &[SettingDef] = &[
         key: "canvas.wire_width",
         doc: "Width of wires",
         kind: num!(1.0, 8.0, 0.5),
-        default: || SValue::Num(2.5),
+        default: || SValue::Num(3.0),
     },
     SettingDef {
         key: "canvas.previews",
@@ -197,7 +199,9 @@ impl Config {
                     SValue::Num((i as f64).clamp(*min, *max))
                 }
                 (Some(mlua::Value::Number(n)), Kind::Num { min, max, .. }) => SValue::Num(n.clamp(*min, *max)),
-                (Some(mlua::Value::String(s)), Kind::Text | Kind::Theme) => SValue::Text(s.to_string_lossy()),
+                (Some(mlua::Value::String(s)), Kind::Text | Kind::Theme | Kind::Font) => {
+                    SValue::Text(s.to_string_lossy())
+                }
                 (Some(v), _) => {
                     c.errors.push(format!("{}: a {} isn't what this setting takes", d.key, v.type_name()));
                     continue;
