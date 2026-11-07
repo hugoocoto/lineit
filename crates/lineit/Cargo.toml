@@ -1,0 +1,16 @@
+[package]
+name = "lineit"
+description = "A visual programming language: wire squares on a canvas, run, step or compile them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lineit-core = { path = "../lineit-core" }
+lineit-rt = { path = "../lineit-rt" }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+
+[lints]
+workspace = true

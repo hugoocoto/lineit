@@ -26,18 +26,3 @@
 196418
 317811
 514229
--- 14 squares, 16 links
-53 flow/entry: 
-54 var/var: fib = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 
-55 list/push: fib [30]
-56 list/push: fib [30]
-57 flow/loop: 29
-58 var/var: fib = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 
-59 list/get: fib [30]
-60 list/get: fib [30]
-61 math/add: 514229
-62 var/var: fib = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 
-63 list/push: fib [30]
-64 io/print: 514229
-65 list/length: fib [30]
-66 io/display: 30

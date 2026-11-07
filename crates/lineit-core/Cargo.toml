@@ -1,0 +1,17 @@
+[package]
+name = "lineit-core"
+description = "lineit without the GUI: canvases, modules, types, the IR, the interpreter and the compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libloading = "0.8"
+lineit-rt = { path = "../lineit-rt", features = ["image", "lua"] }
+mlua = { version = "0.12", features = ["lua54", "vendored", "send"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

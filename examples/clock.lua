@@ -1,29 +1,25 @@
--- clock
--- Counts seconds from 0 to 9 forever.
--- flow/entry resets flow/clock on Run so it always starts at 0. On
--- each tick, flow/ifelse checks count >= 10 (compare/compare, with >=
--- chosen in its op list) and, if so, resets the clock again.
--- io/display shows the count. Type another number in the clock's
--- seconds field to change the speed.
---
--- Open it with: ./lineit -f examples/clock.lua, then press Run.
-lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
-
-camera = { x = 315.550781, y = 69, offset_x = 640, offset_y = 344, zoom = 1 }
-
-squares = {
-        { id = 17, module = "flow/entry", x = -32, y = -35 },
-        { id = 18, module = "flow/clock", x = 108.53125, y = -47, inputs = { { name = "seconds", type = "float", value = "1" }, }, state = "0" },
-        { id = 19, module = "io/display", x = 405, y = -140 },
-        { id = 20, module = "compare/compare", x = 345.421844, y = 136, inputs = { { name = "op", value = ">=" }, { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "10" }, } },
-        { id = 21, module = "flow/ifelse", x = 552.898438, y = 88, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-}
-
-links = {
-        { from = 17, from_pin = 0, to = 18, to_pin = 0 },
-        { from = 18, from_pin = 0, to = 21, to_pin = 0 },
-        { from = 18, from_pin = 1, to = 20, to_pin = 1 },
-        { from = 20, from_pin = 0, to = 21, to_pin = 1 },
-        { from = 21, from_pin = 0, to = 18, to_pin = 0 },
-        { from = 18, from_pin = 1, to = 19, to_pin = 0 },
+-- lineit canvas
+return {
+        lineit = 1,
+        doc = "A clock ticks every half second while the program runs; a counter counts the ticks, and at 10 flow/stop ends the program. Without a stop, a program with a clock runs until you press Stop.",
+        camera = { x = 0, y = 0, zoom = 1 },
+        squares = {
+                { id = 1, module = "flow/clock", x = 0, y = 0, fields = { interval = "0.5" } },
+                { id = 2, module = "flow/counter", x = 280, y = 0 },
+                { id = 3, module = "string/format", x = 560, y = 0, params = { format = "tick {}" } },
+                { id = 4, module = "io/print", x = 840, y = 0 },
+                { id = 5, module = "compare/greater_equal", x = 560, y = 128, fields = { b = "10" } },
+                { id = 6, module = "flow/ifelse", x = 1120, y = 0 },
+                { id = 7, module = "flow/stop", x = 1400, y = 0 },
+        },
+        links = {
+                { 1, "tick", 2, "tick" },
+                { 2, "then", 4, "tick" },
+                { 2, "count", 3, "1" },
+                { 3, "text", 4, "value" },
+                { 4, "then", 6, "tick" },
+                { 2, "count", 5, "a" },
+                { 5, "result", 6, "condition" },
+                { 6, "then", 7, "tick" },
+        },
 }

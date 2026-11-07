@@ -1,32 +1,33 @@
 # lineit
 
 **A visual programming language: you wire squares on a canvas, run the
-program in the editor, step through it, or compile it to a native binary.**
+program in the editor, step through it, or compile it to a native program.**
 
 [![CI](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml/badge.svg)](https://github.com/hugoocoto/lineit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/hugoocoto/lineit)](LICENSE)
 
-![A program made in lineit: an entry ticks a loop from 1 to 4, typed in
-its fields, whose body ticks a print of "Help, I am stuck in a loop!", added
-from the search with a wire from the loop. Run prints it three
-times](assets/demo.gif)
+![The images example in the lineit editor: a photo opened, resized, made
+gray with more contrast, cropped, tinted and mirrored, each square showing
+its image, and two saves ticked by an entry](assets/screenshot.png)
 
 # Try it
 
-On x86_64 Linux:
+On Linux or macOS:
 
     curl -fsSL https://github.com/hugoocoto/lineit/releases/latest/download/install.sh | bash
-    lineit
+    lineit ~/.local/share/lineit/examples/hello.lua
 
-The canvas starts with an `entry` square. Drag a wire from its output to
-an empty spot, type `print` and press Enter, type `Hello, world!` and press
-Enter. Then, in the bar at the bottom, open the `v` next to **Step** and
-pick **Run**.
+On Windows, download `lineit-x86_64-pc-windows-msvc.zip` from the
+[latest release](https://github.com/hugoocoto/lineit/releases/latest), unzip
+it and run `lineit.exe`. On Linux there's an AppImage there too.
 
-On Mac or Windows, with [Docker](https://docs.docker.com/get-docker/), run
-this in the folder to work in and open <http://localhost:6080>:
+Or, with [Docker](https://docs.docker.com/get-docker/), in the folder to
+work in, then open <http://localhost:6080>:
 
     docker run --rm -p 127.0.0.1:6080:6080 -v "$PWD":/work ghcr.io/hugoocoto/lineit:nightly
+
+Press **Run** (F5). Right click on the canvas to add a square: type to
+search and press Enter. Drag from an output to an input to wire them.
 
 lineit is in alpha: expect breaking changes with any commit.
 
@@ -35,172 +36,182 @@ lineit is in alpha: expect breaking changes with any commit.
 - **Run, step or compile the same canvas.** Run it in the editor, go
   through it a square at a time, or compile it to a program that runs
   without the editor.
+- **Compiled means compiled.** A canvas becomes a typed IR, and Compile
+  turns that into Rust that cargo builds with every optimization: loops are
+  loops, numbers are `i64` and `f64`. There's no interpreter in the program.
+- **Typed, without writing types.** The types flow over the wires: an int
+  and a float added are a float, and a string wired into a number is an
+  error on the square, before anything runs.
 - **Parallel by default.** A tick wired to several squares runs them as
-  branches, on threads, and they meet again where their wires do.
-- **Calls C directly.** `ffi/call` calls any function of any C library from
-  its prototype, without a module written for it.
-- **Extended in C, or with squares.** A module is a C file, rebuilt and
-  reloaded while the editor runs; a selection of squares becomes a module
-  of its own (a subgraph) with Ctrl+G.
+  branches, on threads once compiled, and they meet again where their wires
+  do.
+- **Extended in Lua, in Rust, or with squares.** A module is a Lua file, a
+  Rust type, or a selection of squares made a module of its own (Ctrl+G).
+  Packages (`.lipkg`) share them, on every OS as they are.
 
-![FizzBuzz in the lineit editor: a loop square sends each index to three
-modulo and equal checks, and three ifelse squares pick what to
-print](assets/screenshot.png)
+![FizzBuzz in the lineit editor: a loop sends each index through three
+modulo and equal checks, and three ifelse squares pick what to print; the
+output below](assets/fizzbuzz.png)
 
-The canvases in [`examples/`](examples/README.md) show the rest, each
-explained in a comment at its top.
+The canvases in [`examples/`](examples) show the rest, each explained in
+its corner.
 
 # Using the editor
 
-| Do this                           | To                                                      |
-|-----------------------------------|---------------------------------------------------------|
-| Right click on the canvas         | Add a module: type to search, or browse "Add module"    |
-| Right click on a square           | Configure, disconnect, duplicate, delete, make subgraph |
-| Choose file... in a square's menu | Its path, relative to the canvas; Tab completes         |
-| Drag from an output to an input   | Wire them (drag a plugged input to move its wire)       |
-| Drag from an output to the canvas | Search a module to add there, wired to that output      |
-| Drag a plugged wire to the canvas | Remove it                                               |
-| Drop image files on the canvas    | An `image/open` for each (on a square: its path)        |
-| Click a wire, then Delete         | Remove it (Shift+click selects more)                    |
-| Click a field next to an input    | Type a value used while nothing is plugged in           |
-| Click a field low in a square     | Its settings (params); double click shows them too      |
-| Tab, Shift+Tab in a field         | The square's next / previous field                      |
-| Space or Enter in a field         | Toggle a checkbox, open a list                          |
-| Drag the canvas, or Shift+click   | Select with a box, or add to the selection              |
-| Right drag / mouse wheel          | Pan / zoom                                              |
-| Delete, Backspace                 | Delete the selection                                    |
-| Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+D    | Copy, cut, paste, duplicate                             |
-| Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z)  | Undo, redo                                              |
-| Ctrl+A, Escape                    | Select all, select none                                 |
-| Ctrl+S, Ctrl+Shift+S, Ctrl+O      | Save, save as, open                                     |
-| Ctrl+T, Ctrl+Shift+T, Ctrl+W      | New tab, reopen closed tab, close tab                   |
-| Ctrl+Tab, Ctrl+PageUp/PageDown    | Next / previous tab                                     |
-| Ctrl+G                            | Make a subgraph of the selection                        |
-| Ctrl+,                            | Settings                                                |
+| Do this                              | To                                                   |
+|--------------------------------------|------------------------------------------------------|
+| Right click on the canvas            | Add a square: type to search, Enter adds it          |
+| Drag from an output to an input      | Wire them (a data input takes one wire)              |
+| Drag from a pin to the canvas        | Add a square there, wired to that pin                |
+| Drag a plugged input                 | Take its wire, to put it elsewhere or drop it        |
+| Click a wire, then Delete            | Remove it (Shift+click selects more)                 |
+| Type in a field next to an input     | The value it has while nothing is wired to it        |
+| Right click on a square              | Duplicate, copy, disconnect, make a subgraph, delete |
+| Drag on the canvas, or Shift+click   | Select with a box, or add to the selection           |
+| Right or middle drag / mouse wheel   | Pan / zoom                                           |
+| Drop files on the window             | Canvases open; images become `image/open` squares    |
+| Delete, Backspace                    | Delete the selection                                 |
+| Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+D       | Copy, cut, paste, duplicate                          |
+| Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z)     | Undo, redo                                           |
+| Ctrl+A, Escape                       | Select all, select none                              |
+| Ctrl+S, Ctrl+Shift+S, Ctrl+O         | Save, save as, open                                  |
+| Ctrl+T, Ctrl+Shift+T, Ctrl+W         | New tab, reopen closed tab, close tab                |
+| Ctrl+Tab, Ctrl+PageUp/PageDown       | Next / previous tab                                  |
+| Ctrl+G                               | Make a subgraph of the selection                     |
+| F5, F10, Shift+F5                    | Run, step, stop                                      |
+| Ctrl+,                               | Settings                                             |
 
-The bar at the bottom has the run button, **Output** (what the program
-prints) and **File**. The run button does what its arrow chose last:
-**Step**, **Run** or **Compile** (and **Stop** while it runs). Stepping, the
-square that runs next has a yellow outline. Hovering a pin shows what it
-carries.
+(Cmd instead of Ctrl on macOS.) Hovering a pin shows its type, and while a
+program runs, its value. Squares that make images show them, without
+running anything. While stepping, the squares about to run have a yellow
+outline. What's wrong with a square is written under it, in red.
 
-    lineit -f file.lua            # open a canvas
-    lineit -t file.lua            # open it in a new tab of the lineit already open
-    lineit --compile file.lua     # compile it without opening a window
+The bar at the bottom runs, steps, compiles (More) and stops, and has
+**Output** (what the program prints) and **File**.
 
 # The language
 
 **Squares and wires.** Each square is a module. Wires carry values, or
-ticks: the signal that says what runs next. A program starts at its `entry`
-squares (and its clocks, every frame).
+ticks: the signal that says what runs next. A program starts at its
+`flow/entry` squares, and its `flow/clock` squares tick it again and again
+until it's stopped (or a `flow/stop` square ends it).
 
-**Branches.** A tick output wired to several inputs runs each of them as a
-branch, in parallel, and goes on once they're all done. Where branches meet
-again (a tick input with more than one wire), the square runs once, after
-all of them. As in any parallel program, two branches that read and change
-one variable at once can lose a change.
+**Ticks push, data is pulled.** A tick runs a square, which may tick the
+next. A value is computed when it's read: pure squares (math, comparisons,
+strings, images) have no ticks at all.
 
-**Variables.** A `var/var` square declares one: its name, its type, and
-the value it starts with on Run. Wire it to `var/get`, `var/set` and the
-`list/` and `map/` squares, or type its name in their field (`::name` for
-a global one). `var/var` squares with the same name are the same variable.
-Inside a subgraph, variables are its own, like a C function's locals.
+**Types.** `int`, `float`, `bool`, `str`, `list<T>`, `map<T>` (string keys),
+`image`, and record types of your own. Generic squares (`math/add` takes any
+number, `io/print` anything) get their types from what's wired to them, or
+typed in their fields: `2` is an int, `2.5` a float.
 
-**Calling C.** In `ffi/call`, set `lib` (`m` for libm, `c`, or a path to a
-`.so`) and `fn`, a C prototype such as `double pow(double x, double y)`, and
-the square gets an input per argument and a `result`. Structs are custom
-types, `ffi/callback` turns squares into a C function pointer, and
-`ffi/alloc`, `ffi/read`, `ffi/write` and `ffi/free` handle memory; the top of
-[`modules/ffi/call.c`](modules/ffi/call.c) says how each type is passed. It's
-C: a wrong prototype or pointer crashes lineit.
+**Branches.** A tick output wired to several inputs runs each as a branch,
+in parallel, and goes on once they're all done. A square that two branches
+reach is where they meet: it runs once, after all of them. The two sides of
+an `ifelse` meeting again don't wait for each other: there's only one
+branch. As in any parallel program, two branches that change one variable
+at once can lose a change.
 
-# Writing modules
+**Variables.** A `var/var` square declares one: its name, its type and its
+value when the program starts. `var/get`, `var/set` and the `list/` and
+`map/` squares use it by name. A name that starts with `::` is global; the
+rest belong to their canvas, so each copy of a subgraph has its own.
 
-A module is a C file in `modules/` that includes
-[`src/lineit.h`](src/lineit.h), which documents the whole API. `make`
-builds it, and the editor reloads it while it runs. The smallest,
-`modules/io/print.c`:
+**Subgraphs.** A canvas with `graph/input` and `graph/output` squares is a
+module. Select squares and press Ctrl+G to make one: it goes to your
+modules folder, and a square of it takes their place.
 
-```c
-#include "lineit.h"
+# Modules of your own
 
-void module_init(Li_Node *n) {
-        li_input(n, "tick", LI_TICK);
-        li_input_value(n, "value", LI_ANY, li_string(""));
-        li_output(n, "then", LI_TICK);
-}
+Modules are found in your modules folder (`~/.local/share/lineit/modules`
+on Linux, `~/Library/Application Support/lineit/modules` on macOS,
+`%APPDATA%\lineit\modules` on Windows), in a `modules` folder next to the
+canvas, and in the packages you install. The editor reloads them when they
+change.
 
-void module_tick(Li_Node *n, int input) {
-        char buf[64];
-        li_format(li_get(n, 1), buf, sizeof buf);
-        li_print(n, "%s", buf);
-        li_tick(n, 0);
+**Lua**, in a `.lua` file that returns a table (this is
+[`examples/modules/shout.lua`](examples/modules/shout.lua)):
+
+```lua
+return {
+        doc = "The text in capitals, with as many ! as you say",
+        inputs = { { "text", "str", default = "hello" }, { "times", "int", default = 3 } },
+        outputs = { { "result", "str" } },
+        eval = function(i)
+                return { result = i.text:upper() .. string.rep("!", i.times) }
+        end,
 }
 ```
 
-To share one, make a package, a `.li` file with the module built and its
-source, and put it with your modules (`~/.local/share/lineit/modules`):
+A module with tick pins has `tick(self, input, i)` instead, which returns
+the outputs it sets and the tick outputs to fire; `self` is the square's
+own table, kept between ticks. See [`crates/lineit-rt/src/lua.rs`](crates/lineit-rt/src/lua.rs).
 
-    tools/lineit-pack -o reverse.li examples/package/Makefile
-    tools/lineit-pack --howto    # what a package needs
+**Subgraphs** are `.graph.lua` canvases, **record types** `.type.lua` files
+(`return { fields = { { "x", "float" }, { "y", "float" } } }`, which brings
+`record/make/NAME` and `record/split/NAME`), and **Rust modules** are types
+in a package's crate: see below.
 
-Packages are native code: only use the ones you trust.
+# Packages
 
-# Install
+A package is a folder with a `package.lua` (its name and version), its
+modules in `modules/`, and optionally a cargo crate in `native/` with Rust
+modules. `lineit pack` zips it, and anyone can install it, on any OS:
+everything in it is source, and Rust modules are built by cargo the first
+time a canvas uses them.
 
-**The install script** puts the AppImage in `~/.local/bin` (`/usr/local`
-as root) with a menu entry, and checks it against the release's checksums.
-It needs FUSE (`fuse` or `fuse3`); Compile needs a C compiler and make.
+    lineit new-package mypackage --native   # a folder to fill in, with a Lua and a Rust module
+    lineit pack mypackage                   # mypackage-0.1.0.lipkg
+    lineit install mypackage-0.1.0.lipkg
 
-    ... | bash -s -- v0.0.1       # a version, instead of the latest (nightly)
-    ... | bash -s -- uninstall
-    ... | bash -s -- --help
+Its modules are `mypackage/...` in the search. A package is code: only
+install the ones you trust.
 
-**Docker.** The editor runs in a virtual screen shown in the browser: some
-input lag, copy and paste through noVNC's clipboard panel (the tab on the
-left), and compiled programs are Linux ones. The folder is mounted as
-`/work`, where your canvases, config and modules are kept. Update it with
-`docker pull ghcr.io/hugoocoto/lineit:nightly`. Keep the `127.0.0.1:`:
-without it, anyone who reaches port 6080 gets the editor, and Compile runs
-commands.
+# The command line
 
-**From source**, on Debian or Ubuntu (on Arch:
-`base-devel lua51 fontconfig libx11 libxrandr libxinerama libxcursor libxi
-zlib openssl libffi zip curl`):
+    lineit [FILE...]                    the editor, with these canvases
+    lineit run FILE [--for SECONDS]     run a canvas, without the editor
+    lineit check FILE                   what's wrong with a canvas, if anything
+    lineit compile FILE [-o OUT]        a program of the canvas, next to it
+    lineit new-package NAME [--native]  make a package
+    lineit pack DIR / install FILE      share one / install one
+    lineit modules                      every module lineit finds
+    lineit config                       where the config goes, and every setting
 
-    sudo apt install build-essential pkg-config liblua5.1-0-dev lua5.1 \
-        libfontconfig1-dev libx11-dev zlib1g-dev libssl-dev libffi-dev zip curl \
-        libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
-    git clone --recursive https://github.com/hugoocoto/lineit
-    cd lineit
-    make -j"$(nproc)"
-    ./lineit -f examples/hello.lua
-
-`make install` installs it in `~/.local` (`PREFIX`). The first `make`
-downloads raylib's source (checked against its SHA-256) and builds it, so
-the `image/` squares read png, bmp, gif, qoi, jpg, tga, psd, hdr, pic and
-pnm, and write png, bmp, qoi, jpg and tga. Offline, `make RAYLIB=repo` uses
-the raylib in the repo instead: it needs glibc 2.38 (not Ubuntu 22.04 or
-Debian 12) and doesn't need the `libx*-dev` above but `libx11-dev`, and its
-images are only png, bmp, gif and qoi (and it writes png, bmp, qoi).
+**Compile needs Rust**, from <https://rustup.rs> (1.85 or newer). The first
+compile downloads and builds what the program needs; the next ones only
+build the program. Lua modules in a compiled program need a C compiler, as
+Rust on Windows already does.
 
 # Configuration
 
 **File > Settings** (Ctrl+,) has every setting, searchable, and applies
-changes at once. They are saved to `settings.lua`, next to `config.lua`,
-which has them all commented (`~/.config/lineit/config.lua` installed).
-Themes: `dark`, `light`, `nord`, `gruvbox`, or your own.
+changes at once: they're saved to `settings.lua` in the config folder.
+`config.lua` there, if you write one, is read before it, and is real Lua:
+`lineit config` prints one with every setting. Themes: `dark`, `light`,
+`nord`, `gruvbox`, or your own in `themes`.
 
-If text looks wrong, the font isn't installed: the default is Iosevka NFM,
-and `font.name` takes another (see `fc-list`).
+Canvases are Lua tables, read without running anything that could do harm
+(no libraries, limits on time and memory): opening a canvas someone sent is
+safe. Running it runs what it says, as any program.
 
-Canvases and configs are Lua: only open the ones you trust.
+# Building from source
+
+With Rust 1.88 or newer:
+
+    git clone https://github.com/hugoocoto/lineit
+    cd lineit
+    cargo run --release -- examples/hello.lua
+
+On Linux it needs the X11, xkbcommon and OpenGL development files
+(`libx11-dev libxkbcommon-dev libgl1-mesa-dev` on Debian and Ubuntu). Lua is
+built from source, with the C compiler Rust uses.
 
 # More
 
-- [`docs/internals.typ`](docs/internals.typ): how it works inside. Its PDF
-  is in the [docs release](https://github.com/hugoocoto/lineit/releases/tag/docs).
+- [`docs/internals.typ`](docs/internals.typ): how it works inside.
+- [`docs/roadmap.md`](docs/roadmap.md): what was decided, what's done, what's next.
 - [CONTRIBUTING.md](CONTRIBUTING.md): building, testing and sending
   changes. Security problems: [SECURITY.md](.github/SECURITY.md).
 - License: GPLv3 or later ([LICENSE](LICENSE)). Your canvases are yours; a
-  compiled program includes lineit's runtime and modules, so it's GPL too.
+  compiled program includes lineit's runtime, so it's GPL too.

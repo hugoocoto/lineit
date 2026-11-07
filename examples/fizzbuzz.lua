@@ -1,52 +1,43 @@
--- fizzbuzz
--- FizzBuzz from 1 to 100: multiples of 15 print FizzBuzz, of 3 Fizz,
--- of 5 Buzz, and the rest the number. The output goes to stdout.
--- flow/loop runs index from 1 to 100 (typed in its from and to
--- fields). For each one, three flow/ifelse in a row check index % 15,
--- % 3 and % 5 == 0 (math/modulo + compare/equal), and the first true
--- one prints its word with io/print. If none is, the last io/print
--- prints the index.
---
--- Open it with: ./lineit -f examples/fizzbuzz.lua, then press Run.
-lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
-
-camera = { x = 676.050781, y = 124.5, offset_x = 640, offset_y = 344, zoom = 0.802084565 }
-
-squares = {
-        { id = 2, module = "flow/entry", x = -32, y = -35 },
-        { id = 3, module = "flow/loop", x = 114.109375, y = -71, inputs = { { name = "from", type = "int", value = "1" }, { name = "to", type = "int", value = "101" }, } },
-        { id = 4, module = "math/modulo", x = 285.109375, y = 193, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "15" }, } },
-        { id = 5, module = "compare/equal", x = 418.632812, y = 343, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 6, module = "flow/ifelse", x = 381.898438, y = -47, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 7, module = "io/print", x = 477.898438, y = -212, inputs = { { name = "value", type = "string", value = "FizzBuzz" }, } },
-        { id = 8, module = "math/modulo", x = 570.109375, y = 193, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "3" }, } },
-        { id = 9, module = "compare/equal", x = 703.632812, y = 343, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 10, module = "flow/ifelse", x = 666.898438, y = -47, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 11, module = "io/print", x = 762.898438, y = -212, inputs = { { name = "value", type = "string", value = "Fizz" }, } },
-        { id = 12, module = "math/modulo", x = 855.109375, y = 193, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "5" }, } },
-        { id = 13, module = "compare/equal", x = 988.632812, y = 343, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 14, module = "flow/ifelse", x = 951.898499, y = -47, inputs = { { name = "cond", type = "bool", value = "false" }, } },
-        { id = 15, module = "io/print", x = 1047.89844, y = -212, inputs = { { name = "value", type = "string", value = "Buzz" }, } },
-        { id = 16, module = "io/print", x = 1237.89844, y = 43, inputs = { { name = "value", type = "string", value = "" }, } },
-}
-
-links = {
-        { from = 2, from_pin = 0, to = 3, to_pin = 0 },
-        { from = 3, from_pin = 1, to = 4, to_pin = 0 },
-        { from = 4, from_pin = 0, to = 5, to_pin = 0 },
-        { from = 5, from_pin = 0, to = 6, to_pin = 1 },
-        { from = 3, from_pin = 0, to = 6, to_pin = 0 },
-        { from = 6, from_pin = 0, to = 7, to_pin = 0 },
-        { from = 3, from_pin = 1, to = 8, to_pin = 0 },
-        { from = 8, from_pin = 0, to = 9, to_pin = 0 },
-        { from = 9, from_pin = 0, to = 10, to_pin = 1 },
-        { from = 6, from_pin = 1, to = 10, to_pin = 0 },
-        { from = 10, from_pin = 0, to = 11, to_pin = 0 },
-        { from = 3, from_pin = 1, to = 12, to_pin = 0 },
-        { from = 12, from_pin = 0, to = 13, to_pin = 0 },
-        { from = 13, from_pin = 0, to = 14, to_pin = 1 },
-        { from = 10, from_pin = 1, to = 14, to_pin = 0 },
-        { from = 14, from_pin = 0, to = 15, to_pin = 0 },
-        { from = 14, from_pin = 1, to = 16, to_pin = 0 },
-        { from = 3, from_pin = 1, to = 16, to_pin = 1 },
+-- lineit canvas
+return {
+        lineit = 1,
+        doc = "FizzBuzz: a loop from 1 to 15 sends each index through three modulo checks; three ifelse squares pick what to print. Pure squares (modulo, equal) compute when something reads them.",
+        camera = { x = 0, y = 0, zoom = 1 },
+        squares = {
+                { id = 1, module = "flow/entry", x = 0, y = 0 },
+                { id = 2, module = "flow/loop", x = 280, y = 0, fields = { from = "1", to = "16" } },
+                { id = 3, module = "math/modulo", x = 560, y = 0, fields = { b = "15" } },
+                { id = 4, module = "compare/equal", x = 840, y = 0, fields = { b = "0" } },
+                { id = 5, module = "flow/ifelse", x = 1120, y = 0 },
+                { id = 6, module = "io/print", x = 1400, y = 0, fields = { value = "FizzBuzz" } },
+                { id = 7, module = "math/modulo", x = 560, y = 128, fields = { b = "3" } },
+                { id = 8, module = "compare/equal", x = 840, y = 128, fields = { b = "0" } },
+                { id = 9, module = "flow/ifelse", x = 1400, y = 128 },
+                { id = 10, module = "io/print", x = 1680, y = 0, fields = { value = "Fizz" } },
+                { id = 11, module = "math/modulo", x = 560, y = 256, fields = { b = "5" } },
+                { id = 12, module = "compare/equal", x = 840, y = 256, fields = { b = "0" } },
+                { id = 13, module = "flow/ifelse", x = 1680, y = 128 },
+                { id = 14, module = "io/print", x = 1960, y = 0, fields = { value = "Buzz" } },
+                { id = 15, module = "io/print", x = 1960, y = 128 },
+        },
+        links = {
+                { 1, "then", 2, "tick" },
+                { 2, "body", 5, "tick" },
+                { 2, "index", 3, "a" },
+                { 3, "result", 4, "a" },
+                { 4, "result", 5, "condition" },
+                { 5, "then", 6, "tick" },
+                { 5, "else", 9, "tick" },
+                { 2, "index", 7, "a" },
+                { 7, "result", 8, "a" },
+                { 8, "result", 9, "condition" },
+                { 9, "then", 10, "tick" },
+                { 9, "else", 13, "tick" },
+                { 2, "index", 11, "a" },
+                { 11, "result", 12, "a" },
+                { 12, "result", 13, "condition" },
+                { 13, "then", 14, "tick" },
+                { 13, "else", 15, "tick" },
+                { 2, "index", 15, "value" },
+        },
 }

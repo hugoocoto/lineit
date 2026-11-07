@@ -1,0 +1,24 @@
+# Not inheriting from the workspace on purpose: lineit writes this crate out
+# next to every program it compiles, where there's no workspace.
+[package]
+name = "lineit-rt"
+version = "0.1.0"
+edition = "2024"
+# compiled programs build it with the Rust of the machine they compile on
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+description = "The runtime of lineit: what its interpreter and its compiled programs share"
+repository = "https://github.com/hugoocoto/lineit"
+
+[features]
+default = []
+image = ["dep:image"]
+lua = ["dep:mlua"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "qoi", "tga"], optional = true }
+mlua = { version = "0.12", features = ["lua54", "vendored", "send"], optional = true }
+
+[lints.clippy]
+needless_range_loop = "allow"
+type_complexity = "allow"

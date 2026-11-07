@@ -1,0 +1,31 @@
+-- A loop from 1 to 15; its index goes through three modulo checks.
+return {
+        lineit = 1,
+        squares = {
+                { id = 1, module = "flow/entry" },
+                { id = 2, module = "flow/loop", fields = { from = "1", to = "16" } },
+                { id = 3, module = "math/modulo", fields = { b = "15" } },
+                { id = 4, module = "compare/equal", fields = { b = "0" } },
+                { id = 5, module = "flow/ifelse" },
+                { id = 6, module = "io/print", fields = { value = "FizzBuzz" } },
+                { id = 7, module = "math/modulo", fields = { b = "3" } },
+                { id = 8, module = "compare/equal", fields = { b = "0" } },
+                { id = 9, module = "flow/ifelse" },
+                { id = 10, module = "io/print", fields = { value = "Fizz" } },
+                { id = 11, module = "math/modulo", fields = { b = "5" } },
+                { id = 12, module = "compare/equal", fields = { b = "0" } },
+                { id = 13, module = "flow/ifelse" },
+                { id = 14, module = "io/print", fields = { value = "Buzz" } },
+                { id = 15, module = "io/print" },
+        },
+        links = {
+                { 1, "then", 2, "tick" }, { 2, "body", 5, "tick" },
+                { 2, "index", 3, "a" }, { 3, "result", 4, "a" }, { 4, "result", 5, "condition" },
+                { 5, "then", 6, "tick" }, { 5, "else", 9, "tick" },
+                { 2, "index", 7, "a" }, { 7, "result", 8, "a" }, { 8, "result", 9, "condition" },
+                { 9, "then", 10, "tick" }, { 9, "else", 13, "tick" },
+                { 2, "index", 11, "a" }, { 11, "result", 12, "a" }, { 12, "result", 13, "condition" },
+                { 13, "then", 14, "tick" }, { 13, "else", 15, "tick" },
+                { 2, "index", 15, "value" },
+        },
+}

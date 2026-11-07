@@ -1,48 +1,30 @@
--- fibonacci
--- The first 30 Fibonacci numbers, in a list.
--- var/var declares fib, a list: it starts empty when you press Run.
--- flow/entry pushes 0 and 1 (list/push). Then flow/loop 2..29 pushes
--- fib[-1] + fib[-2] (list/get with negative indices counts from the
--- end) and prints the new last one with io/print. io/display shows
--- list/length. The three var/var are copies of the same list.
---
--- Open it with: ./lineit -f examples/fibonacci.lua, then press Run.
-lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
-
-camera = { x = 704.550781, y = 127.5, offset_x = 640, offset_y = 344, zoom = 0.764635623 }
-
-squares = {
-        { id = 53, module = "flow/entry", x = -32, y = -35 },
-        { id = 54, module = "var/var", x = 116.898438, y = 124, params = { { name = "name", value = "fib" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "list" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 55, module = "list/push", x = 306.898438, y = -59, inputs = { { name = "list", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
-        { id = 56, module = "list/push", x = 496.898438, y = -59, inputs = { { name = "list", type = "ref", value = "" }, { name = "value", type = "int", value = "1" }, } },
-        { id = 57, module = "flow/loop", x = 703.109375, y = -71, inputs = { { name = "from", type = "int", value = "2" }, { name = "to", type = "int", value = "30" }, } },
-        { id = 58, module = "var/var", x = 515.898438, y = 244, params = { { name = "name", value = "fib" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "list" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 59, module = "list/get", x = 703.109375, y = 193, inputs = { { name = "list", type = "ref", value = "" }, { name = "index", type = "int", value = "-1" }, } },
-        { id = 60, module = "list/get", x = 703.109375, y = 388, inputs = { { name = "list", type = "ref", value = "" }, { name = "index", type = "int", value = "-2" }, } },
-        { id = 61, module = "math/add", x = 928.843689, y = 268, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 62, module = "var/var", x = 914.898376, y = -251, params = { { name = "name", value = "fib" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "list" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 63, module = "list/push", x = 1104.89844, y = -59, inputs = { { name = "list", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
-        { id = 64, module = "io/print", x = 1294.89844, y = -47, inputs = { { name = "value", type = "string", value = "" }, } },
-        { id = 65, module = "list/length", x = 1148.47656, y = 205, inputs = { { name = "list", type = "ref", value = "" }, } },
-        { id = 66, module = "io/display", x = 1374, y = 205 },
-}
-
-links = {
-        { from = 53, from_pin = 0, to = 55, to_pin = 0 },
-        { from = 54, from_pin = 0, to = 55, to_pin = 1 },
-        { from = 54, from_pin = 0, to = 56, to_pin = 1 },
-        { from = 55, from_pin = 0, to = 56, to_pin = 0 },
-        { from = 56, from_pin = 0, to = 57, to_pin = 0 },
-        { from = 58, from_pin = 0, to = 59, to_pin = 0 },
-        { from = 58, from_pin = 0, to = 60, to_pin = 0 },
-        { from = 59, from_pin = 0, to = 61, to_pin = 0 },
-        { from = 60, from_pin = 0, to = 61, to_pin = 1 },
-        { from = 57, from_pin = 0, to = 63, to_pin = 0 },
-        { from = 62, from_pin = 0, to = 63, to_pin = 1 },
-        { from = 61, from_pin = 0, to = 63, to_pin = 2 },
-        { from = 63, from_pin = 0, to = 64, to_pin = 0 },
-        { from = 59, from_pin = 0, to = 64, to_pin = 1 },
-        { from = 62, from_pin = 0, to = 65, to_pin = 0 },
-        { from = 65, from_pin = 0, to = 66, to_pin = 0 },
+-- lineit canvas
+return {
+        lineit = 1,
+        doc = "The first 30 Fibonacci numbers, in a list. The entry pushes 0 and 1, then a loop pushes the sum of the last two (list/get counts from the end with negative indexes) and prints the new last one. Hover a pin while it runs to see what it carries.",
+        camera = { x = 0, y = 0, zoom = 1 },
+        squares = {
+                { id = 1, module = "flow/entry", x = 0, y = 0 },
+                { id = 2, module = "var/var", x = 0, y = 106, params = { name = "fib", type = "list<int>" } },
+                { id = 3, module = "list/push", x = 280, y = 0, params = { list = "fib" }, fields = { value = "0" } },
+                { id = 4, module = "list/push", x = 560, y = 0, params = { list = "fib" }, fields = { value = "1" } },
+                { id = 5, module = "flow/loop", x = 840, y = 0, fields = { from = "2", to = "30" } },
+                { id = 6, module = "list/get", x = 0, y = 278, params = { list = "fib" }, fields = { index = "-1" } },
+                { id = 7, module = "list/get", x = 0, y = 406, params = { list = "fib" }, fields = { index = "-2" } },
+                { id = 8, module = "math/add", x = 280, y = 150 },
+                { id = 9, module = "list/push", x = 1120, y = 0, params = { list = "fib" } },
+                { id = 10, module = "list/get", x = 0, y = 534, params = { list = "fib" }, fields = { index = "-1" } },
+                { id = 11, module = "io/print", x = 1400, y = 0 },
+        },
+        links = {
+                { 1, "then", 3, "tick" },
+                { 3, "then", 4, "tick" },
+                { 4, "then", 5, "tick" },
+                { 5, "body", 9, "tick" },
+                { 6, "value", 8, "a" },
+                { 7, "value", 8, "b" },
+                { 8, "result", 9, "value" },
+                { 9, "then", 11, "tick" },
+                { 10, "value", 11, "value" },
+        },
 }

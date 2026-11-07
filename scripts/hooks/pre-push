@@ -1,3 +1,0 @@
-#!/bin/sh
-# Enabled with `make hooks`. Skip it once with `git push --no-verify`.
-exec make --no-print-directory test

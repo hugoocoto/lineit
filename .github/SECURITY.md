@@ -17,12 +17,18 @@ are no older versions to patch.
 
 ## What's covered
 
-The editor, the runtime that compiled programs link with, the modules in
-this repo, and how lineit loads packages (`.li`).
+The editor, the interpreter, the runtime that compiled programs are built
+with (`lineit-rt`), the modules in this repo, and how lineit reads canvases
+and loads packages (`.lipkg`).
 
-Keep in mind what lineit is: modules and packages are native code that
-runs with your permissions, and canvases, type files and the config are Lua
-that lineit runs to read them. Opening a canvas or loading a module from
-someone you don't trust is like running their program. That isn't a
-vulnerability; lineit doing something you didn't ask for with files you
-trust is.
+Canvases (and record types, and package manifests) are read in a sandbox:
+Lua with no libraries and limits on time and memory. A canvas file that
+gets out of it, or makes lineit do anything but show a canvas, is a
+vulnerability. Running the canvas is another thing: its program does what
+its squares do, as any program would.
+
+Keep in mind what the rest is: the config is Lua that lineit runs, and Lua
+modules and Rust modules (in packages) are code that runs with your
+permissions. Installing a package from someone you don't trust is like
+running their program. That isn't a vulnerability; lineit doing something
+you didn't ask for with files you trust is.

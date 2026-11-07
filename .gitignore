@@ -1,10 +1,10 @@
-build/
-lineit
-docs/**/*.pdf
-/*.tar.gz
-/*.AppImage
+/target
 /settings.lua
 /settings.lua.tmp
-.cache/
-# What examples/images.lua saves, next to it
+docs/**/*.pdf
+/*.tar.gz
+/*.zip
+/*.AppImage
+# What the examples and tests write next to them
 /examples/symi-*.png
+/examples/*.exe

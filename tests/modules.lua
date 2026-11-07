@@ -1,0 +1,35 @@
+-- Squares from files: subgraphs (each copy with its own variables), Lua
+-- modules and a record type.
+return {
+        lineit = 1,
+        squares = {
+                { id = 1, module = "flow/entry" },
+                { id = 2, module = "flow/sequence", params = { count = "8" } },
+                { id = 3, module = "test/double", fields = { x = "21" } },
+                { id = 4, module = "io/print" },
+                { id = 5, module = "test/accumulate", fields = { value = "5" } },
+                { id = 6, module = "test/accumulate" },
+                { id = 7, module = "string/format", params = { format = "{} {}" } },
+                { id = 8, module = "io/print" },
+                { id = 9, module = "test/reverse", fields = { text = "lineit" } },
+                { id = 10, module = "io/print" },
+                { id = 11, module = "test/tally", params = { step = "1" } },
+                { id = 12, module = "io/print", fields = { value = "odd" } },
+                { id = 13, module = "io/print", fields = { value = "even" } },
+                { id = 14, module = "record/make/point", fields = { x = "1.5", y = "2" } },
+                { id = 15, module = "io/print" },
+                { id = 16, module = "record/split/point" },
+                { id = 17, module = "math/add" },
+                { id = 18, module = "io/print" },
+        },
+        links = {
+                { 1, "then", 2, "tick" },
+                { 2, "1", 4, "tick" }, { 3, "y", 4, "value" },
+                { 2, "2", 5, "tick" }, { 2, "3", 5, "tick" }, { 2, "4", 6, "tick" },
+                { 2, "5", 8, "tick" }, { 5, "total", 7, "1" }, { 6, "total", 7, "2" }, { 7, "text", 8, "value" },
+                { 2, "6", 10, "tick" }, { 9, "result", 10, "value" },
+                { 2, "7", 11, "tick" }, { 2, "7", 11, "tick" }, { 11, "odd", 12, "tick" }, { 11, "even", 13, "tick" },
+                { 2, "8", 15, "tick" }, { 14, "point", 15, "value" }, { 15, "then", 18, "tick" },
+                { 14, "point", 16, "point" }, { 16, "x", 17, "a" }, { 16, "y", 17, "b" }, { 17, "result", 18, "value" },
+        },
+}

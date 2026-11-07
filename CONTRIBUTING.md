@@ -1,193 +1,62 @@
-# Contributing to lineit
+# Contributing
 
-Thanks for helping! Bug reports, ideas, modules, docs and code are all
-welcome. lineit is in alpha: things change and break between commits, and
-that's fine while it is.
+Thanks for wanting to help. Bugs and ideas go in the
+[issues](https://github.com/hugoocoto/lineit/issues); changes in pull
+requests, against `main`.
 
-## Reporting bugs
+## Building and testing
 
-[Open an issue](../../issues/new/choose). The more of this it has, the
-faster it gets fixed:
+    cargo build                          # everything
+    cargo run -- examples/hello.lua      # the editor
+    cargo test                           # unit tests, and every canvas in tests/ and examples/, run
+    LINEIT_TEST_COMPILE=1 cargo test     # and compiled too (slow: cargo builds each one)
+    cargo fmt --all
+    cargo clippy --all-targets -- -D warnings
 
-- what you did, and what lineit printed (the terminal and the output panel),
-- the canvas, or the smallest one that shows it,
-- whether it happens with Run, with Compile, or both,
-- the output of `lineit --version` (and the commit, if you built it), and
-  your distro.
+CI runs all of it on Linux, macOS and Windows, and builds what's released
+(see `.github/workflows/ci.yml`).
 
-Search the open issues first: someone may have reported it already. A
-security problem goes privately instead, not in an issue: see
-[SECURITY.md](.github/SECURITY.md).
+`LINEIT_HOME=DIR` makes lineit keep its config, modules, packages and
+builds in `DIR`, not in yours: useful to try things.
 
-## Suggesting features
+## Where things are
 
-Open an issue describing the problem you want to solve, not just the
-solution. For anything that needs more than a few lines of code, agree on it
-in the issue before writing it: it saves everyone's time.
+- `crates/lineit-rt`: the runtime. Values, strings, lists, images, branches,
+  Lua and Rust modules. The interpreter and compiled programs both use it,
+  so it builds on its own, with no dependency unless a feature asks for it:
+  lineit writes it out next to every program it compiles.
+- `crates/lineit-core`: everything but the GUI. The canvas and its files
+  (`model`, `file`), the modules (`registry/`), type inference (`types`),
+  lowering to the IR (`lower`, `ir`), the interpreter (`interp`), the
+  codegen (`codegen`), packages (`package`, `native`) and the config.
+- `crates/lineit`: the command line (`main.rs`) and the editor (`editor/`,
+  egui).
+- `tests/`, `examples/`: canvases, each with the `.out` it must print.
 
-## Setting up
+[`docs/internals.typ`](docs/internals.typ) explains how they work.
 
-See [Install](README.md#install), from source, for what to install, then:
+## Changes
 
-```sh
-git clone --recursive https://github.com/hugoocoto/lineit
-cd lineit
-make hooks          # run the tests before every push
-make -j"$(nproc)"   # or make debug, with the sanitizers, while working
-make -j"$(nproc)" test
-```
-
-Cloned without `--recursive`: `git submodule update --init` (the small
-libraries in `thirdparty/`). LuaJIT works instead of Lua 5.1:
-`make LUA=luajit`. Run from the source tree, lineit uses the tree
-(`build/`, `modules/`, its `config.lua`); installed, it keeps your own
-things in `~/.config/lineit`, `~/.local/share/lineit` and
-`~/.cache/lineit`.
-
-| Command             | What it does                                                   |
-|---------------------|----------------------------------------------------------------|
-| `make`              | the editor, the modules and the runtime of Compile             |
-| `make WERROR=1`     | the same, failing on any warning, like CI                      |
-| `make debug`        | without optimizations, with AddressSanitizer and UBSan         |
-| `make test`         | run every canvas in `examples/` and `tests/`, compile and step them |
-| `make test-asan`    | the same, with AddressSanitizer and UBSan                      |
-| `make test-tsan`    | the same, with ThreadSanitizer: branches run in parallel       |
-| `make analyze`      | clang's static analyzer                                        |
-| `make format`       | format the C with clang-format (`make check-format` checks)    |
-| `make docs`         | `docs/*.typ` to PDF (needs typst)                              |
-| `make install`      | install it to `~/.local` (`PREFIX`, `DESTDIR`)                 |
-| `make appimage`     | `lineit-x86_64.AppImage` (downloads its pinned tools)          |
-| `make dist`         | `lineit-VERSION.tar.gz`, the source with the submodules        |
-| `make hooks`        | run `make test` before every `git push`                        |
-| `make clean`        | remove what the build made                                     |
-
-All of them run in parallel with `-j`.
-
-Editors that use clangd get the right flags from the `.clangd` files, and
-the code style from `.clang-format` and `.editorconfig`.
-
-How lineit works inside, from the module API to Compile, is in
-`docs/internals.typ` (`make docs` makes the PDF). Read the parts you'll
-touch: it names the functions, so you can read the code next to it.
-
-### Project layout
-
-```
-src/main.c               main: the window and every frame
-src/editor/              the editor, a file for each thing it does (below)
-src/editor/editor.h      what those files share: the types, and what more than one uses
-src/lineit.h             the module API, documented: all a module includes
-src/value.c              values, lists, maps, variables: the editor's and Compile's
-src/branches.c           branches: fan-outs, merges, Step; the editor's and Compile's
-src/rt/                  the runtime the programs Compile makes link with
-modules/                 the standard modules (.c), subgraphs (.lua), types (.type.lua)
-examples/, tests/        canvases, each with the .out make test checks it against
-tools/                   the test runners, gen_examples, lineit-pack (packages)
-thirdparty/              git submodules: flag.h, conf.h, cum.h, bt.h
-docs/                    Typst documents, to PDF with make docs
-scripts/                 install.sh, release.sh, git hooks, the Docker entrypoint
-Dockerfile               the Docker image: lineit in the browser (see the README)
-assets/                  the icon and the desktop entry
-```
-
-Each file of `src/editor/` says in its first line what it's for. By what
-they do:
-
-```
-the canvas         canvas.c squares.c links.c layout.c draw.c input.c selection.c undo.c
-squares' parts     fields.c panel.c text_input.c context_menu.c tooltips.c drop.c preview.c
-the program        program.c run.c subgraphs.c decls.c compile.c
-modules and types  modules.c packages.c records.c types.c type_edit.c make_subgraph.c module_api.c
-the window         bar.c output.c menu.c tabs.c tab_strip.c prompt.c file_menu.c ask.c
-                   settings_tab.c shortcuts.c keys.c text.c
-config and files   config.c themes.c paths.c version.c save.c autosave.c util.c
-the editor itself  reload.c single.c
-```
-
-A function or a variable only one file uses is `static` in it; what more
-than one uses is declared in `editor.h`, under the file that has it.
-
-## Making a change
-
-1. Fork the repo and make a branch from main.
-2. Make the change, with a test (see [Tests](#tests)).
-3. Update the docs if it changes what users see or how lineit works (see
-   [Documentation](#documentation)).
-4. Check it: `make WERROR=1`, `make test`, `make test-asan`,
-   `make analyze` and `make check-format`.
-5. Open a pull request, saying what it changes and why. Link the issue it
-   fixes (`Fixes #123`).
-
-CI builds and tests it with gcc and clang, with and without the
-sanitizers. A pull request is merged when CI is green and it has been
-reviewed. Small pull requests are reviewed much faster than big ones: split
-them when you can.
-
-## Code style
-
-- No warnings with `-Wall -Wextra -Wformat=2 -Wshadow`: CI builds with
-  `make WERROR=1`, which makes them errors. Warnings in `thirdparty/` and
-  raylib don't count, they're included with `-isystem`.
-- Format with `make format`. CI checks it with the clang-format version in
-  the Makefile (`CLANG_FORMAT_VERSION`): if yours formats differently,
-  install that one with `pipx install clang-format==<version>` and run
-  `make format CLANG_FORMAT=~/.local/bin/clang-format`.
-- Free what you allocate: `make test-asan` fails on any leak.
-- Comments say why, not what. Keep them short.
-- In modules, everything but the `module_*` callbacks is `static`: Compile
-  puts a copy of the module per square in one program (see `src/lineit.h`).
-
-## Tests
-
-`make test` runs every canvas in `examples/` and `tests/` in the editor,
-for 10 seconds of fake time, and compares what it prints and the text of
-every square with the `.out` next to it. Then it compiles each one and
-checks the program prints the same: Run and Compile have to agree. It also
-checks Make subgraph on some examples. `make test-asan` does it all again
-with AddressSanitizer and UBSan.
-
-To add a test, add a canvas to `tests/`, with a comment at the top saying
-what it checks, and run `make test-update` to write its `.out`. Read the
-`.out` before keeping it: it's what the test will expect from now on.
+- A change in behavior comes with a canvas that shows it, in `tests/` (or
+  `examples/` if it's worth showing), with its `.out`. Canvases can be
+  written by hand without positions: `lineit fmt FILE` lays them out.
+- A new built-in module goes in `registry/builtin.rs`, as IR: it never runs
+  code of its own, so the interpreter and the codegen both get it for free.
+  If it needs a function, put it in `lineit-rt`, used by both.
+- Comments say what and why, in plain words, as the code around them does.
 
 ## Documentation
 
-A change users can see updates, in the same pull request:
-
-- the README, for what it shows (keys, install, build, config)
-- `config.lua`, for a setting: it documents every one
-- `src/lineit.h`, for the module API
-- `docs/internals.typ`, for how lineit works inside
+What users see is in the README; how lineit works, in
+`docs/internals.typ`; what's planned, in `docs/roadmap.md`. A change that
+makes one of them wrong updates it in the same pull request.
 
 ## Versions
 
-There's one version, `LI_VERSION` in `src/lineit.h`: of lineit, its module
-API and its files. Something made with a version works with a lineit of the
-same major and a minor at least as new. A change that adds something to the
-API or the files bumps the minor; one that changes or removes something, the
-major (see Versions in `docs/internals.typ`).
-
-## Releases
-
-Maintainers release from main: bump `LI_VERSION` in a commit, push it, and
-run `scripts/release.sh`, which tags it and pushes the tag. CI then builds
-and publishes the release, only if every check passes, and refuses a tag
-that isn't `LI_VERSION`. Every push to main updates the nightly release.
-
-## Third-party code
-
-`thirdparty/` holds git submodules. Fix bugs in them upstream; to update
-one by hand:
-
-```sh
-git -C thirdparty/flag.h pull origin main
-git add thirdparty/flag.h
-```
-
-Dependabot also opens a pull request every week when they have new
-commits, and for the GitHub Actions, and CI tests it.
-
-## License
-
-By contributing you agree that your work is licensed under the GPLv3 or
-later, like the rest of the project.
+- The canvas format is `file::FORMAT`: a change that older lineits couldn't
+  read raises it.
+- The native module ABI is `lineit_rt::native::ABI`: a change to the C
+  functions `export_modules!` makes, or to how values are encoded, raises
+  it.
+- A release is a tag `vX.Y.Z` with the version in `Cargo.toml`; CI builds and
+  publishes it.

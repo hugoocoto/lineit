@@ -1,6 +1,0 @@
--- 5 squares, 6 links
-17 flow/entry: 
-18 flow/clock: 9
-19 io/display: 9
-20 compare/compare: false
-21 flow/ifelse: false

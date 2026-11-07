@@ -1,6 +1,6 @@
 # Weekly pull requests to update the GitHub Actions (their pinned commits),
-# the submodules in thirdparty/ and the Docker base image (its pinned
-# digest). CI tests them like any other pull request.
+# the crates and the Docker base image. CI tests them like any other pull
+# request.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -11,15 +11,15 @@ updates:
       actions:
         patterns: ["*"]
 
-  - package-ecosystem: gitsubmodule
+  - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     groups:
-      submodules:
+      crates:
         patterns: ["*"]
 
-  # The base image of the Dockerfile, pinned by digest
+  # The base image of the Dockerfile
   - package-ecosystem: docker
     directory: /
     schedule:

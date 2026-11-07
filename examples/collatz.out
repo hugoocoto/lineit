@@ -1,3 +1,4 @@
+27
 82
 41
 124
@@ -108,28 +109,4 @@
 8
 4
 2
-1
-111
--- 22 squares, 27 links
-31 flow/entry: 
-32 flow/while: 111
-33 compare/compare: false
-34 var/var: n = 1
-35 var/get: n = 1
-36 flow/ifelse: true
-37 math/modulo: 0
-38 compare/equal: true
-39 math/divide: 1
-40 var/var: n = 1
-41 var/set: n = 1
-42 math/multiply: 15
-43 math/add: 16
-44 var/var: n = 1
-45 var/set: n = 1
-46 var/var: steps = 111
-47 var/get: steps = 111
-48 math/add: 111
-49 var/var: steps = 111
-50 var/set: steps = 111
-51 io/print: 1
-52 io/print: 111
+1, after 111 steps

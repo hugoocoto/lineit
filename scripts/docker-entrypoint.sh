@@ -8,8 +8,8 @@
 # screen goes, the container stops.
 #
 # Everything lineit keeps is in /work, the folder mounted with -v: it's
-# HOME, so ~/.config/lineit, ~/.local/share/lineit (modules, compiled
-# programs) and ~/.cache/lineit too, and canvases are saved there.
+# HOME, so ~/.config/lineit, ~/.local/share/lineit (modules, packages) and
+# ~/.cache/lineit (builds) too, and canvases are saved there.
 set -eu
 
 # Started as root (the default), it goes on as the owner of /work, so what
@@ -23,7 +23,9 @@ fi
 [ -w /work ] || echo "lineit-docker: /work isn't writable by uid $(id -u): run with --user \"\$(id -u):\$(id -g)\"" >&2
 
 XDG_RUNTIME_DIR=/tmp/runtime-$(id -u)
-export HOME=/work DISPLAY=:0 XDG_RUNTIME_DIR
+# X11, drawn by the CPU (llvmpipe): there's no GPU in here
+export HOME=/work DISPLAY=:0 XDG_RUNTIME_DIR LIBGL_ALWAYS_SOFTWARE=1
+unset WAYLAND_DISPLAY
 [ -d "$XDG_RUNTIME_DIR" ] || mkdir -m700 "$XDG_RUNTIME_DIR"
 
 pids='' lineit=''

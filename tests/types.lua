@@ -1,55 +1,34 @@
--- types: custom types (modules/types/*.type.lua), checked by `make test`
--- (see tools/run_tests.c). Make and break, nested types, and records kept
--- in a variable and in a list.
-lineit_canvas = "0.0.1" -- the lineit that wrote it, see LI_VERSION
-
-squares = {
-        { id = 0, module = "types/make_point", x = 0, y = 0, inputs = { { name = "x", type = "float", value = "1.5" }, { name = "y", type = "float", value = "2" }, } },
-        { id = 1, module = "io/display", x = 200, y = -100 },
-        { id = 2, module = "types/break_point", x = 200, y = 0 },
-        { id = 3, module = "math/add", x = 350, y = 0 },
-        { id = 4, module = "io/display", x = 500, y = 0 },
-        -- a segment of two points, and its end point back
-        { id = 5, module = "types/make_point", x = 0, y = 200, inputs = { { name = "x", type = "float", value = "4" }, { name = "y", type = "float", value = "6" }, } },
-        { id = 6, module = "types/make_segment", x = 200, y = 200 },
-        { id = 7, module = "io/display", x = 350, y = 150 },
-        { id = 8, module = "types/break_segment", x = 350, y = 250 },
-        { id = 9, module = "types/break_point", x = 500, y = 250 },
-        { id = 10, module = "io/display", x = 650, y = 250 },
-        -- kept: in a variable and in a list, copies that outlive the squares' records
-        { id = 11, module = "flow/entry", x = 0, y = 400 },
-        { id = 12, module = "var/set", x = 150, y = 400 },
-        { id = 13, module = "list/push", x = 300, y = 400 },
-        { id = 14, module = "var/get", x = 150, y = 550 },
-        { id = 15, module = "io/display", x = 300, y = 550 },
-        { id = 16, module = "list/get", x = 450, y = 550, inputs = { { name = "index", type = "int", value = "0" }, } },
-        { id = 17, module = "types/break_segment", x = 600, y = 550 },
-        { id = 18, module = "io/display", x = 750, y = 550 },
-        { id = 19, module = "var/var", x = 0, y = 550, params = { { name = "name", value = "p" }, }, inputs = { { name = "type", value = "any" }, } },
-        { id = 20, module = "var/var", x = 300, y = 700, params = { { name = "name", value = "segments" }, }, inputs = { { name = "type", value = "list" }, } },
-}
-
-links = {
-        { from = 0, from_pin = 0, to = 1, to_pin = 0 },
-        { from = 0, from_pin = 0, to = 2, to_pin = 0 },
-        { from = 2, from_pin = 0, to = 3, to_pin = 0 },
-        { from = 2, from_pin = 1, to = 3, to_pin = 1 },
-        { from = 3, from_pin = 0, to = 4, to_pin = 0 },
-        { from = 0, from_pin = 0, to = 6, to_pin = 0 },
-        { from = 5, from_pin = 0, to = 6, to_pin = 1 },
-        { from = 6, from_pin = 0, to = 7, to_pin = 0 },
-        { from = 6, from_pin = 0, to = 8, to_pin = 0 },
-        { from = 8, from_pin = 1, to = 9, to_pin = 0 },
-        { from = 9, from_pin = 1, to = 10, to_pin = 0 },
-        { from = 11, from_pin = 0, to = 12, to_pin = 0 },
-        { from = 0, from_pin = 0, to = 12, to_pin = 2 },
-        { from = 19, from_pin = 0, to = 12, to_pin = 1 },
-        { from = 12, from_pin = 0, to = 13, to_pin = 0 },
-        { from = 20, from_pin = 0, to = 13, to_pin = 1 },
-        { from = 6, from_pin = 0, to = 13, to_pin = 2 },
-        { from = 19, from_pin = 0, to = 14, to_pin = 0 },
-        { from = 20, from_pin = 0, to = 16, to_pin = 0 },
-        { from = 14, from_pin = 0, to = 15, to_pin = 0 },
-        { from = 16, from_pin = 0, to = 17, to_pin = 0 },
-        { from = 17, from_pin = 1, to = 18, to_pin = 0 },
+-- Inference: 2 + 2.5 is a float (the int widens), 7 / 2 an int, and a
+-- convert, a format, a concat of anything, and comparing strings.
+return {
+        lineit = 1,
+        squares = {
+                { id = 1, module = "flow/entry" },
+                { id = 2, module = "flow/sequence", params = { count = "6" } },
+                { id = 3, module = "math/add", fields = { a = "2", b = "2.5" } },
+                { id = 4, module = "io/print" },
+                { id = 5, module = "math/divide", fields = { a = "7", b = "2" } },
+                { id = 6, module = "io/print" },
+                { id = 7, module = "value/convert", params = { to = "int" }, fields = { value = " 42 " } },
+                { id = 8, module = "math/multiply", fields = { b = "2" } },
+                { id = 9, module = "io/print" },
+                { id = 10, module = "string/format", params = { format = "{} is {}, {{ok}}" } },
+                { id = 11, module = "value/constant", params = { type = "bool", value = "true" } },
+                { id = 12, module = "io/print" },
+                { id = 13, module = "string/concat", fields = { a = "x = " } },
+                { id = 14, module = "io/print" },
+                { id = 15, module = "compare/less", fields = { a = "apple", b = "banana" } },
+                { id = 16, module = "io/print" },
+                { id = 17, module = "math/divide", fields = { a = "1.0", b = "0" } },
+                { id = 18, module = "io/print" },
+        },
+        links = {
+                { 1, "then", 2, "tick" },
+                { 2, "1", 4, "tick" }, { 3, "result", 4, "value" },
+                { 2, "2", 6, "tick" }, { 5, "result", 6, "value" },
+                { 2, "3", 9, "tick" }, { 7, "value", 8, "a" }, { 8, "result", 9, "value" },
+                { 2, "4", 12, "tick" }, { 3, "result", 10, "1" }, { 11, "value", 10, "2" }, { 10, "text", 12, "value" },
+                { 2, "5", 14, "tick" }, { 5, "result", 13, "b" }, { 13, "result", 14, "value" },
+                { 2, "6", 16, "tick" }, { 15, "result", 16, "value" },
+        },
 }

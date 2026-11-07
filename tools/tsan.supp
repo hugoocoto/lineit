@@ -1,2 +1,0 @@
-# ThreadSanitizer suppressions for `make test-tsan`. The test tool opens no
-# window with it (see tools/run_tests.c), so there's nothing here yet.

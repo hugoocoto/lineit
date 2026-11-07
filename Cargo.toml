@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/lineit-rt", "crates/lineit-core", "crates/lineit"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/hugoocoto/lineit"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+[workspace.lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+explicit_counter_loop = "allow"
+wrong_self_convention = "allow"

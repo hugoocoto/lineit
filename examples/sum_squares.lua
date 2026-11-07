@@ -1,39 +1,26 @@
--- sum_squares
--- Sum of the squares of 0..9 (285), with a variable.
--- var/var declares sum, an int that starts as 0 when you press Run.
--- flow/loop runs index from 0 to 9 and does sum = sum + index * index
--- (var/get, math/multiply, math/add, var/set): get and set read and
--- change the variable wired to them. The two var/var are the same
--- variable, sum: copies, so the wires stay short. When the loop is
--- done, io/print shows sum.
---
--- Open it with: ./lineit -f examples/sum_squares.lua, then press Run.
-lineit_canvas = "0.0.2" -- the lineit that wrote it, see LI_VERSION
-
-camera = { x = 524.050781, y = 109.5, offset_x = 640, offset_y = 344, zoom = 0.799001276 }
-
-squares = {
-        { id = 22, module = "flow/entry", x = -32, y = -35 },
-        { id = 23, module = "flow/loop", x = 133.109375, y = -71, inputs = { { name = "from", type = "int", value = "0" }, { name = "to", type = "int", value = "10" }, } },
-        { id = 24, module = "math/multiply", x = 347.6875, y = 148, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 25, module = "var/var", x = 344.898438, y = 304, params = { { name = "name", value = "sum" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 26, module = "var/get", x = 537.6875, y = 340, inputs = { { name = "var", type = "ref", value = "" }, } },
-        { id = 27, module = "math/add", x = 567.84375, y = 178, inputs = { { name = "a", type = "int", value = "0" }, { name = "b", type = "int", value = "0" }, } },
-        { id = 28, module = "var/var", x = 553.898438, y = -251, params = { { name = "name", value = "sum" }, { name = "global", value = "false" }, }, inputs = { { name = "type", value = "int" }, { name = "start", type = "int", value = "0" }, } },
-        { id = 29, module = "var/set", x = 741.109436, y = -59, inputs = { { name = "var", type = "ref", value = "" }, { name = "value", type = "int", value = "0" }, } },
-        { id = 30, module = "io/print", x = 933.898499, y = 178, inputs = { { name = "value", type = "string", value = "" }, } },
-}
-
-links = {
-        { from = 22, from_pin = 0, to = 23, to_pin = 0 },
-        { from = 23, from_pin = 1, to = 24, to_pin = 0 },
-        { from = 23, from_pin = 1, to = 24, to_pin = 1 },
-        { from = 25, from_pin = 0, to = 26, to_pin = 0 },
-        { from = 26, from_pin = 0, to = 27, to_pin = 0 },
-        { from = 24, from_pin = 0, to = 27, to_pin = 1 },
-        { from = 23, from_pin = 0, to = 29, to_pin = 0 },
-        { from = 28, from_pin = 0, to = 29, to_pin = 1 },
-        { from = 27, from_pin = 0, to = 29, to_pin = 2 },
-        { from = 23, from_pin = 2, to = 30, to_pin = 0 },
-        { from = 26, from_pin = 0, to = 30, to_pin = 1 },
+-- lineit canvas
+return {
+        lineit = 1,
+        doc = "The sum of the squares of 0 to 9. var/var declares `sum`, an int that starts at 0; the loop sets it to sum + index × index, and when it's done the print shows it.",
+        camera = { x = 0, y = 0, zoom = 1 },
+        squares = {
+                { id = 1, module = "flow/entry", x = 0, y = 0 },
+                { id = 2, module = "var/var", x = 0, y = 106, params = { initial = "0", name = "sum", type = "int" } },
+                { id = 3, module = "flow/loop", x = 280, y = 0, fields = { from = "0", to = "10" } },
+                { id = 4, module = "math/multiply", x = 560, y = 0 },
+                { id = 5, module = "math/add", x = 840, y = 0 },
+                { id = 6, module = "var/set", x = 1120, y = 0, params = { name = "sum" } },
+                { id = 7, module = "io/print", x = 560, y = 128 },
+        },
+        links = {
+                { 1, "then", 3, "tick" },
+                { 3, "body", 6, "tick" },
+                { 3, "index", 4, "a" },
+                { 3, "index", 4, "b" },
+                { 2, "value", 5, "a" },
+                { 4, "result", 5, "b" },
+                { 5, "result", 6, "value" },
+                { 3, "done", 7, "tick" },
+                { 2, "value", 7, "value" },
+        },
 }
