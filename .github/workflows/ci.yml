@@ -121,6 +121,8 @@ jobs:
         shell: bash
         run: |
           set -eux
+          # cargo test builds the binary's tests, not the binary
+          cargo build --locked -p lineit
           lineit=$GITHUB_WORKSPACE/target/debug/lineit
           [ "$("$lineit" --version | tr -d '\r')" = "lineit $(scripts/version.sh)" ]
           "$lineit" run examples/hello.lua | tr -d '\r' | grep -x "Hello, world!"

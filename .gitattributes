@@ -1,0 +1,3 @@
+# LF everywhere, Windows checkouts too: the canvas tests compare `.out` files
+# byte for byte with what the programs print
+* text=auto eol=lf
