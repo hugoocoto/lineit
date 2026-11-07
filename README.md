@@ -111,7 +111,7 @@ typed and the command line. `:help` lists every key.
 | dd, yy, p, P, u, Ctrl+R      | Delete, copy, paste, undo, redo                                 |
 | v, V, then h j k l d y       | Select by moving, or the whole chain, and act on it             |
 | H J K L                      | Move the selected squares a grid step                           |
-| c, then 1-9, then h j k l, 1-9 | Wire: pick a pin of this square, go to the other, pick its pin; `x` removes the wires of a pin |
+| f, then 1-9, then h j k l, 1-9 | Wire: pick a pin of this square, go to the other, pick its pin; `x` removes the wires of a pin |
 | gd, gt, gT                   | Open the subgraph, next / previous tab                          |
 | Ctrl+E/Y/D/U, zh zl zz zf, + - = | Pan, center on the focus, fit everything, zoom              |
 | `:`                          | Commands: `:w` `:q` `:e` `:tabnew` `:run` `:step` `:compile` `:add math/add` `:set key=value` `:settings` `:subgraph` `:help` (Tab completes) |

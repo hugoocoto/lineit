@@ -129,6 +129,7 @@ impl App {
     fn vim_gate(&self, ctx: &egui::Context) -> bool {
         self.search.is_none()
             && self.prompt.is_none()
+            && self.confirm.is_none()
             && self.tabs[self.active].2.edit.is_none()
             && ctx.memory(|m| m.focused().is_none())
     }
@@ -159,6 +160,7 @@ impl App {
         if !on {
             self.vim_held.clear();
             if self.vim.mode != Mode::Normal || self.help {
+                self.help_offset = 0.0;
                 self.vim.reset();
                 self.help = false;
             }
@@ -210,9 +212,22 @@ impl App {
 
     fn vim_input(&mut self, k: Input, ctx: &egui::Context) {
         if self.help {
-            if matches!(k, Input::Esc | Input::Enter | Input::Char('q')) {
-                self.help = false;
+            // a line is about 18 points; a page, most of the window
+            let (line, half) = (18.0, 260.0);
+            let g = std::mem::take(&mut self.help_g);
+            match k {
+                Input::Esc | Input::Enter | Input::Char('q') => self.help = false,
+                Input::Char('j') | Input::Down | Input::Ctrl('e') | Input::Ctrl('n') => self.help_offset += line,
+                Input::Char('k') | Input::Up | Input::Ctrl('y') | Input::Ctrl('p') => self.help_offset -= line,
+                Input::Char('d') | Input::Ctrl('d') | Input::Char(' ') => self.help_offset += half,
+                Input::Char('u') | Input::Ctrl('u') => self.help_offset -= half,
+                Input::Char('g') if g => self.help_offset = 0.0,
+                Input::Char('g') => self.help_g = true,
+                // the window clamps it
+                Input::Char('G') => self.help_offset = 1.0e6,
+                _ => {}
             }
+            self.help_offset = self.help_offset.max(0.0);
             return;
         }
         if self.tab().settings {
@@ -834,6 +849,7 @@ impl App {
             return;
         }
         if self.tabs.len() == 1 {
+            self.quit_ok = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else {
             self.close_tab(self.active);
@@ -875,6 +891,7 @@ impl App {
                         true,
                     );
                 } else {
+                    self.quit_ok = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -967,7 +984,10 @@ impl App {
             Ex::OpenSubgraph => self.vim_open_subgraph(),
             Ex::Undo => self.vim_act(Act::Undo(1), ctx),
             Ex::Redo => self.vim_act(Act::Redo(1), ctx),
-            Ex::Help => self.help = true,
+            Ex::Help => {
+                self.help = true;
+                self.help_offset = 0.0;
+            }
         }
     }
 
@@ -1108,10 +1128,15 @@ impl App {
             .resizable(true)
             .default_size([640.0, 560.0])
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(egui::RichText::new(vim::HELP).monospace());
-                });
-                ui.weak("Esc, q or Enter closes");
+                let out = egui::ScrollArea::vertical()
+                    .vertical_scroll_offset(self.help_offset)
+                    .max_height(ui.available_height() - 24.0)
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(vim::HELP).monospace());
+                    });
+                // what the window made of it (it clamps), and the mouse's scrolling
+                self.help_offset = out.state.clamped_offset().y;
+                ui.weak("j k scroll, d u half pages, gg G, Esc or q closes");
             });
         if !open {
             self.help = false;

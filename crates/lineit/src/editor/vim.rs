@@ -285,7 +285,7 @@ impl Vim {
             Input::Char('P') => self.done(vec![Act::Paste(false)]),
             Input::Char('u') => self.done(vec![Act::Undo(n)]),
             Input::Ctrl('r') => self.done(vec![Act::Redo(n)]),
-            Input::Char('c') => {
+            Input::Char('f') => {
                 self.count = None;
                 self.mode = Mode::Pin;
                 vec![Act::PinStart]
@@ -689,7 +689,7 @@ NORMAL (the focused square has a ring; counts work: 3j)
   dd  x              delete          yy  copy         p / P  paste right / below
   u  Ctrl+R          undo / redo
   v / V              Visual: extend by moving / select the whole chain
-  c                  Pin: wire from the keyboard (see below)
+  f                  Pin: wire from the keyboard (see below)
   gd                 open the subgraph this square is
   gt  gT  3gt        next / previous / third tab
   Ctrl+E/Y  Ctrl+D/U pan down / up; half a page down / up
@@ -699,10 +699,12 @@ NORMAL (the focused square has a ring; counts work: 3j)
 
 VISUAL   moving extends the selection (back shrinks it); d x y H J K L; Esc
 
-PIN      c, then 1-9 picks a pin of the square (Tab cycles, Enter takes the
+PIN      f, then 1-9 picks a pin of the square (Tab cycles, Enter takes the
          marked one); h j k l w b go to the other square; its pins are
          numbered the same way: the digit makes the wire.
          x removes the wires of the pin picked. Esc cancels.
+
+HELP     j k scroll, d u half pages (Space, Ctrl+D/U too), gg G, Esc q closes
 
 SETTINGS TAB   j k move, Space/Enter flip, h l change numbers and themes,
          i types in a text, r resets, / searches, ]] [[ sections, gg G
@@ -781,7 +783,7 @@ mod tests {
         assert_eq!(v.key(Input::Esc), vec![Act::VisualOff]);
         assert_eq!(v.mode, Mode::Normal);
         // Pin
-        assert_eq!(keys(&mut v, "c"), vec![Act::PinStart]);
+        assert_eq!(keys(&mut v, "f"), vec![Act::PinStart]);
         assert_eq!(v.mode, Mode::Pin);
         assert_eq!(v.key(Input::Esc), vec![Act::PinCancel]);
         assert_eq!(v.mode, Mode::Normal);
@@ -815,7 +817,7 @@ mod tests {
     #[test]
     fn pin_sequence() {
         let mut v = Vim::new();
-        assert_eq!(keys(&mut v, "c"), vec![Act::PinStart]);
+        assert_eq!(keys(&mut v, "f"), vec![Act::PinStart]);
         assert_eq!(keys(&mut v, "2"), vec![Act::PinPick(1)]);
         assert_eq!(keys(&mut v, "l"), vec![Act::Move(Dir::Right, 1)]);
         assert_eq!(keys(&mut v, "w"), vec![Act::Follow(true, 1)]);

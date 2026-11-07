@@ -44,6 +44,15 @@ enum PromptKind {
     SubgraphName,
 }
 
+/// What a close is waiting to be confirmed for, when there are changes.
+#[derive(Clone, Copy, PartialEq)]
+enum Confirm {
+    /// The tab with this id.
+    Tab(u64),
+    /// The window: every tab with changes.
+    Window,
+}
+
 struct Prompt {
     kind: PromptKind,
     title: String,
@@ -110,8 +119,11 @@ pub struct App {
     /// What `yy` and `dd` took, as a canvas, for `p`: egui can't read the
     /// clipboard on its own.
     register: Option<String>,
-    /// `:help` is open.
+    /// `:help` is open, scrolled this far down; the bool is a `g` waiting
+    /// for its second key.
     help: bool,
+    help_offset: f32,
+    help_g: bool,
     /// The tab the vim keys were last for.
     vim_tab: u64,
     /// What `/` looked for last, for `n`.
@@ -123,6 +135,10 @@ pub struct App {
     /// Tab and arrow keys taken from the input before egui could use them
     /// to move its focus (see `vim_hook`).
     vim_held: Vec<egui::Event>,
+    /// A close asked for, with changes in what it closes.
+    confirm: Option<Confirm>,
+    /// The window may close: it was asked for, and confirmed or clean.
+    quit_ok: bool,
 }
 
 /// The newest change in DIR and its folders.
@@ -184,11 +200,15 @@ impl App {
             vim: Vim::new(),
             register: None,
             help: false,
+            help_offset: 0.0,
+            help_g: false,
             vim_tab: 0,
             last_search: String::new(),
             settings_sel: 0,
             settings_ops: Vec::new(),
             vim_held: Vec::new(),
+            confirm: None,
+            quit_ok: false,
             exe: Exe::current(),
             ready: Ready::from_env(),
             single: super::single::listen(cc.egui_ctx.clone()),
@@ -265,6 +285,7 @@ impl App {
             Ok(()) => {
                 // the runs stop as their tabs go
                 self.tabs.clear();
+                self.quit_ok = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Err(e) => {
@@ -454,6 +475,107 @@ impl App {
             }
         }
         let _ = ctx;
+    }
+
+    /// Closes tab I, after asking if it has changes.
+    fn ask_close(&mut self, i: usize) {
+        if self.tabs[i].1.dirty() {
+            self.active = i;
+            self.confirm = Some(Confirm::Tab(self.tabs[i].0));
+        } else {
+            self.close_tab(i);
+        }
+    }
+
+    /// Closes the window, after asking if any tab has changes.
+    fn ask_quit(&mut self, ctx: &egui::Context) {
+        if self.tabs.iter().any(|(_, t, _)| t.dirty()) {
+            self.confirm = Some(Confirm::Window);
+        } else {
+            self.quit_ok = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// The popup for a close with changes: Save (Enter), Discard (D) or
+    /// Cancel (Esc, which `shortcuts` takes).
+    fn confirm_ui(&mut self, ctx: &egui::Context) {
+        let Some(what) = self.confirm else { return };
+        let dirty: Vec<String> = match what {
+            Confirm::Tab(id) => self.tabs.iter().filter(|(i, ..)| *i == id).map(|(_, t, _)| t.title()).collect(),
+            Confirm::Window => self.tabs.iter().filter(|(_, t, _)| t.dirty()).map(|(_, t, _)| t.title()).collect(),
+        };
+        if dirty.is_empty() {
+            self.confirm = None;
+            return;
+        }
+        let (mut save, mut discard, mut cancel) = (false, false, false);
+        egui::Modal::new(egui::Id::unique("lineit confirm")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(egui::RichText::new("Unsaved changes").strong());
+            for t in &dirty {
+                ui.label(t.trim_end_matches(" •"));
+            }
+            ui.label("Save them before closing?");
+            ui.horizontal(|ui| {
+                save = ui.button("Save (Enter)").clicked();
+                discard = ui.button("Discard (D)").clicked();
+                cancel = ui.button("Cancel (Esc)").clicked();
+            });
+        });
+        let none = Modifiers::NONE;
+        ctx.input_mut(|i| {
+            save |= i.consume_key(none, Key::Enter);
+            discard |= i.consume_key(none, Key::D);
+        });
+        if cancel {
+            self.confirm = None;
+        } else if discard {
+            self.confirm = None;
+            self.quit_confirmed(what, ctx, false);
+        } else if save {
+            self.confirm = None;
+            self.quit_confirmed(what, ctx, true);
+        }
+    }
+
+    /// The close in WHAT goes ahead, after saving the tabs with changes if SAVE.
+    /// A tab with no file yet asks for one instead, and the close waits.
+    fn quit_confirmed(&mut self, what: Confirm, ctx: &egui::Context, save: bool) {
+        if save {
+            for i in 0..self.tabs.len() {
+                let (id, t, _) = &mut self.tabs[i];
+                if !t.dirty() || (what != Confirm::Window && what != Confirm::Tab(*id)) {
+                    continue;
+                }
+                match t.path.clone() {
+                    Some(p) => {
+                        if let Err(e) = t.save_to(&p) {
+                            self.active = i;
+                            self.status(&e, true);
+                            return;
+                        }
+                    }
+                    None => {
+                        self.active = i;
+                        self.ask(PromptKind::SaveAs, ctx);
+                        self.status("save it, then close again", false);
+                        return;
+                    }
+                }
+            }
+        }
+        match what {
+            Confirm::Tab(id) => {
+                if let Some(i) = self.tabs.iter().position(|(t, ..)| *t == id) {
+                    self.close_tab(i);
+                }
+            }
+            Confirm::Window => {
+                self.quit_ok = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
     }
 
     fn close_tab(&mut self, i: usize) {
@@ -715,7 +837,7 @@ impl App {
             self.add_tab(t);
         }
         if key(cmd, Key::W) {
-            self.close_tab(self.active);
+            self.ask_close(self.active);
         }
         if key(cmd_shift, Key::Tab) || key(cmd, Key::PageUp) {
             self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
@@ -737,7 +859,11 @@ impl App {
         if self.tab().settings && !self.settings_query.is_empty() && key(Modifiers::NONE, Key::Escape) {
             self.settings_query.clear();
         }
-        if key(Modifiers::NONE, Key::Escape) && self.search.take().is_none() && self.prompt.take().is_none() {
+        if key(Modifiers::NONE, Key::Escape)
+            && self.search.take().is_none()
+            && self.prompt.take().is_none()
+            && self.confirm.take().is_none()
+        {
             self.tab().selected.clear();
             self.tab().selected_links.clear();
         }
@@ -1230,7 +1356,7 @@ impl App {
                         }
                         self.tab_in_view = Some(self.tabs[self.active].0);
                         if let Some(i) = close {
-                            self.close_tab(i);
+                            self.ask_close(i);
                         }
                     });
                 });
@@ -1361,7 +1487,7 @@ impl App {
                             ui.close();
                         }
                         if ui.button("Close tab (Ctrl+W)").clicked() {
-                            self.close_tab(self.active);
+                            self.ask_close(self.active);
                             ui.close();
                         }
                         ui.separator();
@@ -1376,7 +1502,7 @@ impl App {
                         }
                         ui.separator();
                         if ui.button("Quit").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            self.ask_quit(&ctx);
                         }
                     });
                     ui.toggle_value(&mut self.show_output, "Output");
@@ -1666,6 +1792,12 @@ impl eframe::App for App {
             let (_, tab, state) = &mut self.tabs[self.active];
             canvas::edit_keys(&ctx, tab, &reg, state);
         }
+        // the window's own close (the X, Alt+F4): ask first if there are changes
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok && self.tabs.iter().any(|(_, t, _)| t.dirty())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Confirm::Window);
+        }
         self.vim_keys(&ctx);
         self.shortcuts(&ctx);
 
@@ -1824,6 +1956,7 @@ impl eframe::App for App {
         }
         self.search_ui(&ctx);
         self.prompt_ui(&ctx);
+        self.confirm_ui(&ctx);
         self.vim_help_ui(&ctx);
 
         let settling = ctx.input(|i| i.pointer.any_down()) || ctx.memory(|m| m.focused().is_some());
