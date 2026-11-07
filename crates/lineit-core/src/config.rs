@@ -67,6 +67,12 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: Kind::Font,
         default: || SValue::Text(String::new()),
     },
+    SettingDef {
+        key: "editor.vim_mode",
+        doc: "Vim keys: move over the squares with h j k l, : for commands. :help lists them",
+        kind: Kind::Bool,
+        default: || SValue::Bool(false),
+    },
     SettingDef { key: "canvas.grid", doc: "Draw the grid", kind: Kind::Bool, default: || SValue::Bool(true) },
     SettingDef {
         key: "canvas.grid_step",

@@ -271,7 +271,6 @@ release workflow (archives for 3 OSes, AppImage, Docker with noVNC),
 - Branches of compiled programs on a thread pool, not a thread per branch
   of each fan-out
 - Opening a file in a running editor's new tab (`lineit -t`)
-- Vim mode
 - Real threads in the interpreter
 - Editing while running applied to the running program (today the program
   goes on with the canvas it started with)

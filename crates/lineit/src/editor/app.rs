@@ -17,6 +17,9 @@ use super::runner::{Cmd, Runner, State};
 use super::session::{self, Exe, Ready};
 use super::tab::Tab;
 use super::theme::{self, Theme};
+use super::vim::{SAct, Vim};
+
+mod vimctl;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -102,6 +105,24 @@ pub struct App {
     preview_job: Option<PreviewJob>,
     /// Per tab, the generation its previews are for.
     previewed: HashMap<u64, u64>,
+    /// Vim mode: the keys' state (see vim.rs and app/vimctl.rs).
+    vim: Vim,
+    /// What `yy` and `dd` took, as a canvas, for `p`: egui can't read the
+    /// clipboard on its own.
+    register: Option<String>,
+    /// `:help` is open.
+    help: bool,
+    /// The tab the vim keys were last for.
+    vim_tab: u64,
+    /// What `/` looked for last, for `n`.
+    last_search: String,
+    /// The setting the Settings tab's cursor is on, and what the keys asked
+    /// of it since the last frame.
+    settings_sel: usize,
+    settings_ops: Vec<SAct>,
+    /// Tab and arrow keys taken from the input before egui could use them
+    /// to move its focus (see `vim_hook`).
+    vim_held: Vec<egui::Event>,
 }
 
 /// The newest change in DIR and its folders.
@@ -160,6 +181,14 @@ impl App {
             subgraph_of: BTreeSet::new(),
             preview_job: None,
             previewed: HashMap::new(),
+            vim: Vim::new(),
+            register: None,
+            help: false,
+            vim_tab: 0,
+            last_search: String::new(),
+            settings_sel: 0,
+            settings_ops: Vec::new(),
+            vim_held: Vec::new(),
             exe: Exe::current(),
             ready: Ready::from_env(),
             single: super::single::listen(cc.egui_ctx.clone()),
@@ -619,6 +648,7 @@ impl App {
     fn add_square(&mut self, path: &str, at: Pos2, pending: Option<Pending>) {
         let reg = self.reg.clone();
         let step = self.cfg.num("canvas.grid_step") as f32;
+        let vim = self.vim_on();
         let tab = self.tab();
         let id = tab.canvas.next_id();
         let (x, y) = ((at.x / step).round() * step, (at.y / step).round() * step);
@@ -651,6 +681,12 @@ impl App {
         let reg = self.reg.clone();
         let (_, tab, state) = &mut self.tabs[self.active];
         tab.update(&reg, true, true);
+        state.vim.reveal = Some(id);
+        if vim && tab.canvas.camera.zoom < canvas::EDIT_ZOOM {
+            // too small for text boxes: the new square couldn't be typed in
+            let cam = &mut tab.canvas.camera;
+            (cam.zoom, cam.x, cam.y) = (canvas::EDIT_ZOOM, x + 100.0, y + 40.0);
+        }
         canvas::start_first(tab, &reg, state, id);
     }
 
@@ -889,7 +925,8 @@ impl App {
 
     /// Shows the Settings tab, opened if it isn't.
     fn open_settings(&mut self) {
-        self.settings_focus = true;
+        // vim mode starts on the rows: / goes to the search
+        self.settings_focus = !self.vim_on();
         match self.tabs.iter().position(|(_, t, _)| t.settings) {
             Some(i) => self.active = i,
             None => {
@@ -964,6 +1001,9 @@ impl App {
                 sections.push(sec);
             }
         }
+        // vim mode: the row the cursor is on, and what the keys asked of it
+        let vim = self.vim_on();
+        let (sel, op, moved) = if vim { self.settings_cursor(&shown, &sections) } else { (usize::MAX, None, false) };
         // as wide as its widest entry, which never wraps, in whatever font
         let entries: Vec<(&'static str, String)> = sections
             .iter()
@@ -992,23 +1032,48 @@ impl App {
                     }
                     egui::Grid::new(("settings", *sec)).num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
                         for d in shown.iter().filter(|d| section(d.key) == *sec) {
-                            ui.vertical(|ui| {
+                            let active = vim && shown.iter().position(|x| x.key == d.key) == Some(sel);
+                            let cell = ui.vertical(|ui| {
                                 // wide enough for a description on a line or two
                                 ui.set_width(360.0);
                                 ui.label(pretty(d.key));
                                 ui.label(egui::RichText::new(d.doc).color(theme.dim).small());
                             });
+                            if active {
+                                let r = cell.response.rect.expand(4.0);
+                                ui.painter().rect_stroke(
+                                    r,
+                                    0.0,
+                                    egui::Stroke::new(2.0, theme.accent),
+                                    egui::StrokeKind::Outside,
+                                );
+                                if moved {
+                                    ui.scroll_to_rect(r.expand(40.0), None);
+                                }
+                            }
+                            let op = if active { op.clone() } else { None };
                             let v = self.cfg.get(d.key);
                             let new = match (&d.kind, v.clone()) {
                                 (SKind::Bool, SValue::Bool(mut b)) => {
+                                    if matches!(op, Some(SAct::Toggle | SAct::Activate | SAct::Change(_))) {
+                                        b = !b;
+                                    }
                                     ui.checkbox(&mut b, "");
                                     SValue::Bool(b)
                                 }
                                 (SKind::Num { min, max, step }, SValue::Num(mut n)) => {
+                                    if let Some(SAct::Change(d)) = op {
+                                        n = ((n + d as f64 * step).clamp(*min, *max) * 1e6).round() / 1e6;
+                                    }
                                     ui.add(egui::DragValue::new(&mut n).range(*min..=*max).speed(*step));
                                     SValue::Num(n)
                                 }
                                 (SKind::Theme, SValue::Text(mut t)) => {
+                                    if let Some(SAct::Change(d)) = op
+                                        && let Some(i) = themes.iter().position(|x| *x == t)
+                                    {
+                                        t = themes[(i as i32 + d).rem_euclid(themes.len() as i32) as usize].clone();
+                                    }
                                     egui::ComboBox::from_id_salt("theme").selected_text(&t).show_ui(ui, |ui| {
                                         for name in &themes {
                                             ui.selectable_value(&mut t, name.clone(), name);
@@ -1021,11 +1086,14 @@ impl App {
                                     ui.vertical(|ui| {
                                         // a grid cell shrinks to what's in it: this one is wide
                                         ui.set_min_width(420.0);
-                                        ui.add(
+                                        let r = ui.add(
                                             egui::TextEdit::singleline(&mut t)
                                                 .hint_text("a font's name, or a .ttf/.otf file")
                                                 .desired_width(420.0),
                                         );
+                                        if matches!(op, Some(SAct::Activate | SAct::Toggle)) {
+                                            r.request_focus();
+                                        }
                                         if !t.trim().is_empty() && lineit_core::fonts::find(&t).is_none() {
                                             ui.colored_label(
                                                 theme.error,
@@ -1049,7 +1117,10 @@ impl App {
                                     SValue::Text(t)
                                 }
                                 (_, SValue::Text(mut t)) => {
-                                    ui.add_sized([420.0, 22.0], egui::TextEdit::singleline(&mut t));
+                                    let r = ui.add_sized([420.0, 22.0], egui::TextEdit::singleline(&mut t));
+                                    if matches!(op, Some(SAct::Activate | SAct::Toggle)) {
+                                        r.request_focus();
+                                    }
                                     SValue::Text(t)
                                 }
                                 (_, v) => {
@@ -1059,7 +1130,9 @@ impl App {
                             };
                             let default = (d.default)();
                             let reset = ui.add_enabled(new != default, egui::Button::new("Reset"));
-                            if reset.on_hover_text("Back to the default").clicked() {
+                            if reset.on_hover_text("Back to the default").clicked()
+                                || (active && matches!(op, Some(SAct::Reset)) && new != default)
+                            {
                                 self.cfg.set(d.key, default);
                                 changed = true;
                             } else if new != v {
@@ -1077,11 +1150,7 @@ impl App {
             });
         });
         if changed {
-            if let Err(e) = self.cfg.save() {
-                self.status(&e, true);
-            }
-            self.theme = Theme::from_config(&self.cfg);
-            self.apply_style(&ctx);
+            self.apply_cfg(&ctx);
         }
     }
 
@@ -1226,6 +1295,7 @@ impl App {
                     }
                 });
                 ui.separator();
+                self.vim_status_ui(ui);
                 let compiling = self.compiling.is_some();
                 let theme = self.theme.clone();
                 let tab = self.tab();
@@ -1518,6 +1588,7 @@ fn section(key: &str) -> &'static str {
         Some("save") => "Saving",
         Some("output") => "Output",
         Some("window") => "Window",
+        Some("editor") => "Editor",
         _ => "General",
     }
 }
@@ -1583,6 +1654,10 @@ fn complete(text: &str, entries: &[String]) -> Option<String> {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.vim_hook(ctx, raw);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll();
@@ -1591,6 +1666,7 @@ impl eframe::App for App {
             let (_, tab, state) = &mut self.tabs[self.active];
             canvas::edit_keys(&ctx, tab, &reg, state);
         }
+        self.vim_keys(&ctx);
         self.shortcuts(&ctx);
 
         self.ready.frame();
@@ -1748,6 +1824,7 @@ impl eframe::App for App {
         }
         self.search_ui(&ctx);
         self.prompt_ui(&ctx);
+        self.vim_help_ui(&ctx);
 
         let settling = ctx.input(|i| i.pointer.any_down()) || ctx.memory(|m| m.focused().is_some());
         let reg = self.reg.clone();

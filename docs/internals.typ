@@ -299,3 +299,15 @@ being dragged or typed, and the canvas is lowered again when it changed.
 Previews of the images pure squares make are worked out on a thread from the
 expressions lowering hands out (`Lowered::previews`), without running
 anything.
+
+Vim mode is three files. `editor/vim.rs` is a state machine with no window:
+keys (`Input`) in, actions (`Act`) out, and the parser of `:` commands; its
+modes are Normal, Visual, Pin (wiring from the keyboard) and the command
+line, and typing in a field is egui's text box, as without vim mode.
+`editor/nav.rs` works out where an action goes (the square nearest in a
+direction, along the wires, in order, matching a search; where the camera
+has to be to show one) from the rectangles `canvas.rs` drew the frame
+before, which it keeps in `CanvasState`. `editor/app/vimctl.rs` turns egui's
+events into `Input`s, before the shortcuts read them, and does what the
+actions say with the tabs, the search, the prompts and the settings. The
+mouse and the keyboard make wires by the same rule (`canvas::can_wire`).

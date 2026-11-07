@@ -92,6 +92,36 @@ outline. What's wrong with a square is written under it, in red.
 The bar at the bottom runs, steps, compiles (More) and stops, and has
 **Output** (what the program prints) and **File**.
 
+## Vim mode
+
+Everything above can be done from the keyboard. Turn on **Editor > Vim
+mode** in the settings (or `:set vim_mode` in a canvas, `editor = {
+vim_mode = true }` in `config.lua`) and the keys are vim's. The square with
+a ring is the one they act on; the bottom bar shows the mode, what's half
+typed and the command line. `:help` lists every key.
+
+| Key                          | Does                                                            |
+|------------------------------|-----------------------------------------------------------------|
+| h j k l, arrows              | Go to the nearest square left, down, up, right (`3j` counts)    |
+| w, b, `;`, `,`               | Downstream, upstream, next / previous square of the same source |
+| 0, $, gg, G, Tab             | Start / end of the chain, first / last square, next square      |
+| `/text`, n, N                | Find squares by module, field value or note                     |
+| i, Enter, `3i`               | Type in a field (Tab for the next one, Esc or Enter to finish)  |
+| a, o, O                      | Add a square (module search): free, after, or before this one   |
+| dd, yy, p, P, u, Ctrl+R      | Delete, copy, paste, undo, redo                                 |
+| v, V, then h j k l d y       | Select by moving, or the whole chain, and act on it             |
+| H J K L                      | Move the selected squares a grid step                           |
+| c, then 1-9, then h j k l, 1-9 | Wire: pick a pin of this square, go to the other, pick its pin; `x` removes the wires of a pin |
+| gd, gt, gT                   | Open the subgraph, next / previous tab                          |
+| Ctrl+E/Y/D/U, zh zl zz zf, + - = | Pan, center on the focus, fit everything, zoom              |
+| `:`                          | Commands: `:w` `:q` `:e` `:tabnew` `:run` `:step` `:compile` `:add math/add` `:set key=value` `:settings` `:subgraph` `:help` (Tab completes) |
+
+`:q` refuses to close a tab with changes (`:q!` does it anyway); on the last
+tab it quits. Ctrl+D and Ctrl+R are vim's here (duplicate is `yy` `p`, or
+`:dup`); every other Ctrl shortcut above keeps working, and so does the
+mouse. In the Settings tab, j and k move between the settings, Space flips
+one, h and l change it, `i` types in a text, `r` resets, `/` searches.
+
 # The language
 
 ![FizzBuzz in the lineit editor: a loop sends each index through three

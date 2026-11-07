@@ -20,6 +20,8 @@ use lineit_rt::{Type, Value};
 use super::tab::Tab;
 use super::theme::Theme;
 
+/// The least zoom at which a field is a text box that can be typed in.
+pub const EDIT_ZOOM: f32 = 0.55;
 pub const HEADER: f32 = 26.0;
 pub const ROW: f32 = 22.0;
 pub const PIN: f32 = 7.0;
@@ -114,6 +116,88 @@ pub struct CanvasState {
     /// Where the canvas was drawn, on the screen: the strip goes over its
     /// bottom.
     pub rect: Option<Rect>,
+    /// Where each square was drawn last frame, in world units: vim mode
+    /// moves over them.
+    pub rects: HashMap<SquareId, Rect>,
+    pub vim: VimState,
+}
+
+/// What vim mode keeps for a tab.
+#[derive(Default)]
+pub struct VimState {
+    /// Vim mode is on: the focus is drawn.
+    pub on: bool,
+    /// The square the keys act on.
+    pub focus: Option<SquareId>,
+    /// The selection as vim mode left it: if it's another, the mouse
+    /// changed it.
+    pub sel: BTreeSet<SquareId>,
+    /// The squares Visual went through, to shrink back along.
+    pub trail: Vec<SquareId>,
+    /// Wiring from the keyboard, if it's going on.
+    pub pin: Option<PinState>,
+    /// The pins numbered on the focused square.
+    pub hints: Vec<Hint>,
+    /// A square to show: its rectangle isn't known yet.
+    pub reveal: Option<SquareId>,
+}
+
+/// A pin of a square, for wiring from the keyboard.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinRef {
+    pub sq: SquareId,
+    pub name: String,
+    pub output: bool,
+    pub tick: bool,
+    pub ty: Option<Type>,
+}
+
+pub struct Hint {
+    pub pin: PinRef,
+    pub label: String,
+    /// The one Enter takes.
+    pub cursor: bool,
+}
+
+/// Wiring from the keyboard: first a pin of the focused square, then the
+/// pin of another that it goes to.
+pub struct PinState {
+    pub from: Option<PinRef>,
+    /// Which candidate Enter takes, once Tab moved it.
+    pub cursor: Option<usize>,
+}
+
+/// Whether a wire can go between pins of squares A and B: ticks to ticks and
+/// data to data, and not into the same square. The mouse and the keyboard
+/// both ask.
+pub fn can_wire(source_tick: bool, target_tick: bool, a: SquareId, b: SquareId) -> bool {
+    source_tick == target_tick && a != b
+}
+
+/// The pins of square ID: its outputs, then its inputs.
+pub fn pins_of(tab: &Tab, id: SquareId) -> Vec<PinRef> {
+    let Some(info) = tab.lowered.squares.get(&id) else { return Vec::new() };
+    let outs = info.sig.outputs.iter().enumerate().map(|(o, d)| PinRef {
+        sq: id,
+        name: d.name.clone(),
+        output: true,
+        tick: d.ty == PinTy::Tick,
+        ty: info.out_types[o].clone(),
+    });
+    let ins = info.sig.inputs.iter().enumerate().map(|(i, d)| PinRef {
+        sq: id,
+        name: d.name.clone(),
+        output: false,
+        tick: d.ty == PinTy::Tick,
+        ty: info.in_types[i].clone(),
+    });
+    outs.chain(ins).collect()
+}
+
+/// Removes every wire of the selected squares.
+pub fn disconnect(tab: &mut Tab) {
+    let sel = tab.selected.clone();
+    tab.canvas.links.retain(|l| !sel.contains(&l.from) && !sel.contains(&l.to));
 }
 
 /// A field of a square: an input's (by its name) or a param's.
@@ -222,6 +306,23 @@ pub fn start_edit(tab: &Tab, reg: &Registry, state: &mut CanvasState, key: &Fiel
 pub fn start_first(tab: &Tab, reg: &Registry, state: &mut CanvasState, id: SquareId) {
     if let Some((key, ..)) = fields(tab, reg, id).into_iter().find(|f| f.1 == FieldKind::Typed) {
         start_edit(tab, reg, state, &key);
+    }
+}
+
+/// Typing starts in square ID's Nth field (counting from 1), or in the
+/// first one to type in (the first, if it has none). False: it has no fields.
+pub fn edit_nth(tab: &Tab, reg: &Registry, state: &mut CanvasState, id: SquareId, n: Option<usize>) -> bool {
+    let list = fields(tab, reg, id);
+    let pick = match n {
+        Some(n) => list.get(n.saturating_sub(1)),
+        None => list.iter().find(|f| f.1 == FieldKind::Typed).or(list.first()),
+    };
+    match pick.map(|f| f.0.clone()) {
+        Some(key) => {
+            start_edit(tab, reg, state, &key);
+            true
+        }
+        None => false,
     }
 }
 
@@ -584,6 +685,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         let extra = extra_height(sq, info, cx, w);
         geos.insert(sq.id, geometry(sq, info, params, w, extra));
     }
+    cx.state.rects = geos.iter().map(|(id, g)| (*id, g.rect)).collect();
     // a copy, so the canvas can change while the pins are looked up
     let infos = cx.tab.lowered.squares.clone();
     let pin_pos = |id: SquareId, name: &str, output: bool| -> Option<(Pos2, Option<Type>)> {
@@ -728,8 +830,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 ui.close();
             }
             if ui.button("Disconnect").clicked() {
-                let sel = cx.tab.selected.clone();
-                cx.tab.canvas.links.retain(|l| !sel.contains(&l.from) && !sel.contains(&l.to));
+                disconnect(cx.tab);
                 ui.close();
             }
             if ui.button("Make subgraph (Ctrl+G)").clicked() {
@@ -762,7 +863,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
 
         // pins, and the fields of unwired inputs
         if let Some(info) = &info {
-            let show_widgets = z >= 0.55;
+            let show_widgets = z >= EDIT_ZOOM;
             for (i, pin) in info.sig.inputs.iter().enumerate() {
                 let p = view.to_screen(g.ins[i]);
                 let ty = info.in_types[i].clone();
@@ -945,6 +1046,28 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             painter.galley(srect.left_bottom() + vec2(0.0, 4.0 * z), galley, theme.error);
         }
     }
+    // vim mode: the focus, and the pins to pick
+    if cx.state.vim.on {
+        let zz = z.max(0.7);
+        if let Some(g) = cx.state.vim.focus.and_then(|f| geos.get(&f)) {
+            let r = view.rect(g.rect).expand(5.0 * zz);
+            painter.rect_stroke(r, 0.0, Stroke::new(2.0, theme.accent), StrokeKind::Outside);
+            painter.rect_stroke(
+                r.expand(3.0),
+                0.0,
+                Stroke::new(1.0, theme.accent.gamma_multiply(0.45)),
+                StrokeKind::Outside,
+            );
+        }
+        for h in &cx.state.vim.hints {
+            let Some((p, _)) = pin_pos(h.pin.sq, &h.pin.name, h.pin.output) else { continue };
+            let p = view.to_screen(p);
+            let c = p + vec2(if h.pin.output { 18.0 } else { -18.0 } * zz, 0.0);
+            let (fill, text) = if h.cursor { (theme.step, Color32::BLACK) } else { (theme.accent, Color32::BLACK) };
+            painter.circle_filled(c, 9.0 * zz, fill);
+            painter.text(c, Align2::CENTER_CENTER, &h.label, FontId::monospace(12.0 * zz), text);
+        }
+    }
     for (id, name, value, is_param) in field_changes {
         if let Some(sq) = cx.tab.canvas.square_mut(id) {
             if is_param {
@@ -1092,7 +1215,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             match drag {
                 Drag::Wire { from, ty, picked } => match near(false) {
                     Some((to, input, tick)) => {
-                        if tick == ty.is_none() && to != from.0 {
+                        if can_wire(ty.is_none(), tick, from.0, to) {
                             cx.tab.canvas.connect(Link { from: from.0, output: from.1, to, input }, !tick);
                         }
                     }
@@ -1105,7 +1228,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 },
                 Drag::WireBack { to, ty } => match near(true) {
                     Some((from, output, tick)) => {
-                        if tick == ty.is_none() && from != to.0 {
+                        if can_wire(ty.is_none(), tick, from, to.0) {
                             cx.tab.canvas.connect(Link { from, output, to: to.0, input: to.1 }, !tick);
                         }
                     }
@@ -1206,7 +1329,7 @@ fn field(
         }
         return;
     }
-    if !editing || chosen || z < 0.55 {
+    if !editing || chosen || z < EDIT_ZOOM {
         draw_field_box(painter, r, current, font, theme, chosen);
         let resp = ui.interact(r, Id::unique(("field", tab_id, &key.sq, &key.name, key.param)), Sense::click());
         if resp.clicked() {

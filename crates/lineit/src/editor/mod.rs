@@ -2,12 +2,14 @@
 
 mod app;
 mod canvas;
+mod nav;
 mod runner;
 mod session;
 mod single;
 mod subgraph;
 mod tab;
 mod theme;
+mod vim;
 
 use std::path::PathBuf;
 
