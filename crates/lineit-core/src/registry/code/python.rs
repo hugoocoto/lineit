@@ -90,6 +90,8 @@ impl Language for Python {
             name: f.name.clone(),
             commands: vec!["python3".into(), "python".into()],
             args: vec!["-c".into()],
+            env: Vec::new(),
+            lock: None,
             host: HOST.into(),
             load: load.to_string(),
         })
@@ -561,10 +563,10 @@ def collatz(n: int, even: Out["half": int], odd: Out["calls": int, "n": int]):
     }
 
     fn start(f: &Function) -> Option<lineit_rt::process::Process> {
-        let ExtKind::Process { name, commands, args, host, load } = Python.ext(f).unwrap() else { panic!() };
+        let ExtKind::Process { name, commands, args, host, load, .. } = Python.ext(f).unwrap() else { panic!() };
         let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        match lineit_rt::process::Process::start(&name, &commands, &args, &host, &load) {
+        match lineit_rt::process::Process::start(&name, &commands, &args, &[], None, &host, &load) {
             Ok(p) => Some(p),
             // no Python here: what can be checked without it is
             Err(e) if e.contains("couldn't run") => None,
@@ -596,9 +598,10 @@ def collatz(n: int, even: Out["half": int], odd: Out["calls": int, "n": int]):
         let ExtKind::Process { name, args, host, load, .. } = Python.ext(&f).unwrap() else { panic!() };
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         if cfg!(unix) {
-            let mut p = lineit_rt::process::Process::start(&name, &["true", "python3"], &args, &host, &load).unwrap();
+            let mut p = lineit_rt::process::Process::start(&name, &["true", "python3"], &args, &[], None, &host, &load)
+                .unwrap();
             assert!(p.instance(&[]).is_ok());
-            let e = lineit_rt::process::Process::start(&name, &["true"], &args, &host, &load).err().unwrap();
+            let e = lineit_rt::process::Process::start(&name, &["true"], &args, &[], None, &host, &load).err().unwrap();
             assert!(e.contains("true: it ended without answering"), "{e}");
         }
         // code Python doesn't take: its error, not another command's
@@ -606,7 +609,9 @@ def collatz(n: int, even: Out["half": int], odd: Out["calls": int, "n": int]):
         bad.source = "def f(x) -> int:\n    return x +\n".into();
         let ExtKind::Process { name, args, host, load, .. } = Python.ext(&bad).unwrap() else { panic!() };
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let e = lineit_rt::process::Process::start(&name, &["python3", "python"], &args, &host, &load).err().unwrap();
+        let e = lineit_rt::process::Process::start(&name, &["python3", "python"], &args, &[], None, &host, &load)
+            .err()
+            .unwrap();
         assert!(e.contains("SyntaxError"), "{e}");
 
         // errors are on the code's lines

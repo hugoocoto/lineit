@@ -6,7 +6,11 @@ use std::path::Path;
 #[test]
 fn twice() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
-    for name in ["code", "code_python", "code_rust", "code_c"] {
+    for name in ["code", "code_python", "code_rust", "code_c", "code_csharp"] {
+        if name == "code_csharp" && !lineit_core::registry::code::sdk_ready() {
+            eprintln!("skipped {name}: no .NET 10 SDK");
+            continue;
+        }
         let path = root.join(format!("{name}.lua"));
         let want = std::fs::read_to_string(path.with_extension("out")).unwrap();
         let mut canvas = lineit_core::file::read_canvas(&std::fs::read_to_string(&path).unwrap(), name).unwrap();

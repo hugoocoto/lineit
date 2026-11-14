@@ -35,9 +35,9 @@ and redoes the inside, with three aims:
 Dependencies: `eframe` (the editor), `mlua` (Lua), `zip` (packages), `image`
 (only to read and write image files, as an optional feature of
 `lineit-rt`), `tree-sitter` with the `gdshader` grammar and `libm` (for
-`image/shader`, the `shader` feature of `lineit-rt`), the `lua`, `python`, `rust` and `c`
+`image/shader`, the `shader` feature of `lineit-rt`), the `lua`, `python`, `rust`, `c` and `c-sharp`
 grammars of tree-sitter (the signatures of `code/function`), `serde_json` (code squares in
-Python, the `process` feature of `lineit-rt`), `libloading` (Rust modules in the editor). Everything else is
+Python and C#, the `process` feature of `lineit-rt`), `quick-xml` (the doc comments of C#), `libloading` (Rust modules in the editor). Everything else is
 std: the argument parser, the file prompt, threads and the codegen. A
 compiled program depends only on `lineit-rt`, plus `image` if it opens or
 saves images, `tree-sitter` and `libm` if it uses a shader, `mlua` if it uses a Lua module, and the crates of the Rust
@@ -183,7 +183,7 @@ Output: a crate in `~/.cache/lineit/build/<name>`, built with `cargo build
   resize, crop, blur, brightness, contrast, tint, shader (a gdshader file, on the CPU)
 - `graph`: input, output (the pins of a subgraph)
 - `record`: make and split, for every record type
-- `code`: function (a function in Lua, Python, Rust or C, its pins from its signature)
+- `code`: function (a function in Lua, Python, Rust, C or C#, its pins from its signature)
 
 **Lua modules**, in a `.lua` file that returns a table:
 

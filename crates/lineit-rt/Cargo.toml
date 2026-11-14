@@ -15,7 +15,7 @@ default = []
 image = ["dep:image"]
 lua = ["dep:mlua"]
 # code squares in languages run by their own interpreter (Python...)
-process = ["dep:serde_json"]
+process = ["dep:serde_json", "dep:fs4"]
 shader = ["dep:tree-sitter", "dep:tree-sitter-gdshader", "dep:libm"]
 
 [dependencies]
@@ -26,6 +26,8 @@ tree-sitter = { version = "0.25", optional = true }
 tree-sitter-gdshader = { version = "0.4", optional = true }
 # the messages to and from those interpreters, as JSON lines
 serde_json = { version = "1", optional = true }
+# locks on files: code that is built when it starts (C#) is started by one at a time
+fs4 = { version = "1", optional = true }
 # sin, pow...: the same bits on every machine, as the tests compare outputs
 libm = { version = "0.2", optional = true }
 
