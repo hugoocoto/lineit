@@ -81,6 +81,15 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: 10.0.x
+      # dotnet's first run sets itself up (NuGet's migrations): several
+      # first runs at once, as the tests start them, can trip on each other
+      - if: ${{ !matrix.sanitizer }}
+        name: Run dotnet once
+        shell: bash
+        run: |
+          d=$(mktemp -d)
+          echo 'System.Console.WriteLine("ready");' > "$d/warm.cs"
+          dotnet run "$d/warm.cs"
 
       - name: Install Rust
         shell: bash
