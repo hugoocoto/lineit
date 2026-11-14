@@ -29,6 +29,10 @@ me, alternating per branch which form comes first.
 after reviewing.
 Repo: a local clone at ~/code/junction26-messagepack-csharp, copies of it
 for the agents.
+Layout: ~/code/ju26-review/<issue>/csharp (set A, seeded, uncommitted:
+review with `git diff HEAD~1`) and <issue>/lineit (set B); keys in
+~/code/ju26-review/.keys/ (don't open before reviewing). 2297: only the
+generator change is drawn in lineit.
 Plan: once C# squares are merged, one agent per branch (2283, 2234, 2129,
 2297), each on its own copy of the repo.
 
