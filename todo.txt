@@ -3,11 +3,9 @@ power of two and scaled; check it zooming with the mouse); still to do: while
 typing in a note or code square, its text box is laid out at the zoom, so the
 text moves when editing starts or ends and while zooming
 
-C# code squares, what's left:
-- a build error reads "couldn't run its language (dotnet: it ended without
-  answering: ...)": say it's a build error, with the compiler's messages
-- dotnet's own build cache (~/.local/share/dotnet/runfile) isn't pruned
-- "An issue was encountered verifying workloads" on a fresh account
+C# code squares, what's left: dotnet still keeps a few bytes per code
+(build-start.cache, build-success.cache, in ~/.local/share/dotnet/runfile)
+that lineit's pruning doesn't reach; dotnet cleans them after 30 days itself
 
 Implement all the fixes in lineit to check if it's easier to the reviewer to
 review it in lineit than in real code.
