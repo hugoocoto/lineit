@@ -151,7 +151,10 @@ inside.
 Then every real node gets its signature (after the variables: `var/var`
 squares, by scope), and each data input its `Source`: a wire, followed back
 through pass nodes to a real output; a field; or nothing. Each tick output
-gets its targets, followed forward. A subgraph that contains itself is an
+gets its targets, followed forward. A data input (of a real square, or a
+subgraph's, which is a pass node) with more than one wire is an error:
+`Canvas::connect` replaces the old wire, so only a file written by hand, or
+an old one, can have two. Tick inputs take any number. A subgraph that contains itself is an
 error on its square.
 
 What goes wrong is a `Diag` on a square of the canvas: the square itself, or

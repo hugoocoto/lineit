@@ -19,7 +19,7 @@ use std::sync::Arc;
 use lineit_rt::{RecordType, Type, Value};
 
 use crate::ir::*;
-use crate::model::{Canvas, Square, SquareId};
+use crate::model::{Canvas, Link, Square, SquareId};
 use crate::registry::{Module, Params, PinTy, Registry, SigCx, Signature};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +76,9 @@ pub struct Lowered {
     /// None if there are diagnostics.
     pub program: Option<Program>,
     pub diags: Vec<Diag>,
+    /// The wires of the canvas that go into a data input with more than
+    /// one: the editor marks them.
+    pub double: Vec<Link>,
     pub squares: HashMap<SquareId, SquareInfo>,
     /// The expressions of the images that pure squares on the canvas make,
     /// for the editor to show without running anything.
@@ -134,13 +137,16 @@ struct GNode {
     kind: GKind,
     /// For a port: its type, if it's data.
     port_ty: Option<Type>,
+    /// For a port: its name.
+    port: String,
     square: SquareId,
     top: bool,
     scope: usize,
     params: BTreeMap<String, String>,
     fields: BTreeMap<String, String>,
-    /// (input, source node, source output)
-    incoming: Vec<(String, usize, String)>,
+    /// (input, source node, source output, the wire's place in the main
+    /// canvas's links, if it's one of them)
+    incoming: Vec<(String, usize, String, Option<usize>)>,
 }
 
 enum Mapping {
@@ -177,6 +183,7 @@ impl Flattener<'_> {
             let gnode = |kind| GNode {
                 kind,
                 port_ty: None,
+                port: String::new(),
                 square: at,
                 top: top.is_none(),
                 scope,
@@ -189,6 +196,7 @@ impl Flattener<'_> {
                 let mut n = gnode(GKind::Pass);
                 n.fields = BTreeMap::new();
                 n.port_ty = Type::parse(&p.str("type"), &|r| self.reg.records.get(r).cloned());
+                n.port = p.str("name");
                 if sq.module == "graph/input" {
                     n.fields.insert("value".into(), p.str("default"));
                     ports.inputs.insert(p.str("name"), self.g.len());
@@ -225,7 +233,7 @@ impl Flattener<'_> {
                 self.g.push(gnode(GKind::Real(m.clone())));
             }
         }
-        for l in &canvas.links {
+        for (li, l) in canvas.links.iter().enumerate() {
             let src = match map.get(&l.from) {
                 Some(Mapping::Real(g)) => Some((*g, l.output.clone())),
                 Some(Mapping::Sub { outputs, .. }) => outputs.get(&l.output).map(|g| (*g, "value".to_string())),
@@ -238,7 +246,7 @@ impl Flattener<'_> {
             };
             // wires to pins that aren't there (any more) are left out
             if let (Some((sg, so)), Some((dg, di))) = (src, dst) {
-                self.g[dg].incoming.push((di, sg, so));
+                self.g[dg].incoming.push((di, sg, so, top.is_none().then_some(li)));
             }
         }
         ports
@@ -294,6 +302,8 @@ pub struct Flat {
     pub sub_outputs: Vec<(SquareId, String, Source)>,
     pub vars: HashMap<(usize, String), VarDecl>,
     pub diags: Vec<Diag>,
+    /// The wires of the canvas that go into a data input with more than one.
+    pub double: Vec<Link>,
     /// The files the signatures came from (see [`Lowered::deps`]).
     pub deps: Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>,
 }
@@ -374,8 +384,8 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
                 },
                 None => Source::None,
             },
-            GKind::Pass => match g[at].incoming.iter().rev().find(|(i, _, _)| i == "value") {
-                Some((_, sg, so)) => source(g, flat_of, nodes, *sg, so, depth + 1),
+            GKind::Pass => match g[at].incoming.iter().rev().find(|(i, _, _, _)| i == "value") {
+                Some((_, sg, so, _)) => source(g, flat_of, nodes, *sg, so, depth + 1),
                 None => g[at]
                     .fields
                     .get("value")
@@ -386,7 +396,7 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
     }
     let mut outgoing: HashMap<(usize, String), Vec<(usize, String)>> = HashMap::new();
     for (d, n) in g.iter().enumerate() {
-        for (input, s, out) in &n.incoming {
+        for (input, s, out, _) in &n.incoming {
             outgoing.entry((*s, out.clone())).or_default().push((d, input.clone()));
         }
     }
@@ -421,10 +431,10 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
         let sig = nodes[f as usize].sig.clone();
         let mut inputs = Vec::new();
         for pin in &sig.inputs {
-            let wire = n.incoming.iter().rev().find(|(inp, _, _)| *inp == pin.name);
+            let wire = n.incoming.iter().rev().find(|(inp, _, _, _)| *inp == pin.name);
             inputs.push(match (&pin.ty, wire) {
                 (PinTy::Tick, _) => Source::None,
-                (_, Some((_, sg, so))) => source(&g, &flat_of, &nodes, *sg, so, 0),
+                (_, Some((_, sg, so, _))) => source(&g, &flat_of, &nodes, *sg, so, 0),
                 (_, None) => match (&pin.field, n.fields.get(&pin.name)) {
                     (Some(_), Some(v)) => Source::Field(v.clone(), None),
                     (Some(d), None) => Source::Field(d.clone(), None),
@@ -445,20 +455,46 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
     }
 
     // tick wires into data inputs and the other way round
-    let mut bad = Vec::new();
+    let mut bad: Vec<(SquareId, String)> = Vec::new();
+    // and more than one wire into a data input (a tick input takes any number):
+    // a real square's, or a port's (a subgraph's input, or a graph/output)
+    let mut double = Vec::new();
+    for (i, n) in g.iter().enumerate() {
+        let pins: Vec<(String, String)> = match &n.kind {
+            GKind::Real(_) => match flat_of[i] {
+                Some(f) => nodes[f as usize]
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter(|p| p.ty != PinTy::Tick)
+                    .map(|p| (p.name.clone(), p.name.clone()))
+                    .collect(),
+                None => continue,
+            },
+            GKind::Pass if n.port_ty.is_some() => vec![("value".into(), n.port.clone())],
+            GKind::Pass => continue,
+        };
+        for (pin, name) in pins {
+            let wires: Vec<_> = n.incoming.iter().filter(|w| w.0 == pin).collect();
+            if wires.len() > 1 {
+                bad.push((n.square, format!("`{name}` takes one wire, and has {}", wires.len())));
+                double.extend(wires.iter().filter_map(|w| w.3).map(|li| canvas.links[li].clone()));
+            }
+        }
+    }
     for (f, n) in nodes.iter().enumerate() {
         for (i, s) in n.inputs.iter().enumerate() {
             if let Source::Wire(sn, so) = s
                 && nodes[*sn as usize].sig.outputs[*so].ty == PinTy::Tick
             {
-                bad.push((f, format!("a tick goes into `{}`, which takes data", n.sig.inputs[i].name)));
+                bad.push((nodes[f].square, format!("a tick goes into `{}`, which takes data", n.sig.inputs[i].name)));
             }
         }
         for (o, ts) in n.targets.iter().enumerate() {
             for (tn, ti) in ts {
                 if nodes[*tn as usize].sig.inputs[*ti].ty != PinTy::Tick {
                     bad.push((
-                        *tn as usize,
+                        nodes[*tn as usize].square,
                         format!("`{}` takes data, and a tick goes into it", nodes[*tn as usize].sig.inputs[*ti].name),
                     ));
                 }
@@ -466,14 +502,17 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
             }
         }
     }
-    for (f, m) in bad {
-        diags.push(Diag { square: Some(nodes[f].square), message: m });
+    // a subgraph used twice reports once
+    bad.sort();
+    bad.dedup();
+    for (square, message) in bad {
+        diags.push(Diag { square: Some(square), message });
     }
     let sub_outputs = top_subs
         .into_iter()
         .map(|(sq, name, port)| (sq, name, source(&g, &flat_of, &nodes, port, "value", 0)))
         .collect();
-    Flat { nodes, sub_outputs, vars, diags, deps: deps.into_inner() }
+    Flat { nodes, sub_outputs, vars, diags, double, deps: deps.into_inner() }
 }
 
 // ---------------------------------------------------------------- lowering
@@ -811,7 +850,7 @@ fn lower_for(canvas: &Canvas, reg: &Registry, test_case: Option<SquareId>) -> Lo
         }
     }
     if !diags.is_empty() {
-        return Lowered { program: None, diags, squares, previews: Vec::new(), deps: flat.deps };
+        return Lowered { program: None, diags, double: flat.double, squares, previews: Vec::new(), deps: flat.deps };
     }
 
     let mut lw = Lowerer {
@@ -898,8 +937,8 @@ fn lower_for(canvas: &Canvas, reg: &Registry, test_case: Option<SquareId>) -> Lo
     let mut diags = std::mem::take(&mut lw.diags);
     diags.dedup();
     if !diags.is_empty() {
-        return Lowered { program: None, diags, squares, previews: Vec::new(), deps: flat.deps.clone() };
+        return Lowered { program: None, diags, double: flat.double.clone(), squares, previews: Vec::new(), deps: flat.deps.clone() };
     }
     prog.find_meets();
-    Lowered { program: Some(prog), diags, squares, previews, deps: flat.deps.clone() }
+    Lowered { program: Some(prog), diags, double: flat.double.clone(), squares, previews, deps: flat.deps.clone() }
 }

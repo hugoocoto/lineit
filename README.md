@@ -134,6 +134,10 @@ ticks: the signal that says what runs next. A program starts at its
 `flow/entry` squares, and its `flow/clock` squares tick it again and again
 until it's stopped (or a `flow/stop` square ends it).
 
+**One wire into a data input.** A data input takes one wire (a tick input
+takes any number): a canvas with two is an error, shown in red on the
+square, under it, and on the wires, and `check`, Run and Compile refuse it.
+
 **Ticks push, data is pulled.** A tick runs a square, which may tick the
 next. A value is computed when it's read: pure squares (math, comparisons,
 strings, images) have no ticks at all.

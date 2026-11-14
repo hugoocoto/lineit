@@ -417,7 +417,11 @@ mod tests {
         both.links.push(Link::new(1, "value", 3, "a"));
         assert!(!lower::lower(&both, &reg).diags.is_empty(), "the test needs a wiring error to be about something");
         assert!(t.lowered.diags.is_empty(), "{:?}", t.lowered.diags);
+        assert!(t.lowered.double.is_empty());
         assert_eq!(t.canvas.links.len(), 2);
+        // out of a diff, the same canvas has the error, and marks both wires
+        let plain = Tab::new(both, None, &reg);
+        assert_eq!(plain.lowered.double.len(), 2);
     }
 
     #[test]
