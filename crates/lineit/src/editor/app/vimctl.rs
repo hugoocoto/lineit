@@ -441,6 +441,9 @@ impl App {
                     Dir::Up => (0.0, -step),
                     Dir::Down => (0.0, step),
                 };
+                if self.read_only() {
+                    return;
+                }
                 let sel = self.vim_targets();
                 let tab = self.tab();
                 for sq in tab.canvas.squares.iter_mut().filter(|s| sel.contains(&s.id)) {
@@ -531,6 +534,19 @@ impl App {
             Act::PinRemove => self.vim_pin_remove(),
             Act::PinCancel => self.vim_pin_end(true),
             Act::OpenSubgraph => self.vim_open_subgraph(),
+            Act::Change(d) => {
+                let rects = self.rects();
+                // the squares that only moved aren't changes
+                let changes: Option<BTreeSet<SquareId>> =
+                    self.tab().diff.as_ref().map(|m| m.changes.iter().copied().collect());
+                match changes {
+                    None => self.status("not a diff view: lineit diff --view A B", true),
+                    Some(c) => match nav::change(&rects, &c, focus, d) {
+                        Some(to) => self.vim_go(Some(to)),
+                        None => self.status("no changes", false),
+                    },
+                }
+            }
             Act::TabNext(n) => self.active = (self.active + n) % self.tabs.len(),
             Act::TabPrev(n) => self.active = (self.active + self.tabs.len() - n % self.tabs.len()) % self.tabs.len(),
             Act::TabGo(n) => {

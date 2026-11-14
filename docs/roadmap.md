@@ -37,7 +37,8 @@ Dependencies: `eframe` (the editor), `mlua` (Lua), `zip` (packages), `image`
 `lineit-rt`), `tree-sitter` with the `gdshader` grammar and `libm` (for
 `image/shader`, the `shader` feature of `lineit-rt`), the `lua`, `python`, `rust` and `c`
 grammars of tree-sitter (the signatures of `code/function`), `serde_json` (code squares in
-Python, the `process` feature of `lineit-rt`), `libloading` (Rust modules in the editor). Everything else is
+Python, the `process` feature of `lineit-rt`), `libloading` (Rust modules in the editor), `similar` (the line diffs of
+`lineit diff`). Everything else is
 std: the argument parser, the file prompt, threads and the codegen. A
 compiled program depends only on `lineit-rt`, plus `image` if it opens or
 saves images, `tree-sitter` and `libm` if it uses a shader, `mlua` if it uses a Lua module, and the crates of the Rust
@@ -52,6 +53,7 @@ crates/lineit-rt/          the runtime: values, strings, lists, images, branches
                            compiled programs.
 crates/lineit-core/        everything but the GUI:
     model.rs               the canvas (the AST): squares, links, fields, params
+    diff.rs                two canvases compared by square id (`lineit diff`, the diff view)
     file.rs                reads and writes canvases (sandboxed Lua tables)
     registry/              the modules: built-in, Lua and Rust, subgraphs, records
     types.rs               the inference over the wires
@@ -225,6 +227,23 @@ data folder on macOS and Windows), and lineit loads every package there.
 Only Rust modules need building, by cargo, cached. No checksums of our own:
 the zip checks every file against its CRC, and a checksum inside the same
 file can't stop anyone who changes it.
+
+## Diffs
+
+`diff.rs` compares two canvases by square id: added, removed and changed
+squares (module, fields, params), wires added and removed, and the squares
+that only moved apart; the camera and positions aren't the program. Line
+diffs of multi-line values use the `similar` crate. `lineit diff` prints it
+(exit 0/1/2 as diff(1)) and, for `.graph.lua` files, where the subgraph is
+used (a scan of the folder that has the `modules` folder, four deep: no
+index). `lineit text` is the textconv for git. The editor's diff view is a
+read-only tab (`Tab::label`, `Tab::diff`) on `diff::merge`: the squares of the
+new canvas plus those only the old had; the places that change a canvas (the
+mouse, the shortcuts, the menus, paste, undo, save, run) check `label` and
+refuse, and a view isn't written to a session. Ids are stable: paste keeps a
+square's id when nothing on the canvas has it, and `Canvas::next` (saved as
+`next_id`) is one more than the highest id ever used, so an id is never
+given twice.
 
 ## Milestones
 

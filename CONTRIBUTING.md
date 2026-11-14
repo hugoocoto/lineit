@@ -29,7 +29,7 @@ builds in `DIR`, not in yours: useful to try things.
   so it builds on its own, with no dependency unless a feature asks for it:
   lineit writes it out next to every program it compiles.
 - `crates/lineit-core`: everything but the GUI. The canvas and its files
-  (`model`, `file`), the modules (`registry/`), type inference (`types`),
+  (`model`, `file`), comparing two (`diff`), the modules (`registry/`), type inference (`types`),
   lowering to the IR (`lower`, `ir`), the interpreter (`interp`), the
   codegen (`codegen`), packages (`package`, `native`) and the config.
 - `crates/lineit`: the command line (`main.rs`) and the editor (`editor/`,

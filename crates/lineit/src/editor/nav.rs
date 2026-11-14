@@ -126,6 +126,25 @@ pub fn reading(rects: &Rects, from: Option<SquareId>, delta: i32) -> Option<Squa
     }
 }
 
+/// The DELTA-th change after (or, negative, before) FROM in [`order`],
+/// round: CHANGES are the squares a diff marks. From nothing: the first
+/// (or last).
+pub fn change(rects: &Rects, changes: &BTreeSet<SquareId>, from: Option<SquareId>, delta: i32) -> Option<SquareId> {
+    let mut list = order(rects);
+    if delta < 0 {
+        list.reverse();
+    }
+    // from just after FROM, all the way round, FROM last
+    if let Some(i) = from.and_then(|f| list.iter().position(|id| *id == f)) {
+        list.rotate_left(i + 1);
+    }
+    let found: Vec<SquareId> = list.into_iter().filter(|id| changes.contains(id)).collect();
+    if found.is_empty() {
+        return None;
+    }
+    Some(found[((delta.unsigned_abs() as usize).max(1) - 1) % found.len()])
+}
+
 /// Every square wired to FROM, by any number of wires either way.
 pub fn connected(links: &[Link], from: SquareId) -> BTreeSet<SquareId> {
     let mut seen = BTreeSet::from([from]);
@@ -315,6 +334,30 @@ mod tests {
         let (r, _) = sample();
         assert_eq!(after_delete(&r, &BTreeSet::from([2]), 2), Some(3));
         assert_eq!(after_delete(&r, &BTreeSet::from([1, 2, 3, 4, 5]), 2), None);
+    }
+
+    #[test]
+    fn changes_in_order() {
+        let r = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), vec2(100.0, 50.0));
+        // reading order: 1 (0,0), 2 (0,200), 3 (300,0), 4 (300,200), 5 (600,0)
+        let rects: Rects = HashMap::from([
+            (1, r(0.0, 0.0)),
+            (2, r(0.0, 200.0)),
+            (3, r(300.0, 0.0)),
+            (4, r(300.0, 200.0)),
+            (5, r(600.0, 0.0)),
+        ]);
+        let changes = BTreeSet::from([2, 4, 5]);
+        assert_eq!(change(&rects, &changes, Some(1), 1), Some(2));
+        assert_eq!(change(&rects, &changes, Some(2), 1), Some(4));
+        assert_eq!(change(&rects, &changes, Some(3), 1), Some(4));
+        // round
+        assert_eq!(change(&rects, &changes, Some(5), 1), Some(2));
+        assert_eq!(change(&rects, &changes, Some(2), -1), Some(5));
+        assert_eq!(change(&rects, &changes, Some(3), -1), Some(2));
+        assert_eq!(change(&rects, &changes, Some(1), 2), Some(4));
+        assert_eq!(change(&rects, &changes, None, 1), Some(2));
+        assert_eq!(change(&rects, &BTreeSet::new(), Some(1), 1), None);
     }
 
     #[test]

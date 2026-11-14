@@ -22,18 +22,6 @@ with dotnet).
 How to judge "easier to review": time to review, bugs found, confidence,
 against GitHub's diff of the same branches. Decide before trying it.
 
-diff
-- lineit diff A.lua B.lua: by square id, the program only (squares, wires,
-  fields, params); squares that only moved listed apart
-- diff view in the editor: old and new on one canvas, added/removed/changed
-  in colours, moved-only dimmed; ]c [c to go to the next/previous change
-- git: open `git show REV:file` in a tab, a git difftool mode, a textconv
-  driver so git diff prints lineit diff
-- line diffs inside code squares and notes
-- a change in a .graph.lua shown where the subgraph is used
-- check that ids stay predictable on paste, duplicate and Ctrl+G, or a small
-  edit looks like delete everything + add
-
 later
 - faster interpreter: ~60 ns a loop iteration, ~230 ns a square called
   (compiled is ~1000x faster); registers and typed slots instead of Values

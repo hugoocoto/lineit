@@ -113,6 +113,7 @@ typed and the command line. `:help` lists every key.
 | H J K L                      | Move the selected squares a grid step                           |
 | f, then 1-9, then h j k l, 1-9 | Wire: pick a pin of this square, go to the other, pick its pin; `x` removes the wires of a pin |
 | gd, gt, gT                   | Open the subgraph, next / previous tab                          |
+| `]c`, `[c`                   | Next / previous change in a diff view (see below)               |
 | Ctrl+E/Y/D/U, zh zl zz zf, + - = | Pan, center on the focus, fit everything, zoom              |
 | `:`                          | Commands: `:w` `:q` `:e` `:tabnew` `:run` `:step` `:compile` `:add math/add` `:set key=value` `:settings` `:subgraph` `:help` (Tab completes) |
 
@@ -344,6 +345,9 @@ install the ones you trust.
     lineit run FILE [--for SECONDS]     run a canvas, without the editor
     lineit check FILE                   what's wrong with a canvas, if anything
     lineit test FILE                    run the tests of its code squares
+    lineit diff A B [--view]            what changed between two canvases
+    lineit show FILE|REV:PATH...        open canvases, or files as git has them, read-only
+    lineit text FILE                    a canvas as text, for git (see Diffs)
     lineit compile FILE [-o OUT]        a program of the canvas, next to it
     lineit new-package NAME [--native]  make a package
     lineit pack DIR / install FILE      share one / install one
@@ -354,6 +358,86 @@ install the ones you trust.
 compile downloads and builds what the program needs; the next ones only
 build the program. Lua modules in a compiled program need a C compiler, as
 Rust on Windows already does.
+
+# Diffs
+
+`lineit diff A B` says what changed from canvas A to canvas B, matching
+squares by their `id`: squares added and removed, a square's module, fields
+and params that changed, wires added and removed. Only the program counts:
+the camera doesn't, and a square that only moved is listed apart ("moved
+only"), not as a change. A field that has several lines (the `code` of a
+code square, the `text` of a note) gets a line diff, with two lines of
+context. The exit code is that of `diff(1)`: 0 the same (moves aside), 1
+different, 2 an error.
+
+    removed square 4 io/print
+    added square 5 math/add
+        field a = "1"
+    changed square 2 io/print
+        field value: "hi" -> "bye"
+    changed square 3 note
+        param text changed:
+              f
+            - g
+            + G
+              h
+    removed wire 1.then -> 2.tick
+    added wire 1.then -> 5.tick
+    moved only (1): 1 flow/entry
+
+A or B can be `REV:path` (`HEAD:examples/hello.lua`): the file as git has it
+(`git show REV:path`: the path is from the root of the repository, and
+`REV:./path` is relative to where you are). Options other than `--view` are
+errors.
+
+**Subgraphs.** When the files are `.graph.lua` subgraphs, the diff ends with
+where the new one is used: the canvases with squares of that module, in the
+folder that has the `modules` folder (or the file's own), down to four
+folders. Those squares are what a change to the subgraph reaches.
+
+**In the editor**, `lineit diff --view A B` opens both on one canvas, in a
+read-only tab: added squares and wires are green, removed ones red, changed
+ones amber (theme colors `added`, `removed`, `changed`), squares with a wire
+added or removed are outlined paler amber ("wires changed"), and squares that
+only moved are dimmed. Squares and wires that changed are drawn where they
+are in B, removed ones where they were in A. In vim mode, `]c` and `[c` go
+to the next and previous change (left to right, top to bottom, wires
+changed included; `3]c` counts). `lineit show REV:path` opens a file as git has it in a read-only
+tab. Both open a new editor window, and neither can be changed, saved, run or compiled (the bar says so), nor
+is kept when the editor rebuilds itself.
+
+**With git.** Three ways, all in your git config:
+
+    # git diff / git log -p print what changed in the program, not the Lua
+    # (.gitattributes)
+    *.lua diff=lineit
+    # (git config)
+    git config diff.lineit.textconv "lineit text"
+
+    # git difftool: the diff in the editor, one canvas
+    git config difftool.lineit.cmd 'lineit diff --view "$LOCAL" "$REMOTE"'
+    git difftool -t lineit HEAD~1 -- examples/hello.lua
+
+    # a file at a revision, read-only
+    lineit show HEAD~3:examples/hello.lua
+
+`lineit text FILE` prints a canvas as text: a line per square and wire in the
+order of the ids, and multi-line fields on lines of their own, without
+positions or camera, so git's line diff shows only program changes. Only use
+`*.lua diff=lineit` in a project where every `.lua` is a canvas: others (and
+`*.type.lua`, `*.native.lua`, other Lua modules) aren't, and `lineit text`
+fails on them; name the canvases instead, like `*.canvas.lua`.
+
+**Ids.** The diff is only as good as the ids, so the editor keeps them
+stable. It never renumbers a square. A pasted square keeps its id if no
+square on the canvas has it, so cut and paste changes nothing in a diff;
+a copy (the original is still there) gets a new one. An id is never given
+twice: the canvas file keeps `next_id`, one more than the highest id ever
+used, when a square was deleted (older files, and files without deletions,
+don't have it: the highest id plus one is it). So a square that replaces
+another is an addition and a removal, never a "change of module". Ctrl+G
+takes squares out of the canvas into the subgraph, keeping their ids there,
+and puts one new square in.
 
 # Configuration
 

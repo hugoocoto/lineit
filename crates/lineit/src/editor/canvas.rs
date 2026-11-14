@@ -19,6 +19,7 @@ use lineit_rt::{Type, Value};
 
 use super::tab::Tab;
 use super::theme::Theme;
+use lineit_core::diff::Mark;
 
 /// The least zoom at which a field is a text box that can be typed in.
 pub const EDIT_ZOOM: f32 = 0.55;
@@ -203,6 +204,9 @@ pub fn pins_of(tab: &Tab, id: SquareId) -> Vec<PinRef> {
 
 /// Removes every wire of the selected squares.
 pub fn disconnect(tab: &mut Tab) {
+    if tab.label.is_some() {
+        return;
+    }
     let sel = tab.selected.clone();
     tab.canvas.links.retain(|l| !sel.contains(&l.from) && !sel.contains(&l.to));
 }
@@ -306,6 +310,9 @@ fn fields(tab: &Tab, reg: &Registry, id: SquareId) -> Vec<(FieldKey, FieldKind, 
 
 /// Starts typing in field KEY (or choosing, for a checkbox or a list).
 pub fn start_edit(tab: &Tab, reg: &Registry, state: &mut CanvasState, key: &FieldKey) {
+    if tab.label.is_some() {
+        return;
+    }
     let Some((key, kind, check, title, now)) = fields(tab, reg, key.sq).into_iter().find(|f| f.0 == *key) else {
         return;
     };
@@ -785,6 +792,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
     cam.y = view.cam.y;
     cam.zoom = view.zoom;
     let z = view.zoom;
+    // a read-only tab (git's file, a diff) can't be changed
+    let ro = cx.tab.label.is_some();
 
     painter.rect_filled(rect, 0.0, theme.background);
     if cx.cfg.bool("canvas.grid") {
@@ -874,7 +883,15 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         };
         let (a, b) = (view.to_screen(a), view.to_screen(b));
         let selected = cx.tab.selected_links.contains(l);
-        let color = theme.of(ty.as_ref());
+        let mut color = theme.of(ty.as_ref());
+        // in a diff: a wire that's new or gone
+        if let Some(d) = &cx.tab.diff {
+            if d.links_added.contains(l) {
+                color = theme.added;
+            } else if d.links_removed.contains(l) {
+                color = theme.removed;
+            }
+        }
         if selected {
             draw_wire(&painter, a, b, theme.selection, wire_w + 4.0, z);
         }
@@ -1108,7 +1125,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     tip.push_str(&format!(" = {}", short(&v.text(), 200)));
                 }
                 let pin_resp = pin_resp.on_hover_text(tip);
-                if pin_resp.drag_started() {
+                if pin_resp.drag_started() && !ro {
                     // a plugged input gives its wire back, to put elsewhere
                     let link = cx.tab.canvas.links.iter().rev().find(|l| l.to == id && l.input == pin.name).cloned();
                     match link {
@@ -1379,7 +1396,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             painter.galley(srect.left_bottom() + vec2(0.0, 4.0 * z), galley, theme.error);
         }
     }
-    super::tests::window(ui.ctx(), cx.tab, &mut cx.state.tests, &theme);
+    if cx.tab.label.is_none() {
+        super::tests::window(ui.ctx(), cx.tab, &mut cx.state.tests, &theme);
+    }
 
     // vim mode: the focus, and the pins to pick
     if cx.state.vim.on {
@@ -1434,14 +1453,38 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             cx.state.edit = None;
         }
     }
-    if let Some(d) = move_by {
+    // a diff: what each square is, in the theme's colors; the ones that only moved fade
+    if let Some(d) = &cx.tab.diff {
+        for (id, mark) in &d.squares {
+            let Some(g) = geos.get(id) else { continue };
+            let r = view.rect(g.rect);
+            if !r.expand(40.0).intersects(rect) {
+                continue;
+            }
+            let (color, tag) = match mark {
+                Mark::Added => (theme.added, "added"),
+                Mark::Removed => (theme.removed, "removed"),
+                Mark::Changed => (theme.changed, "changed"),
+                Mark::Wired => (theme.changed.gamma_multiply(0.6), "wires changed"),
+                Mark::Moved => {
+                    painter.rect_filled(r, 0.0, theme.background.gamma_multiply(0.6));
+                    continue;
+                }
+            };
+            painter.rect_filled(r, 0.0, color.gamma_multiply(0.14));
+            painter.rect_stroke(r, 0.0, Stroke::new(if *mark == Mark::Wired { 2.0 } else { 3.0 }, color), StrokeKind::Outside);
+            let at = r.left_top() - vec2(0.0, 4.0 * z);
+            painter.text(at, Align2::LEFT_BOTTOM, tag, font(12.0), color);
+        }
+    }
+    if let Some(d) = move_by.filter(|_| !ro) {
         let sel = cx.tab.selected.clone();
         for sq in cx.tab.canvas.squares.iter_mut().filter(|s| sel.contains(&s.id)) {
             sq.x += d.x;
             sq.y += d.y;
         }
     }
-    if snap && cx.cfg.bool("canvas.snap") {
+    if snap && !ro && cx.cfg.bool("canvas.snap") {
         let step = cx.cfg.num("canvas.grid_step") as f32;
         let sel = cx.tab.selected.clone();
         for sq in cx.tab.canvas.squares.iter_mut().filter(|s| sel.contains(&s.id)) {
@@ -1548,7 +1591,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 best.map(|b| (b.1, b.2, b.3))
             };
             match drag {
-                Drag::Wire { from, ty, picked } => match near(false) {
+                Drag::Wire { from, ty, picked } if !ro => match near(false) {
                     Some((to, input, tick)) => {
                         if can_wire(ty.is_none(), tick, from.0, to) {
                             cx.tab.canvas.connect(Link { from: from.0, output: from.1, to, input }, !tick);
@@ -1561,7 +1604,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     }),
                     None => {}
                 },
-                Drag::WireBack { to, ty } => match near(true) {
+                Drag::WireBack { to, ty } if !ro => match near(true) {
                     Some((from, output, tick)) => {
                         if can_wire(ty.is_none(), tick, from, to.0) {
                             cx.tab.canvas.connect(Link { from, output, to: to.0, input: to.1 }, !tick);
@@ -1574,7 +1617,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     }),
                     None => {}
                 },
-                Drag::Select { .. } => {}
+                _ => {}
             }
         }
     }

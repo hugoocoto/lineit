@@ -67,6 +67,12 @@ module path, a position, its params and the text in its fields) and links
 numbered, so a canvas still opens after a module gains or reorders pins; a
 link to a pin that isn't there is left out when lowering, not an error.
 
+Ids are stable, so two versions of a canvas can be compared by them (see
+@sec-diff). `Canvas::next` is one more than the highest id any square has had:
+`Canvas::add` raises it and removing a square doesn't lower it, so
+`Canvas::next_id` never gives an id twice. The editor's paste keeps a square's
+id when no square on the canvas has it, and undo and redo keep `next` as it is.
+
 == Files
 
 A canvas file is Lua that returns a table:
@@ -83,6 +89,10 @@ return {
         links = { { 1, "then", 2, "tick" } },
 }
 ```
+
+A canvas that had squares deleted also has `next_id = N` (the id after the
+highest one used): older lineits ignore it, and a file without it means the
+highest id plus one, so the format number didn't change.
 
 `file::with_data` reads it: a Lua state with no libraries at all, an empty
 environment, a memory limit (`file::MEMORY`) and an instruction limit
@@ -287,6 +297,32 @@ unzipped once into the cache (its folder named with a hash of the file) and
 its modules loaded as `NAME/...`. A folder with a `package.lua` in the
 packages folder is loaded as it is, for making one. The zip checks every
 file with its CRC as it's read.
+
+= Diffs <sec-diff>
+
+`diff::diff` compares two canvases by square id and returns a `Diff`: squares
+added and removed, squares in both whose module, fields or params changed
+(each with the entries that did), squares that only moved, and wires added and
+removed. Camera, `doc` and positions aren't the program. `diff::lines` is the
+line diff of a multi-line value, by the `similar` crate, with a CRLF and a
+missing last newline made visible; `diff::outline` is a canvas as text (no
+positions), which `lineit text` prints for git's textconv, and keeps those
+differences too, so `git diff` and `lineit diff` agree on what changed.
+
+`diff::merge` puts both on one canvas for the editor: the squares and wires of
+the new canvas, and the ones only the old had, with a `Mark` for each square
+(added, removed, changed, wired: a wire to or from it changed, moved). A tab
+made by `Tab::view` has `label` (it's read-only) and `diff` (the merge). The
+removed wires are drawn, but lowering leaves them out, and the diagnostics of
+removed squares, so they can't show false errors. `]c` and `[c` go through
+`nav::change` over the squares the merge calls changes, in the order of
+`nav::order`.
+
+`diff::uses` finds where a subgraph is: it reads the canvases under a folder
+(four levels, no index) for squares of that module; `lineit diff` calls it
+for `.graph.lua` files. `lineit diff A B` also takes `REV:path`, read with
+`git show` and placed in the working tree from `git rev-parse --show-toplevel`
+(or from here for `REV:./path`).
 
 = The editor <sec-editor>
 

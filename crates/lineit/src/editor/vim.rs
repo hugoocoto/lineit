@@ -93,6 +93,8 @@ pub enum Act {
     PinRemove,
     PinCancel,
     OpenSubgraph,
+    /// The next (positive) or previous change of a diff view.
+    Change(i32),
     TabNext(usize),
     TabPrev(usize),
     TabGo(usize),
@@ -201,6 +203,8 @@ impl Vim {
                 },
                 ('g', Input::Char('T')) if !visual => vec![Act::TabPrev(one)],
                 ('g', Input::Char('d')) if !visual => vec![Act::OpenSubgraph],
+                (']', Input::Char('c')) => vec![Act::Change(one as i32)],
+                ('[', Input::Char('c')) => vec![Act::Change(-(one as i32))],
                 ('z', Input::Char('h')) => vec![Act::Pan(Dir::Left, one)],
                 ('z', Input::Char('l')) => vec![Act::Pan(Dir::Right, one)],
                 ('z', Input::Char('j')) => vec![Act::Pan(Dir::Down, one)],
@@ -250,7 +254,7 @@ impl Vim {
             return acts;
         }
         match k {
-            Input::Char(c @ ('d' | 'y' | 'g' | 'z' | 'a' | 'o' | 'O')) => {
+            Input::Char(c @ ('d' | 'y' | 'g' | 'z' | 'a' | 'o' | 'O' | ']' | '[')) => {
                 // in Visual, d and y act at once
                 if visual && c == 'd' {
                     return self.after_operator(Act::Delete);
@@ -730,6 +734,7 @@ NORMAL (the focused square has a ring; counts work: 3j)
   v / V              Visual: extend by moving / select the whole chain
   f                  Pin: wire from the keyboard (see below)
   gd                 open the subgraph this square is
+  ]c  [c  3]c        next / previous change, in a diff view (lineit diff --view)
   gt  gT  3gt        next / previous / third tab
   Ctrl+E/Y  Ctrl+D/U pan down / up; half a page down / up
   zh zl zj zk        pan sideways / vertically     zz  center on the focus
@@ -791,6 +796,10 @@ mod tests {
         assert_eq!(keys(&mut v, "G"), vec![Act::Last(None)]);
         assert_eq!(keys(&mut v, "4G"), vec![Act::Last(Some(4))]);
         assert_eq!(keys(&mut v, "gd"), vec![Act::OpenSubgraph]);
+        assert_eq!(keys(&mut v, "]c"), vec![Act::Change(1)]);
+        assert_eq!(keys(&mut v, "[c"), vec![Act::Change(-1)]);
+        assert_eq!(keys(&mut v, "3]c"), vec![Act::Change(3)]);
+        assert_eq!(keys(&mut v, "]x"), vec![]);
         assert_eq!(keys(&mut v, "zz"), vec![Act::Center]);
         // a wrong second key drops the first
         assert_eq!(keys(&mut v, "dj"), vec![]);
