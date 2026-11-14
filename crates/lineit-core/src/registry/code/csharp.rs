@@ -114,10 +114,26 @@ impl Language for CSharp {
         Ok(ExtKind::Process {
             name: f.name.clone(),
             commands: vec!["dotnet".into()],
-            // quiet: no build output (warnings) on the way
-            args: vec!["run".into(), "-v".into(), "q".into()],
+            // quiet: no build output (warnings) on the way. What it builds
+            // goes in a folder of the code's ([`ARTIFACTS`]), so it goes when
+            // lineit prunes them (it's held by the build lock and the run
+            // lock). dotnet keeps a few bytes per code of its own, in
+            // ~/.local/share/dotnet/runfile (`build-*.cache`: whether it's
+            // built), that lineit doesn't prune: the SDK does, after 30 days.
+            args: vec![
+                "run".into(),
+                "-v".into(),
+                "q".into(),
+                "--artifacts-path".into(),
+                path.with_file_name(ARTIFACTS).to_string_lossy().into_owned(),
+            ],
             // what it does the first time it runs, that isn't running the code
             env: [
+                // dotnet checks that its workloads (optional SDK add-ons, none
+                // used here) are consistent before it runs, and says "An issue
+                // was encountered verifying workloads" on an account that has
+                // never run it; this skips only that check
+                ("DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK", "1"),
                 ("DOTNET_NOLOGO", "1"),
                 ("DOTNET_CLI_TELEMETRY_OPTOUT", "1"),
                 ("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1"),
@@ -131,6 +147,11 @@ impl Language for CSharp {
         })
     }
 }
+
+/// The folder of a code's folder where `dotnet run` puts what it builds (its
+/// `--artifacts-path`): its own, not shared with the code's files
+/// (`code.cs` and the locks).
+const ARTIFACTS: &str = "dotnet-artifacts";
 
 /// The oldest .NET SDK that runs a `.cs` file as it is.
 const MIN_SDK: u32 = 10;
@@ -837,8 +858,19 @@ static class Collatz
         // code .NET doesn't build: its error
         let (mut bad, _) = read("static class A { public static long F(long x) { return x; } }", &Cx).unwrap();
         bad.source = "static class A { public static long F(long x) { return y; } }".into();
-        let e = crate::interp::open_ext("F", &CSharp.ext(&bad).unwrap()).err().unwrap();
-        assert!(e.contains("error CS0103"), "{e}");
+        let kind = CSharp.ext(&bad).unwrap();
+        let e = crate::interp::open_ext("F", &kind).err().unwrap();
+        // what lineit says of it, and that it has the compiler's error
+        assert!(e.contains("the code doesn't build"), "{e}");
+        assert!(e.contains("F.cs") && e.contains("error CS0103"), "{e}");
+        assert!(!e.contains("couldn't run its language") && !e.contains("workloads"), "{e}");
+        // what dotnet builds is in the code's folder, not in its own cache
+        let ExtKind::Process { args, host, .. } = &kind else { panic!() };
+        let at = args.iter().position(|a| a == "--artifacts-path").unwrap();
+        let art = std::path::Path::new(&args[at + 1]);
+        assert_eq!(art.parent(), std::path::Path::new(host).parent());
+        assert_eq!(art.file_name().unwrap(), ARTIFACTS);
+        assert!(art.join("obj").exists(), "{}", art.display());
     }
 
     #[test]

@@ -48,11 +48,19 @@ fn lock_file(dir: &str, name: &str) -> Option<std::fs::File> {
     std::fs::File::options().create(true).append(true).open(std::path::Path::new(dir).join(name)).ok()
 }
 
-/// Whether a process runs the code in DIR (a folder a code square's process
-/// was started with): what stops it from being deleted.
+/// How many of the last lines a tool says before it answers are kept (what
+/// its build said).
+const SAID_KEPT: usize = 200;
+/// And how many of them an "ended without answering" shows.
+const SAID_SHOWN: usize = 10;
+
+/// Whether a process runs, or builds, the code in DIR (a folder a code
+/// square's process was started with): what stops it from being deleted.
 pub fn busy(dir: &std::path::Path) -> bool {
-    let Ok(f) = std::fs::File::open(dir.join(RUN_LOCK)) else { return false };
-    fs4::FileExt::try_lock(&f).is_err()
+    [RUN_LOCK, BUILD_LOCK].iter().any(|name| {
+        let Ok(f) = std::fs::File::open(dir.join(name)) else { return false };
+        fs4::FileExt::try_lock(&f).is_err()
+    })
 }
 
 impl Process {
@@ -105,10 +113,22 @@ impl Process {
                                 .map(|_| p)
                                 .map_err(|e| if said.is_empty() { e } else { format!("{e}\n{}", said.join("\n")) });
                         }
-                        Ok((None, said)) => tried.push(match said.last() {
-                            None => format!("{cmd}: it ended without answering"),
-                            Some(_) => format!("{cmd}: it ended without answering:\n{}", said.join("\n")),
-                        }),
+                        Ok((None, said)) => {
+                            let status = p.child.lock().unwrap_or_else(|e| e.into_inner()).wait().ok();
+                            // what's built when it starts, and ends with a
+                            // failure that says compiler errors: the build failed
+                            if lock.is_some()
+                                && status.is_some_and(|s| !s.success())
+                                && said.iter().any(|l| is_error(l))
+                            {
+                                return Err(format!("{name}: the code doesn't build:\n{}", build_errors(&said, host)));
+                            }
+                            let said = &said[said.len().saturating_sub(SAID_SHOWN)..];
+                            tried.push(match said.last() {
+                                None => format!("{cmd}: it ended without answering"),
+                                Some(_) => format!("{cmd}: it ended without answering:\n{}", said.join("\n")),
+                            })
+                        }
                         Err(e) => tried.push(format!("{cmd}: {e}")),
                     }
                 }
@@ -120,8 +140,8 @@ impl Process {
 
     /// Its first answer (a JSON object on a line), and the lines it said
     /// before it; or, if it ends without one, all it said (the last
-    /// lines): what the tool that runs the code says first (a banner, build
-    /// errors).
+    /// [`SAID_KEPT`] lines): what the tool that runs the code says first (a
+    /// banner, build errors).
     fn first_answer(&mut self) -> Result<(Option<Map<String, Json>>, Vec<String>), String> {
         let mut said = Vec::new();
         while let Some(line) = self.answer_line()? {
@@ -130,10 +150,12 @@ impl Process {
             }
             if !line.trim().is_empty() {
                 said.push(line.trim_end().to_string());
+                if said.len() > 2 * SAID_KEPT {
+                    said.drain(..SAID_KEPT);
+                }
             }
         }
-        // the last lines are the ones that tell
-        said.drain(..said.len().saturating_sub(10));
+        said.drain(..said.len().saturating_sub(SAID_KEPT));
         Ok((None, said))
     }
 
@@ -189,6 +211,40 @@ impl Process {
         }
         self.ask(json!({ "op": "call", "sq": sq, "i": i }))
     }
+}
+
+/// Whether LINE is a compiler's error, in MSBuild's format
+/// (`F.cs(3,9): error CS0103: ...`).
+fn is_error(line: &str) -> bool {
+    line.contains(": error ")
+}
+
+/// What a build said (SAID) that is the compiler's: its errors, or all of it
+/// if it has none, as lines of the code (`F.cs(3,9): error CS0103: ...`):
+/// without the folder of HOST, the code's file, in the paths (as it was
+/// given, resolved, with either slash), nor the project MSBuild ends them
+/// with (` [/path/x.csproj]`), and each once.
+fn build_errors(said: &[String], host: &str) -> String {
+    let errors: Vec<&String> = said.iter().filter(|l| is_error(l)).collect();
+    let lines = if errors.is_empty() { said.iter().collect() } else { errors };
+    let parent = std::path::Path::new(host).parent();
+    let mut dirs: Vec<String> = parent.into_iter().map(|d| d.display().to_string()).collect();
+    dirs.extend(parent.and_then(|d| d.canonicalize().ok()).map(|d| d.display().to_string()));
+    let mut prefixes: Vec<String> = dirs.iter().flat_map(|d| [format!("{d}/"), format!("{d}\\")]).collect();
+    prefixes.sort();
+    prefixes.dedup();
+    let mut out: Vec<String> = Vec::new();
+    for l in lines {
+        let mut l = l.as_str();
+        if let Some(i) = l.strip_suffix(']').and_then(|t| t.rfind(" [")) {
+            l = &l[..i];
+        }
+        let l = prefixes.iter().fold(l.to_string(), |l, d| l.replace(d.as_str(), ""));
+        if !out.contains(&l) {
+            out.push(l);
+        }
+    }
+    out.join("\n")
 }
 
 impl Drop for Process {
@@ -359,4 +415,66 @@ pub fn from_json_any(v: &Json) -> Option<Value> {
         }
         Json::Null => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `sh -c SCRIPT` as a language that builds says, started in a
+    /// folder of its own: the error of `Process::start`.
+    fn built_by(script: &str) -> String {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "lineit-rt-process-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let host = dir.join("code.cs");
+        let r = Process::start("F", &["sh"], &["-c", script], &[], dir.to_str(), host.to_str().unwrap(), "{}");
+        std::fs::remove_dir_all(&dir).unwrap();
+        r.err().expect("it doesn't answer")
+    }
+
+    #[test]
+    fn build_failures() {
+        // the compiler's errors, all of them, once each, on the code's lines
+        let e = built_by(
+            "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo \"$(dirname $0)/F.cs($i,1): error CS0103: no $i [/x/a.csproj]\"; done; \
+             echo \"$(dirname $0)/F.cs(1,1): error CS0103: no 1\"; echo 'The build failed.'; exit 1",
+        );
+        assert!(e.starts_with("F: the code doesn't build:\nF.cs(1,1): error CS0103: no 1\n"), "{e}");
+        assert!(e.contains("F.cs(12,1): error CS0103: no 12"), "{e}");
+        assert_eq!(e.matches("no 1\n").count(), 1, "{e}");
+        assert!(!e.contains("csproj") && !e.contains("lineit-rt-process"), "{e}");
+        assert!(!e.contains("The build failed"), "{e}");
+    }
+
+    #[test]
+    fn not_build_failures() {
+        // it builds, and then it crashes
+        let e = built_by("echo 'Unhandled exception. System.Exception: boom'; exit 134");
+        assert!(e.contains("couldn't run its language") && e.contains("it ended without answering:\nUnhandled"), "{e}");
+        assert!(!e.contains("doesn't build"), "{e}");
+        // it says nothing
+        let e = built_by("exit 1");
+        assert!(e.contains("it ended without answering") && !e.contains("doesn't build"), "{e}");
+        // errors, but it doesn't fail
+        let e = built_by("echo 'F.cs(1,1): error CS0103: x'; exit 0");
+        assert!(!e.contains("doesn't build"), "{e}");
+    }
+
+    #[test]
+    fn busy_while_building() {
+        let dir = std::env::temp_dir().join(format!("lineit-rt-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!busy(&dir));
+        let build = lock_file(dir.to_str().unwrap(), BUILD_LOCK).unwrap();
+        fs4::FileExt::lock(&build).unwrap();
+        assert!(busy(&dir));
+        drop(build);
+        assert!(!busy(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
