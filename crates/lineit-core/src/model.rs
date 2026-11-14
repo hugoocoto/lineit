@@ -23,6 +23,11 @@ pub struct Canvas {
     /// Its file had no camera: the editor puts all the squares in view
     /// (not saved: a canvas written has one).
     pub no_camera: bool,
+    /// One more than the highest id any square of this canvas has ever had,
+    /// deleted ones too: an id is never given twice, so a diff can tell a
+    /// square that was replaced from one that changed. Saved as `next_id`
+    /// when it's more than the squares need.
+    pub next: SquareId,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,13 +98,16 @@ impl Canvas {
         self.squares.iter_mut().find(|s| s.id == id)
     }
 
-    /// An id no square has.
+    /// An id no square has, and none has ever had.
     pub fn next_id(&self) -> SquareId {
-        self.squares.iter().map(|s| s.id).max().map_or(1, |m| m + 1)
+        self.squares.iter().map(|s| s.id + 1).max().unwrap_or(1).max(self.next)
     }
 
+    /// Adds a square. Squares go in with this, so [`Canvas::next`] knows
+    /// their ids.
     pub fn add(&mut self, s: Square) -> SquareId {
         let id = s.id;
+        self.next = self.next.max(id + 1);
         self.squares.push(s);
         id
     }

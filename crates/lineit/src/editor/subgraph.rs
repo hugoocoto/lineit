@@ -59,7 +59,7 @@ pub fn make(tab: &mut Tab, selected: &BTreeSet<SquareId>, name: &str) -> Result<
         let mut s = s.clone();
         s.x -= min_x;
         s.y -= min_y;
-        sub.squares.push(s);
+        sub.add(s);
     }
     let mut next = sub.next_id().max(tab.canvas.next_id());
     let mut used_in = BTreeSet::new();
@@ -80,7 +80,7 @@ pub fn make(tab: &mut Tab, selected: &BTreeSet<SquareId>, name: &str) -> Result<
                         next += 1;
                         let pname = unique(&l.output, &mut used_in);
                         let target_y = tab.canvas.square(l.to).map(|s| s.y - min_y).unwrap_or(0.0);
-                        sub.squares.push(
+                        sub.add(
                             Square::new(id, "graph/input", -260.0, target_y)
                                 .with_param("name", &pname)
                                 .with_param("type", &port_type(tab, l.from, &l.output))
@@ -102,7 +102,7 @@ pub fn make(tab: &mut Tab, selected: &BTreeSet<SquareId>, name: &str) -> Result<
                         next += 1;
                         let pname = unique(&l.output, &mut used_out);
                         let src_y = tab.canvas.square(l.from).map(|s| s.y - min_y).unwrap_or(0.0);
-                        sub.squares.push(
+                        sub.add(
                             Square::new(id, "graph/output", max_x - min_x + 260.0, src_y)
                                 .with_param("name", &pname)
                                 .with_param("type", &port_type(tab, l.from, &l.output)),

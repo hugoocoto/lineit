@@ -33,6 +33,10 @@ pub struct Theme {
     pub map: Color32,
     pub image: Color32,
     pub record: Color32,
+    /// In a diff view: what was added, removed, and changed.
+    pub added: Color32,
+    pub removed: Color32,
+    pub changed: Color32,
 }
 
 const fn c(r: u8, g: u8, b: u8) -> Color32 {
@@ -68,6 +72,9 @@ pub fn dark() -> Theme {
         map: c(240, 120, 180),
         image: c(240, 210, 90),
         record: c(170, 175, 185),
+        added: c(90, 200, 110),
+        removed: c(240, 90, 90),
+        changed: c(250, 190, 70),
     }
 }
 
@@ -98,6 +105,9 @@ fn light() -> Theme {
         map: c(200, 60, 130),
         image: c(180, 140, 0),
         record: c(100, 105, 115),
+        added: c(30, 150, 60),
+        removed: c(210, 40, 40),
+        changed: c(210, 140, 0),
     }
 }
 
@@ -126,6 +136,9 @@ fn nord() -> Theme {
         map: c(191, 97, 106),
         image: c(235, 203, 139),
         record: c(216, 222, 233),
+        added: c(163, 190, 140),
+        removed: c(191, 97, 106),
+        changed: c(235, 203, 139),
         ..dark()
     }
 }
@@ -155,6 +168,9 @@ fn gruvbox() -> Theme {
         map: c(251, 73, 52),
         image: c(250, 189, 47),
         record: c(189, 174, 147),
+        added: c(184, 187, 38),
+        removed: c(251, 73, 52),
+        changed: c(250, 189, 47),
         ..dark()
     }
 }
@@ -202,6 +218,9 @@ impl Theme {
                 "map" => &mut self.map,
                 "image" => &mut self.image,
                 "record" => &mut self.record,
+                "added" => &mut self.added,
+                "removed" => &mut self.removed,
+                "changed" => &mut self.changed,
                 _ => continue,
             };
             *slot = v;

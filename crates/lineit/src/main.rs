@@ -1,5 +1,6 @@
 //! lineit: the editor, and the commands that work without it.
 
+mod diffcmd;
 mod editor;
 
 use std::path::{Path, PathBuf};
@@ -17,6 +18,13 @@ Usage:
     lineit run FILE [--for SECONDS] run a canvas here, without the editor
     lineit check FILE               say what's wrong with a canvas, if anything
     lineit test FILE                run the tests of its code squares
+    lineit diff A B [--view]        what changed from canvas A to B, by square id (exit
+                                    0 same, 1 different, 2 error); --view: in the editor,
+                                    on one canvas. A and B can be REV:path, a file as
+                                    git has it
+    lineit show FILE|REV:PATH...    open canvases, or files as git has them, read-only
+    lineit text FILE                a canvas as text without positions (a git textconv
+                                    driver, see the README)
     lineit compile FILE [-o OUT]    compile a canvas to a program (needs cargo)
     lineit new-package NAME [--native]  make a folder for a new package (--native:
                                     with a Rust module too)
@@ -35,6 +43,24 @@ fn main() -> ExitCode {
     // not lineit
     if let Ok(exe) = std::env::current_exe() {
         lineit_core::native::run_apart(exe);
+    }
+    // like diff(1): 0 the same, 1 different, 2 trouble
+    if args.first().map(String::as_str) == Some("diff") {
+        let view = args.iter().any(|a| a == "--view");
+        let r = match (only_flags(&args[1..], &["--view"], "diff A B [--view]"), positional(&args[1..], &[]).as_slice()) {
+            (Err(e), _) => Err(e),
+            (_, [a, b]) if view => diffcmd::view(a, b).map(|()| false),
+            (_, [a, b]) => diffcmd::run(a, b),
+            _ => Err("diff needs two canvases: lineit diff A B".into()),
+        };
+        return match r {
+            Ok(false) => ExitCode::SUCCESS,
+            Ok(true) => ExitCode::from(1),
+            Err(e) => {
+                eprintln!("lineit: {e}");
+                ExitCode::from(2)
+            }
+        };
     }
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
@@ -68,6 +94,15 @@ fn positional<'a>(args: &'a [String], with_value: &[&str]) -> Vec<&'a String> {
         }
     }
     v
+}
+
+/// An error if ARGS has an option that isn't one of OK, or a `-` (these
+/// commands don't read the standard input).
+fn only_flags(args: &[String], ok: &[&str], usage: &str) -> Result<(), String> {
+    match args.iter().find(|a| a.starts_with('-') && !ok.contains(&a.as_str())) {
+        Some(a) => Err(format!("{a}: no such option (usage: lineit {usage})")),
+        None => Ok(()),
+    }
 }
 
 fn one_file(args: &[String], with_value: &[&str]) -> Result<PathBuf, String> {
@@ -204,6 +239,19 @@ fn run(args: &[String]) -> Result<(), String> {
                 println!("{}: it has no tests (test/case squares, or tests on code squares)", path.display());
             }
             if failed > 0 { Err(format!("{failed} failed, {passed} passed")) } else { Ok(()) }
+        }
+        "show" => {
+            only_flags(rest, &[], "show FILE|REV:PATH...")?;
+            match positional(rest, &[]).as_slice() {
+                [] => Err("which file? FILE or REV:path".into()),
+                specs => diffcmd::show(specs),
+            }
+        }
+        "text" => {
+            only_flags(rest, &[], "text FILE")?;
+            let (canvas, _) = diffcmd::read(&one_file(rest, &[])?.to_string_lossy())?;
+            print!("{}", lineit_core::diff::outline(&canvas));
+            Ok(())
         }
         "compile" => {
             let path = one_file(rest, &["-o"])?;

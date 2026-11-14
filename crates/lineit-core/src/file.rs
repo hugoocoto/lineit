@@ -89,7 +89,7 @@ pub fn read_canvas(source: &str, name: &str) -> Result<Canvas, String> {
                 if c.square(id).is_some() {
                     return Err(format!("two squares have id {id}"));
                 }
-                c.squares.push(Square {
+                c.add(Square {
                     id,
                     module,
                     x: get(&s, "x")?.unwrap_or(0.0),
@@ -98,6 +98,10 @@ pub fn read_canvas(source: &str, name: &str) -> Result<Canvas, String> {
                     fields: strings(&s, "fields")?,
                 });
             }
+        }
+        // ids that were used and are gone (older files have none: the highest is it)
+        if let Some(next) = get::<u64>(t, "next_id")? {
+            c.next = c.next.max(next);
         }
         if let Some(links) = get::<Table>(t, "links")? {
             for (i, l) in links.sequence_values::<Table>().enumerate() {
@@ -167,6 +171,11 @@ pub fn write_canvas(c: &Canvas) -> String {
     if !c.doc.is_empty() {
         let _ = writeln!(s, "        doc = {},", quote(&c.doc));
     }
+    // only when a square was deleted: files that need nothing more don't change
+    let needed = c.squares.iter().map(|sq| sq.id + 1).max().unwrap_or(1);
+    if c.next > needed {
+        let _ = writeln!(s, "        next_id = {},", c.next);
+    }
     let _ = writeln!(
         s,
         "        camera = {{ x = {}, y = {}, zoom = {} }},",
@@ -213,7 +222,28 @@ mod tests {
         c.add(Square::new(3, "value/constant", 0.0, 50.0).with_param("type", "int").with_param("end", "x"));
         c.connect(Link::new(1, "then", 2, "tick"), false);
         let text = write_canvas(&c);
+        assert!(!text.contains("next_id"), "nothing was deleted: {text}");
         assert_eq!(read_canvas(&text, "t").unwrap(), c);
+    }
+
+    #[test]
+    fn deleted_ids_are_remembered() {
+        let mut c = Canvas::default();
+        c.add(Square::new(1, "flow/entry", 0.0, 0.0));
+        c.add(Square::new(2, "io/print", 0.0, 0.0));
+        c.remove(2);
+        assert_eq!(c.next_id(), 3);
+        let text = write_canvas(&c);
+        assert!(text.contains("next_id = 3"), "{text}");
+        let back = read_canvas(&text, "t").unwrap();
+        assert_eq!(back, c);
+        assert_eq!(back.next_id(), 3);
+        // a file without it: the highest id plus one
+        let old = read_canvas("return { lineit = 1, squares = { { id = 7, module = 'a' } } }", "t").unwrap();
+        assert_eq!(old.next_id(), 8);
+        // a next_id lower than the squares' is no use: they win
+        let low = read_canvas("return { lineit = 1, next_id = 2, squares = { { id = 7, module = 'a' } } }", "t").unwrap();
+        assert_eq!(low.next_id(), 8);
     }
 
     #[test]

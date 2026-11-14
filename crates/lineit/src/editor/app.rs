@@ -185,6 +185,13 @@ impl App {
                 }
             }
         }
+        if let Start::Views(views) = &start {
+            for d in views.iter().filter_map(|v| v.new.dir.clone()) {
+                if !dirs.contains(&d) {
+                    dirs.push(d);
+                }
+            }
+        }
         let dir_refs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
         let reg = Arc::new(lineit_core::registry_for(&dir_refs));
         let theme = Theme::from_config(&cfg);
@@ -240,6 +247,12 @@ impl App {
                     app.open(&f);
                 }
             }
+            Start::Views(views) => {
+                for v in views {
+                    let t = Tab::view(v.old.as_ref(), v.new, v.label, &app.reg);
+                    app.add_tab(t);
+                }
+            }
             Start::Session(s) => {
                 if let Err(e) = app.restore(&s.source, &cc.egui_ctx) {
                     eprintln!("lineit: the session of the editor before: {e}");
@@ -291,12 +304,15 @@ impl App {
     /// Hands over to the rebuilt binary; closes this window if it took over.
     fn hand_over(&mut self, ctx: &egui::Context) {
         let Some(exe) = &self.exe else { return };
-        let tabs: Vec<String> = self.tabs.iter().map(|(_, t, _)| t.session()).collect();
+        // read-only views (git's files, diffs) aren't kept: they'd come back editable
+        let kept: Vec<usize> = (0..self.tabs.len()).filter(|i| self.tabs[*i].1.label.is_none()).collect();
+        let tabs: Vec<String> = kept.iter().map(|i| self.tabs[*i].1.session()).collect();
+        let active = kept.iter().position(|i| *i >= self.active).unwrap_or(0);
         let (pos, size) = ctx.input(|i| {
             let v = i.viewport();
             (v.outer_rect.map(|r| [r.min.x, r.min.y]), v.inner_rect.map(|r| [r.width(), r.height()]))
         });
-        let text = session::write(&tabs, self.active, self.show_output, &session::Window { pos, size });
+        let text = session::write(&tabs, active, self.show_output, &session::Window { pos, size });
         match exe.hand_over(&text) {
             Ok(()) => {
                 // the runs stop as their tabs go
@@ -323,6 +339,16 @@ impl App {
 
     fn tab(&mut self) -> &mut Tab {
         &mut self.tabs[self.active].1
+    }
+
+    /// Whether the tab is read-only (a view of git's file, or a diff): says
+    /// so on the bar, for what was asked of it.
+    fn read_only(&mut self) -> bool {
+        let ro = self.tab().label.is_some();
+        if ro {
+            self.status("this tab is read-only", true);
+        }
+        ro
     }
 
     fn add_tab(&mut self, t: Tab) {
@@ -457,7 +483,7 @@ impl App {
     // ------------------------------------------------------------ files
 
     fn save(&mut self, ctx: &egui::Context) {
-        if self.tab().settings {
+        if self.tab().settings || self.read_only() {
             return;
         }
         match self.tab().path.clone() {
@@ -470,6 +496,10 @@ impl App {
     }
 
     fn ask(&mut self, kind: PromptKind, _ctx: &egui::Context) {
+        // a read-only tab is saved nowhere, and has no squares to put in a subgraph
+        if kind != PromptKind::Open && self.read_only() {
+            return;
+        }
         let dir = self.tab().dir();
         let (title, text) = match kind {
             PromptKind::Open => ("Open", format!("{}/", dir.display())),
@@ -632,7 +662,7 @@ impl App {
 
     fn close_tab(&mut self, i: usize) {
         let (_, t, _) = self.tabs.remove(i);
-        if !t.settings {
+        if !t.settings && t.label.is_none() {
             self.closed.push((t.canvas, t.path));
         }
         if self.tabs.is_empty() {
@@ -646,6 +676,9 @@ impl App {
 
     fn start(&mut self, mode: RunMode, ctx: &egui::Context) {
         if self.tab().settings {
+            return;
+        }
+        if self.read_only() {
             return;
         }
         self.mode = mode;
@@ -682,7 +715,7 @@ impl App {
 
     /// Runs the tests of the canvas, and opens their report.
     fn run_tests(&mut self) {
-        if self.tab().settings {
+        if self.tab().settings || self.read_only() {
             return;
         }
         let reg = self.reg.clone();
@@ -767,6 +800,9 @@ impl App {
     /// Runs test CASE by steps: from its given values, its checks shown on
     /// the canvas as the run gets to them.
     fn debug_test(&mut self, case: SquareId, ctx: &egui::Context) {
+        if self.read_only() {
+            return;
+        }
         let reg = self.reg.clone();
         let clear = self.cfg.bool("output.clear_on_run");
         let tab = self.tab();
@@ -892,12 +928,14 @@ impl App {
     }
 
     fn paste(&mut self, text: &str, at: Option<Pos2>) {
+        if self.read_only() {
+            return;
+        }
         let Ok(c) = lineit_core::file::read_canvas(text, "the clipboard") else { return };
         if c.squares.is_empty() {
             return;
         }
         let tab = self.tab();
-        let mut next = tab.canvas.next_id();
         let mut ids = HashMap::new();
         let min_x = c.squares.iter().map(|s| s.x).fold(f32::INFINITY, f32::min);
         let min_y = c.squares.iter().map(|s| s.y).fold(f32::INFINITY, f32::min);
@@ -907,13 +945,15 @@ impl App {
         };
         tab.selected.clear();
         for mut s in c.squares {
-            ids.insert(s.id, next);
-            s.id = next;
+            // a square keeps its id if nothing on the canvas has it (cut and
+            // paste changes nothing in a diff); a copy gets a new one
+            let id = if tab.canvas.square(s.id).is_none() { s.id } else { tab.canvas.next_id() };
+            ids.insert(s.id, id);
+            s.id = id;
             s.x += dx;
             s.y += dy;
-            tab.selected.insert(next);
-            tab.canvas.squares.push(s);
-            next += 1;
+            tab.selected.insert(id);
+            tab.canvas.add(s);
         }
         for l in c.links {
             if let (Some(a), Some(b)) = (ids.get(&l.from), ids.get(&l.to)) {
@@ -923,6 +963,9 @@ impl App {
     }
 
     fn delete_selection(&mut self) {
+        if self.read_only() {
+            return;
+        }
         let tab = self.tab();
         let sel = std::mem::take(&mut tab.selected);
         for id in sel {
@@ -933,6 +976,9 @@ impl App {
     }
 
     fn add_square(&mut self, path: &str, at: Pos2, pending: Option<Pending>) {
+        if self.read_only() {
+            return;
+        }
         let reg = self.reg.clone();
         let step = self.cfg.num("canvas.grid_step") as f32;
         let vim = self.vim_on();
@@ -1040,8 +1086,10 @@ impl App {
             return;
         }
         if key(cmd_shift, Key::Z) || key(cmd, Key::Y) {
-            self.tab().redo();
-        } else if key(cmd, Key::Z) {
+            if !self.read_only() {
+                self.tab().redo();
+            }
+        } else if key(cmd, Key::Z) && !self.read_only() {
             self.tab().undo();
         }
         if key(cmd, Key::A) {
@@ -1929,6 +1977,8 @@ fn pretty(key: &str) -> String {
 pub enum Start {
     Files(Vec<PathBuf>),
     Session(session::Session),
+    /// Read-only tabs: canvases as git has them, and diffs.
+    Views(Vec<super::View>),
 }
 
 fn config_stamp() -> (Option<std::time::SystemTime>, Option<std::time::SystemTime>) {
@@ -2071,6 +2121,7 @@ impl eframe::App for App {
                 if ext == "lua" {
                     self.open(&path);
                 } else if !self.tab().settings
+                    && !self.read_only()
                     && ["png", "jpg", "jpeg", "gif", "bmp", "qoi", "tga"].contains(&ext.as_str())
                 {
                     let cam = self.tab().canvas.camera.clone();
@@ -2150,7 +2201,13 @@ impl eframe::App for App {
                 actions = cx.actions;
             });
         }
+        // a read-only tab can look, copy and open its subgraphs, nothing else
+        let ro = self.tab().label.is_some();
         for a in actions {
+            if ro && !matches!(a, Action::ShowReport | Action::Copy | Action::OpenModule(_)) {
+                self.status("this tab is read-only", true);
+                continue;
+            }
             match a {
                 Action::Search { at, screen, pending } => {
                     self.search = Some(Search {
