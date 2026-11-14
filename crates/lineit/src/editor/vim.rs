@@ -40,6 +40,15 @@ pub enum Mode {
     Line(char),
 }
 
+/// How a square added beside the focus is wired: not, from the focus's
+/// output (`o`) or into its input (`O`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wire {
+    No,
+    After,
+    Before,
+}
+
 /// What the editor has to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
@@ -61,9 +70,12 @@ pub enum Act {
     Shove(Dir, usize),
     /// Types in a field: the nth, or the first.
     Edit(Option<usize>),
-    AddFree,
-    AddAfter,
-    AddBefore,
+    /// The module search for a square beside the focus, WIRE d or free; on
+    /// that SIDE of it, or (None) where the camera is.
+    Add {
+        wire: Wire,
+        side: Option<Dir>,
+    },
     Delete,
     Yank,
     Paste(bool),
@@ -195,6 +207,24 @@ impl Vim {
                 ('z', Input::Char('k')) => vec![Act::Pan(Dir::Up, one)],
                 ('z', Input::Char('z')) => vec![Act::Center],
                 ('z', Input::Char('f')) => vec![Act::FitAll],
+                ('o' | 'O' | 'a', Input::Char(c)) if !visual => {
+                    let side = match c {
+                        'h' => Some(Dir::Left),
+                        'j' => Some(Dir::Down),
+                        'k' => Some(Dir::Up),
+                        'l' => Some(Dir::Right),
+                        'o' if p == 'o' => Some(Dir::Right),
+                        'O' if p == 'O' => Some(Dir::Left),
+                        'a' if p == 'a' => None,
+                        _ => return vec![],
+                    };
+                    let wire = match p {
+                        'o' => Wire::After,
+                        'O' => Wire::Before,
+                        _ => Wire::No,
+                    };
+                    vec![Act::Add { wire, side }]
+                }
                 _ => vec![],
             };
         }
@@ -220,7 +250,7 @@ impl Vim {
             return acts;
         }
         match k {
-            Input::Char(c @ ('d' | 'y' | 'g' | 'z')) => {
+            Input::Char(c @ ('d' | 'y' | 'g' | 'z' | 'a' | 'o' | 'O')) => {
                 // in Visual, d and y act at once
                 if visual && c == 'd' {
                     return self.after_operator(Act::Delete);
@@ -278,9 +308,6 @@ impl Vim {
                 let c = self.take_count();
                 vec![Act::Edit(c)]
             }
-            Input::Char('a') => self.done(vec![Act::AddFree]),
-            Input::Char('o') => self.done(vec![Act::AddAfter]),
-            Input::Char('O') => self.done(vec![Act::AddBefore]),
             Input::Char('p') => self.done(vec![Act::Paste(true)]),
             Input::Char('P') => self.done(vec![Act::Paste(false)]),
             Input::Char('u') => self.done(vec![Act::Undo(n)]),
@@ -517,6 +544,10 @@ pub enum Ex {
     Step,
     Stop,
     Compile,
+    /// `:test`: Run tests.
+    Test,
+    /// `:debug [NAME]`: run test NAME (the first that failed, with none) by steps.
+    Debug(Option<String>),
     Output,
     ClearOutput,
     Add(String),
@@ -543,6 +574,7 @@ pub enum SetOp {
 pub const COMMANDS: &[&str] = &[
     "add",
     "compile",
+    "debug",
     "disconnect",
     "dup",
     "edit",
@@ -559,6 +591,7 @@ pub const COMMANDS: &[&str] = &[
     "stop",
     "subgraph",
     "tabclose",
+    "test",
     "tabnew",
     "tabnext",
     "tabprev",
@@ -601,6 +634,8 @@ pub fn parse_ex(line: &str) -> Result<Ex, String> {
         "step" => no_args(Ex::Step),
         "stop" => no_args(Ex::Stop),
         "compile" | "make" => no_args(Ex::Compile),
+        "test" | "tests" => no_args(Ex::Test),
+        "debug" => Ok(Ex::Debug((!rest.is_empty()).then(|| rest.to_string()))),
         "output" | "out" => no_args(Ex::Output),
         "clear" | "cl" => no_args(Ex::ClearOutput),
         "add" | "a" if rest.is_empty() => Err(":add needs a module (math/add)".into()),
@@ -684,8 +719,12 @@ NORMAL (the focused square has a ring; counts work: 3j)
   /text  n  N        find squares (module, field values, notes)
   H J K L            move the selected squares by a grid step
   i  Enter  3i       type in a field (the first, or the third)
-  a                  add a square (module search), not wired
-  o / O              add a square after / before this one, wired to it
+  o + h j k l        add a square next to this one (module search), wired from
+                     it: ol right (oo too), oj / ok a little below / above,
+                     oh flush on its left
+  O + h j k l        the mirror: wired into it, OO left, Oj / Ok below / above
+                     on the left, Ol flush on its right
+  a + h j k l        the same, not wired; aa where the view is
   dd  x              delete          yy  copy         p / P  paste right / below
   u  Ctrl+R          undo / redo
   v / V              Visual: extend by moving / select the whole chain
@@ -712,6 +751,7 @@ SETTINGS TAB   j k move, Space/Enter flip, h l change numbers and themes,
 COMMANDS (Tab completes)
   :w [file]  :q  :q!  :qa  :wq  :e file  :tabnew  :tabn [N]  :tabp  :tabc
   :run  :step  :stop  :compile  :output  :clear  :3 (the third square)
+  :test (the tests, F6)  :debug NAME (a test by steps; no NAME: the first that failed)
   :add module  :set key=value | key | nokey | key! | key?
   :settings  :subgraph  :open  :disconnect  :dup  :undo  :redo  :help
 ";
@@ -885,9 +925,23 @@ mod tests {
     #[test]
     fn adding_and_editing() {
         let mut v = Vim::new();
-        assert_eq!(keys(&mut v, "a"), vec![Act::AddFree]);
-        assert_eq!(keys(&mut v, "o"), vec![Act::AddAfter]);
-        assert_eq!(keys(&mut v, "O"), vec![Act::AddBefore]);
+        // a and o wait for a direction
+        assert_eq!(keys(&mut v, "a"), vec![]);
+        assert_eq!(keys(&mut v, "o"), vec![]);
+        assert_eq!(keys(&mut v, "aa"), vec![Act::Add { wire: Wire::No, side: None }]);
+        assert_eq!(keys(&mut v, "ah"), vec![Act::Add { wire: Wire::No, side: Some(Dir::Left) }]);
+        assert_eq!(keys(&mut v, "oo"), vec![Act::Add { wire: Wire::After, side: Some(Dir::Right) }]);
+        assert_eq!(keys(&mut v, "ol"), vec![Act::Add { wire: Wire::After, side: Some(Dir::Right) }]);
+        assert_eq!(keys(&mut v, "oj"), vec![Act::Add { wire: Wire::After, side: Some(Dir::Down) }]);
+        assert_eq!(keys(&mut v, "ok"), vec![Act::Add { wire: Wire::After, side: Some(Dir::Up) }]);
+        assert_eq!(keys(&mut v, "oh"), vec![Act::Add { wire: Wire::After, side: Some(Dir::Left) }]);
+        // O mirrors o
+        assert_eq!(keys(&mut v, "OO"), vec![Act::Add { wire: Wire::Before, side: Some(Dir::Left) }]);
+        assert_eq!(keys(&mut v, "Ol"), vec![Act::Add { wire: Wire::Before, side: Some(Dir::Right) }]);
+        assert_eq!(keys(&mut v, "Oj"), vec![Act::Add { wire: Wire::Before, side: Some(Dir::Down) }]);
+        // any other key cancels
+        assert_eq!(keys(&mut v, "ox"), vec![]);
+        assert_eq!(keys(&mut v, "Ox"), vec![]);
         assert_eq!(keys(&mut v, "i"), vec![Act::Edit(None)]);
         assert_eq!(keys(&mut v, "3i"), vec![Act::Edit(Some(3))]);
         assert_eq!(v.key(Input::Enter), vec![Act::Edit(None)]);

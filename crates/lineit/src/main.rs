@@ -16,6 +16,7 @@ Usage:
     lineit --new [FILE...]          open them in a new editor, even if one is running
     lineit run FILE [--for SECONDS] run a canvas here, without the editor
     lineit check FILE               say what's wrong with a canvas, if anything
+    lineit test FILE                run the tests of its code squares
     lineit compile FILE [-o OUT]    compile a canvas to a program (needs cargo)
     lineit new-package NAME [--native]  make a folder for a new package (--native:
                                     with a Rust module too)
@@ -30,6 +31,11 @@ A canvas with a clock runs until it's stopped (Ctrl+C), or for --for SECONDS.
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Rust and C code runs in a process of its own: its crash ends its run,
+    // not lineit
+    if let Ok(exe) = std::env::current_exe() {
+        lineit_core::native::run_apart(exe);
+    }
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -75,7 +81,8 @@ fn one_file(args: &[String], with_value: &[&str]) -> Result<PathBuf, String> {
 /// Reads the canvas at PATH and lowers it, with the modules it can see.
 pub fn load(path: &Path) -> Result<(lineit_core::model::Canvas, lower::Lowered), String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let canvas = file::read_canvas(&src, &path.display().to_string())?;
+    let mut canvas = file::read_canvas(&src, &path.display().to_string())?;
+    canvas.dir = path.parent().map(Path::to_path_buf);
     let reg = lineit_core::registry(path.parent());
     for e in &reg.errors {
         eprintln!("lineit: {e}");
@@ -135,6 +142,68 @@ fn run(args: &[String]) -> Result<(), String> {
             } else {
                 Err(format!("it has problems:{}", diags(&path, &canvas, &l)))
             }
+        }
+        // not in the help: runs a Rust or C library for the editor, apart
+        "native-host" => match rest {
+            [lib, crate_name, address, token] => {
+                let token = token.parse().map_err(|_| "native-host: a bad token")?;
+                lineit_core::native::serve(Path::new(lib), crate_name, address, token)
+            }
+            _ => Err("native-host LIB CRATE ADDRESS TOKEN".into()),
+        },
+        "test" => {
+            let path = one_file(rest, &[])?;
+            let (canvas, l) = load(&path)?;
+            let all = lineit_core::codetest::run_canvas(&canvas, &l);
+            let (mut passed, mut failed) = (0, 0);
+            // the canvas's tests: a run from each test/case
+            let reg = lineit_core::registry(path.parent());
+            let cases = lineit_core::codetest::run_cases(&canvas, &reg);
+            for c in &cases {
+                let what = format!("{} (test `{}`)", path.display(), c.name);
+                if c.ok() {
+                    passed += 1;
+                    println!("{what}: passed, {} check{}", c.checks.len(), if c.checks.len() == 1 { "" } else { "s" });
+                    continue;
+                }
+                failed += 1;
+                println!("{what}: failed");
+                for k in c.checks.iter().filter(|k| !k.ok) {
+                    let label = if k.label.is_empty() { format!("square {}", k.square) } else { k.label.clone() };
+                    println!("  {label}: expected {}, got {}", k.expected.text(), k.got.text());
+                }
+                if let Some(e) = &c.error {
+                    println!("  {e}");
+                }
+            }
+            for t in &all {
+                let what = format!("{} (square {}{})", path.display(), t.square, if t.name.is_empty() { String::new() } else { format!(", {}", t.name) });
+                match &t.results {
+                    Err(e) => {
+                        failed += t.rows.max(1);
+                        println!("{what}: {e}");
+                    }
+                    Ok(rows) => {
+                        let bad: Vec<(usize, &lineit_core::codetest::RowResult)> =
+                            rows.iter().enumerate().filter(|(_, r)| !r.ok()).collect();
+                        passed += rows.len() - bad.len();
+                        failed += bad.len();
+                        println!("{what}: {} of {} passed", rows.len() - bad.len(), rows.len());
+                        for (k, r) in bad {
+                            for p in &r.problems {
+                                println!("  test {}: {p}", k + 1);
+                            }
+                            for line in &r.printed {
+                                println!("  test {} printed: {line}", k + 1);
+                            }
+                        }
+                    }
+                }
+            }
+            if all.is_empty() && cases.is_empty() {
+                println!("{}: it has no tests (test/case squares, or tests on code squares)", path.display());
+            }
+            if failed > 0 { Err(format!("{failed} failed, {passed} passed")) } else { Ok(()) }
         }
         "compile" => {
             let path = one_file(rest, &["-o"])?;
@@ -205,6 +274,8 @@ fn run(args: &[String]) -> Result<(), String> {
         _ => {
             let new = args.iter().any(|a| a == "--new" || a == "-n");
             let files = args.iter().filter(|a| *a != "--new" && *a != "-n").map(PathBuf::from).collect();
+            // what code squares' processes write to stderr shows in the Output
+            lineit_rt::ext::capture_stderr();
             editor::run(files, new)
         }
     }

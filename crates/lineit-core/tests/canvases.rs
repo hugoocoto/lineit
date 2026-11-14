@@ -27,7 +27,12 @@ fn canvases() -> Vec<PathBuf> {
 
 fn lower(path: &Path) -> lineit_core::ir::Program {
     let src = std::fs::read_to_string(path).unwrap();
-    let canvas = lineit_core::file::read_canvas(&src, &path.display().to_string()).unwrap();
+    let mut canvas = lineit_core::file::read_canvas(&src, &path.display().to_string()).unwrap();
+    canvas.dir = path.parent().map(|p| p.to_path_buf());
+    // the languages from files the canvases use (always the same, so tests
+    // in parallel load the same)
+    let langs = root().join("examples/languages");
+    lineit_core::registry::code::file::load_dirs(&[langs.as_path()]);
     let mut reg = lineit_core::registry::Registry::builtin();
     reg.load_dir(&path.parent().unwrap().join("modules"), "");
     assert!(reg.errors.is_empty(), "{:?}", reg.errors);
@@ -72,7 +77,10 @@ fn compiled() {
         let exe = out.join(lineit_core::paths::exe(&name));
         let opts = lineit_core::codegen::Options::for_canvas(&path, exe.clone());
         let mut log = String::new();
-        if let Err(e) = lineit_core::codegen::compile(&lower(&path), &opts, &mut |l| {
+        let prog = lower(&path);
+        // a canvas with a clock runs until it's killed; the others, to their end
+        let limit = if prog.clocks.is_empty() { 60.0 } else { SECONDS + 0.05 };
+        if let Err(e) = lineit_core::codegen::compile(&prog, &opts, &mut |l| {
             log.push_str(l);
             log.push('\n');
         }) {
@@ -84,9 +92,8 @@ fn compiled() {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        // a canvas with a clock runs until it's killed
         let started = std::time::Instant::now();
-        while child.try_wait().unwrap().is_none() && started.elapsed().as_secs_f64() < SECONDS + 0.05 {
+        while child.try_wait().unwrap().is_none() && started.elapsed().as_secs_f64() < limit {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let _ = child.kill();

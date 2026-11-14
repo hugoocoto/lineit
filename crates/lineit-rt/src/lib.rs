@@ -10,6 +10,7 @@
 //! must build on its own, with no dependency unless a feature asks for one.
 
 pub mod branch;
+pub mod cabi;
 pub mod ext;
 pub mod image;
 pub mod io;
@@ -18,7 +19,11 @@ pub mod list;
 pub mod lua;
 pub mod native;
 pub mod ops;
+#[cfg(feature = "process")]
+pub mod process;
 pub mod rand;
+#[cfg(feature = "shader")]
+pub mod shader;
 pub mod show;
 pub mod slot;
 pub mod text;

@@ -17,6 +17,9 @@ pub struct Canvas {
     pub camera: Camera,
     pub squares: Vec<Square>,
     pub links: Vec<Link>,
+    /// The folder its file is in, for the paths in its squares (not
+    /// saved: whoever opens it sets it).
+    pub dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,8 +135,9 @@ impl Canvas {
     }
 
     /// Puts the squares in columns, each after the ones wired into it, one
-    /// below the other by their HEIGHT (if it's known).
-    pub fn arrange(&mut self, height: &dyn Fn(&Square) -> Option<f32>) {
+    /// below the other by their HEIGHT, each column as wide as its widest
+    /// square's WIDTH (where they're known).
+    pub fn arrange(&mut self, height: &dyn Fn(&Square) -> Option<f32>, width: &dyn Fn(&Square) -> Option<f32>) {
         let mut col: std::collections::HashMap<SquareId, usize> = self.squares.iter().map(|s| (s.id, 0)).collect();
         // longest path from the squares nothing goes into, with a limit for loops
         for _ in 0..self.squares.len().min(64) {
@@ -152,11 +156,19 @@ impl Canvas {
                 break;
             }
         }
+        // where each column starts: after the widest square of the one before
+        let n = col.values().max().map_or(0, |m| m + 1);
+        let mut widths = vec![200.0f32; n];
+        for s in &self.squares {
+            let w = &mut widths[col[&s.id]];
+            *w = w.max(width(s).unwrap_or(200.0));
+        }
+        let lefts: Vec<f32> = widths.iter().scan(0.0, |x, w| Some(std::mem::replace(x, *x + w + 80.0))).collect();
         let mut rows: std::collections::HashMap<usize, f32> = std::collections::HashMap::new();
         for s in &mut self.squares {
             let c = col[&s.id];
             let y = rows.entry(c).or_insert(0.0);
-            s.x = c as f32 * 280.0;
+            s.x = lefts[c];
             s.y = *y;
             *y += height(s).unwrap_or(120.0) + 48.0;
         }

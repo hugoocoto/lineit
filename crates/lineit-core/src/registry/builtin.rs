@@ -56,7 +56,8 @@ impl Module for Builtin {
         }
     }
     fn start(&self, cx: &mut Lx) -> Result<Option<Block>, String> {
-        self.start.as_ref().map(|f| f(cx)).transpose()
+        // nothing to do (a test/case in a run that isn't its): no start
+        Ok(self.start.as_ref().map(|f| f(cx)).transpose()?.filter(|b| !b.is_empty()))
     }
     fn clock(&self, cx: &mut Lx) -> Result<Option<(Expr, Block)>, String> {
         self.clock.as_ref().map(|f| f(cx)).transpose()
@@ -188,6 +189,7 @@ pub fn all() -> Vec<Arc<dyn Module>> {
     io(&mut m);
     images(&mut m);
     graph(&mut m);
+    tests(&mut m);
     m.push(
         b("note", "A note for whoever reads the canvas, like a post-it: it does nothing. Double click it to write")
             .param("text", ParamKind::Text, "")
@@ -989,6 +991,46 @@ fn images(m: &mut Vec<Arc<dyn Module>>) {
         );
     }
     m.push(
+        b(
+            "image/shader",
+            "Through a shader, a file in Godot's language (gdshader, shader_type canvas_item), run on the CPU. Its uniforms are inputs; TIME is what TIME reads",
+        )
+        .param("file", ParamKind::Text, "")
+        .sig(|p, cx| {
+            // no file: the image as it is
+            let file = p.str("file");
+            let file = file.trim();
+            let uniforms = if file.is_empty() { Vec::new() } else { lineit_rt::shader::uniforms(&cx.read(file)?)? };
+            let mut s = Signature::new().wire_in("TEXTURE", image()).input("TIME", float(), "0");
+            let mut seen = vec!["TEXTURE".to_string(), "TIME".to_string()];
+            for u in uniforms {
+                use lineit_rt::shader::Kind;
+                if seen.contains(&u.name) {
+                    return Err(format!("two inputs would be called {}", u.name));
+                }
+                seen.push(u.name.clone());
+                s = match u.kind {
+                    Kind::Float => s.input(&u.name, float(), &u.default),
+                    Kind::Int => s.input(&u.name, int(), &u.default),
+                    Kind::Bool => s.input(&u.name, boolean(), &u.default),
+                    Kind::Color(_) | Kind::Numbers(_) => s.input(&u.name, string(), &u.default),
+                    Kind::Image => s.wire_in(&u.name, image()),
+                };
+            }
+            Ok(s.output("image", image()))
+        })
+        .eval(|cx, _| {
+            let n = cx.sig().inputs.len();
+            let file = cx.params().str("file");
+            let mut args = vec![cx.input(0)?, path(Expr::str(file.trim())), cx.input(1)?];
+            for i in 2..n {
+                args.push(cx.input(i)?);
+            }
+            Ok(Expr::call(Func::ImgShader, args))
+        })
+        .done(),
+    );
+    m.push(
         b("image/flip", "Mirrored: left to right, or upside down")
             .param("direction", ParamKind::Choice(vec!["horizontal".into(), "vertical".into()]), "horizontal")
             .fixed(Signature::new().wire_in("image", image()).output("image", image()))
@@ -1007,6 +1049,69 @@ fn images(m: &mut Vec<Arc<dyn Module>>) {
                 Ok(Expr::call(Func::ImgRotate, vec![cx.input(0)?, Expr::int(quarters)]))
             })
             .done(),
+    );
+}
+
+fn tests(m: &mut Vec<Arc<dyn Module>>) {
+    m.push(
+        b(
+            "test/case",
+            "A test: Run tests starts the program here, once for each case. Its fields are the canvas's variables: what's typed in one is what that variable starts with (empty: what it starts with anyway); a list or record is wired in. A normal run doesn't start here",
+        )
+        .param("name", ParamKind::Text, "a test")
+        .sig(|_, cx| {
+            let mut s = Signature::new();
+            for (name, ty) in cx.vars() {
+                // empty: the variable as it is
+                s = if ty.is_scalar() { s.input(&name, t(ty), "") } else { s.wire_in(&name, t(ty)) };
+            }
+            Ok(s.tick_out("then"))
+        })
+        .start(|cx| {
+            if cx.test_case() != Some(cx.square()) {
+                return Ok(Vec::new());
+            }
+            let mut b = Vec::new();
+            for i in 0..cx.sig().inputs.len() {
+                // what it gives: what's wired, or typed
+                if cx.field_text(i).is_some_and(|t| t.trim().is_empty()) {
+                    continue;
+                }
+                let name = cx.sig().inputs[i].name.clone();
+                let s = cx.var(&name)?;
+                b.push(Stmt::Set(s, cx.input(i)?));
+            }
+            b.push(cx.fire(0));
+            Ok(b)
+        })
+        .done(),
+    );
+    m.push(
+        b(
+            "test/expect",
+            "Checks that `value` is `expected` when a tick gets here, and goes on: Run tests says which checks failed, and the square shows how it went",
+        )
+        .param("label", ParamKind::Text, "")
+        .sig(|_, _| {
+            Ok(Signature::new()
+                .vars(&[Class::Any])
+                .tick_in("tick")
+                .input("value", v(0), "")
+                .input("expected", v(0), "")
+                .tick_out("then"))
+        })
+        .tick(|cx, _| {
+            // a normal run passes by: it checks in tests
+            if cx.test_case().is_none() {
+                return Ok(vec![cx.fire(0)]);
+            }
+            let label = cx.params().str("label");
+            Ok(vec![
+                Stmt::Check { square: cx.square(), label, value: cx.input(1)?, expected: cx.input(2)? },
+                cx.fire(0),
+            ])
+        })
+        .done(),
     );
 }
 

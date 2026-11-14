@@ -16,7 +16,7 @@ use crate::editor::canvas::{self, Hint, Pending, PinRef, PinState};
 use crate::editor::nav;
 use crate::editor::tab::Tab;
 use crate::editor::theme::{self, Theme};
-use crate::editor::vim::{self, Act, Dir, Ex, Input, Mode, SAct, SetOp};
+use crate::editor::vim::{self, Act, Dir, Ex, Input, Mode, SAct, SetOp, Wire};
 
 /// What the vim mode does with an event.
 enum Class {
@@ -205,6 +205,7 @@ impl App {
             ctx.input_mut(|i| i.events = keep);
         }
         if !self.tab().settings {
+            self.vim_settle();
             self.vim_reveal(ctx);
             self.vim_hints();
         }
@@ -334,7 +335,7 @@ impl App {
     }
 
     /// Pans the camera to show a square the keys went to.
-    fn vim_reveal(&mut self, ctx: &egui::Context) {
+    pub(super) fn vim_reveal(&mut self, ctx: &egui::Context) {
         let (_, tab, st) = &mut self.tabs[self.active];
         let Some(id) = st.vim.reveal else { return };
         if tab.canvas.square(id).is_none() {
@@ -461,9 +462,7 @@ impl App {
                     self.status("this square has no fields to type in", false);
                 }
             }
-            Act::AddFree => self.vim_add(0),
-            Act::AddAfter => self.vim_add(1),
-            Act::AddBefore => self.vim_add(-1),
+            Act::Add { wire, side } => self.vim_add(wire, side),
             Act::Delete => self.vim_delete(ctx),
             Act::Yank => {
                 self.vim_targets();
@@ -642,9 +641,18 @@ impl App {
         }
     }
 
-    /// `a`, `o`, `O`: the module search for a square at the focus (HOW 0),
-    /// after it (1) or before it (-1), wired to it.
-    fn vim_add(&mut self, how: i32) {
+    /// `a`, `o` and `O` with a direction: the module search for a square
+    /// beside the focus, free (`a`), wired from its output (`o`) or into its
+    /// input (`O`). `o` puts the square to the right and `O` to the left, a
+    /// gap off; down and up are half the focus's height plus a little off,
+    /// so a square on each side don't collide; on the opposite side it
+    /// touches. The new square's width isn't known yet: `vim_settle`
+    /// finishes the job.
+    fn vim_add(&mut self, wire: Wire, side: Option<Dir>) {
+        const GAP: f32 = 48.0;
+        const LITTLE: f32 = 16.0;
+        const TIGHT: f32 = 8.0;
+        let before = wire == Wire::Before;
         let focus = self.vim_focused();
         let pins = focus.map(|f| canvas::pins_of(self.tab(), f)).unwrap_or_default();
         // the first tick pin on that side, or else the first
@@ -653,17 +661,36 @@ impl App {
             side.iter().find(|p| p.tick).or(side.first()).map(|p| (*p).clone())
         };
         let rect = focus.and_then(|f| self.rects().get(&f).copied());
-        let at = match (rect, how) {
-            (Some(r), -1) => pos2(r.min.x - 48.0, r.min.y),
-            (Some(r), _) => pos2(r.max.x + 48.0, r.min.y),
-            (None, _) => {
+        let mut edge = None;
+        let at = match (rect, side) {
+            (Some(r), Some(d)) => {
+                let y = match d {
+                    Dir::Down => r.min.y + r.height() / 2.0 + LITTLE,
+                    Dir::Up => r.min.y - r.height() / 2.0 - LITTLE,
+                    _ => r.min.y,
+                };
+                let (right, gap) = match d {
+                    Dir::Right => (true, if before { TIGHT } else { GAP }),
+                    Dir::Left => (false, if before { GAP } else { TIGHT }),
+                    _ => (!before, GAP),
+                };
+                if right {
+                    // `O` wires into the focus: add_square would shift it left
+                    edge = before.then_some((r.max.x + gap, false));
+                    pos2(r.max.x + gap, y)
+                } else {
+                    edge = Some((r.min.x - gap, true));
+                    pos2(r.min.x - gap - if before { 0.0 } else { 200.0 }, y)
+                }
+            }
+            _ => {
                 let cam = &self.tab().canvas.camera;
                 pos2(cam.x, cam.y)
             }
         };
-        let pending = match how {
-            1 => pin(true).map(|p| Pending::From(p.sq, p.name, if p.tick { None } else { p.ty })),
-            -1 => pin(false).map(|p| Pending::To(p.sq, p.name, if p.tick { None } else { p.ty })),
+        let pending = match (wire, rect) {
+            (Wire::After, Some(_)) => pin(true).map(|p| Pending::From(p.sq, p.name, if p.tick { None } else { p.ty })),
+            (Wire::Before, Some(_)) => pin(false).map(|p| Pending::To(p.sq, p.name, if p.tick { None } else { p.ty })),
             _ => None,
         };
         let st = &self.tabs[self.active].2;
@@ -677,7 +704,20 @@ impl App {
             }
             _ => pos2(200.0, 200.0),
         };
-        self.search = Some(Search { at, screen, query: String::new(), pending, selected: 0, opened: Instant::now() });
+        self.search =
+            Some(Search { at, screen, query: String::new(), pending, edge, selected: 0, opened: Instant::now() });
+    }
+
+    /// Puts a square added with `oh` against the focus, now it's measured.
+    fn vim_settle(&mut self) {
+        let (_, tab, st) = &mut self.tabs[self.active];
+        let Some((id, x, right)) = st.vim.settle else { return };
+        match (st.rects.get(&id), tab.canvas.square_mut(id)) {
+            (Some(r), Some(sq)) => sq.x = if right { x - r.width() } else { x },
+            (None, Some(_)) => return,
+            _ => {}
+        }
+        st.vim.settle = None;
     }
 
     fn vim_delete(&mut self, ctx: &egui::Context) {
@@ -927,6 +967,8 @@ impl App {
             }
             Ex::Run => self.start(RunMode::Run, ctx),
             Ex::Step => self.start(RunMode::Step, ctx),
+            Ex::Test => self.run_tests(),
+            Ex::Debug(name) => self.debug_named(name.as_deref(), ctx),
             Ex::Stop => self.stop(),
             Ex::Compile => self.start(RunMode::Compile, ctx),
             Ex::Output => self.show_output = !self.show_output,

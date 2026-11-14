@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::ext::{Ext, Ticked};
+use crate::ext::{Ext, Run, Ticked};
 use crate::image::Image;
 use crate::types::{RecordType, Type};
 use crate::value::{Record, Value};
@@ -42,7 +42,7 @@ use crate::value::{Record, Value};
 pub type Values = BTreeMap<String, Value>;
 
 /// The C ABI's version: the editor refuses a library with another.
-pub const ABI: u32 = 1;
+pub const ABI: u32 = 3;
 
 pub trait Native: Send {
     /// A square of the module, with its params.
@@ -63,6 +63,35 @@ pub trait Native: Send {
         let _ = (input, inputs);
         Ok((Values::new(), Vec::new()))
     }
+
+    /// What `tick` does, with each fire's own values: the outputs to set,
+    /// then the tick outputs to fire, in order, each with the outputs that
+    /// get their values just before it.
+    fn run(&mut self, input: Option<&str>, inputs: &Values) -> Result<(Values, Vec<(String, Values)>), String> {
+        let (set, fire) = self.tick(input, inputs)?;
+        Ok((set, fire.into_iter().map(|f| (f, Values::new())).collect()))
+    }
+
+    /// What it keeps between ticks, by name, to show it.
+    fn state(&mut self) -> Values {
+        Values::new()
+    }
+
+    /// Gives it these values to keep, as a test does.
+    fn set_state(&mut self, state: &Values) -> Result<(), String> {
+        let _ = state;
+        Err("it keeps nothing that can be set".into())
+    }
+}
+
+/// A [`Native::run`]'s result as an [`Ext::run`]'s, for OUTPUTS.
+pub fn run_of(set: Values, fire: Vec<(String, Values)>, outs: &[(&str, &Type)]) -> Result<Run, String> {
+    let mut fired = Vec::new();
+    for (name, values) in fire {
+        let got = outputs(values, outs, false)?;
+        fired.push((name, got.into_iter().enumerate().filter_map(|(o, v)| Some((o, v?))).collect()));
+    }
+    Ok(Run { set: outputs(set, outs, false)?, fire: fired })
 }
 
 /// A module of a crate: its type's name, and how to make one.
@@ -149,6 +178,22 @@ impl Ext for Host {
     ) -> Result<Ticked, String> {
         let (got, fired) = self.squares[inst].tick(input, &named(inputs))?;
         Ok((outputs(got, outs, false)?, fired))
+    }
+    fn run(
+        &mut self,
+        inst: usize,
+        input: Option<&str>,
+        inputs: &[(&str, Value)],
+        outs: &[(&str, &Type)],
+    ) -> Result<Run, String> {
+        let (set, fire) = self.squares[inst].run(input, &named(inputs))?;
+        run_of(set, fire, outs)
+    }
+    fn state(&mut self, inst: usize) -> Result<Vec<(String, Value)>, String> {
+        Ok(self.squares[inst].state().into_iter().collect())
+    }
+    fn set_state(&mut self, inst: usize, state: &[(&str, Value)]) -> Result<(), String> {
+        self.squares[inst].set_state(&named(state))
     }
 }
 
@@ -313,6 +358,36 @@ impl Buf {
 pub const CALL_EVAL: i32 = 0;
 pub const CALL_TICK: i32 = 1;
 pub const CALL_START: i32 = 2;
+pub const CALL_RUN: i32 = 3;
+pub const CALL_STATE: i32 = 4;
+pub const CALL_SET_STATE: i32 = 5;
+
+/// A [`Native::run`]'s result as one value, for the C ABI.
+pub fn run_value(set: Values, fire: Vec<(String, Values)>) -> Value {
+    let fire = fire
+        .into_iter()
+        .map(|(n, v)| Value::List(Arc::new(vec![Value::Str(n.into()), Value::Map(Arc::new(v))])))
+        .collect();
+    Value::List(Arc::new(vec![Value::Map(Arc::new(set)), Value::List(Arc::new(fire))]))
+}
+
+/// What [`run_value`] made, back.
+pub fn run_from_value(v: &Value) -> Result<(Values, Vec<(String, Values)>), String> {
+    let bad = || "it gave back something that isn't a run".to_string();
+    let map = |v: &Value| match v {
+        Value::Map(m) => Ok((**m).clone()),
+        _ => Err(bad()),
+    };
+    let Value::List(l) = v else { return Err(bad()) };
+    let (Some(set), Some(Value::List(fire))) = (l.first(), l.get(1)) else { return Err(bad()) };
+    let mut fired = Vec::new();
+    for f in fire.iter() {
+        let Value::List(f) = f else { return Err(bad()) };
+        let (Some(Value::Str(n)), Some(v)) = (f.first(), f.get(1)) else { return Err(bad()) };
+        fired.push((n.to_string(), map(v)?));
+    }
+    Ok((map(set)?, fired))
+}
 
 fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
     p.downcast_ref::<&str>()
@@ -370,6 +445,12 @@ pub unsafe fn export_call(
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Value, String> {
         match what {
             CALL_EVAL => Ok(Value::Map(Arc::new(m.eval(&args)?))),
+            CALL_RUN => {
+                let (set, fire) = m.run(Some(input), &args)?;
+                Ok(run_value(set, fire))
+            }
+            CALL_STATE => Ok(Value::Map(Arc::new(m.state()))),
+            CALL_SET_STATE => m.set_state(&args).map(|_| Value::Map(Arc::new(Values::new()))),
             _ => {
                 let (got, fired) = m.tick(if what == CALL_TICK { Some(input) } else { None }, &args)?;
                 let fired = fired.into_iter().map(|s| Value::Str(s.into())).collect();
@@ -377,14 +458,17 @@ pub unsafe fn export_call(
             }
         }
     }));
+    // what it printed comes back with it: this library's lines aren't the editor's
+    let printed = crate::ext::take_printed();
     let (code, bytes) = match r {
         Ok(Ok(v)) => {
+            let lines = printed.into_iter().map(|l| Value::Str(l.into())).collect();
             let mut b = Vec::new();
-            encode(&v, &mut b);
+            encode(&Value::List(Arc::new(vec![v, Value::List(Arc::new(lines))])), &mut b);
             (0, b)
         }
-        Ok(Err(e)) => (1, e.into_bytes()),
-        Err(p) => (1, panic_text(p).into_bytes()),
+        Ok(Err(e)) => (1, printed.into_iter().chain([e]).collect::<Vec<_>>().join("\n").into_bytes()),
+        Err(p) => (1, printed.into_iter().chain([panic_text(p)]).collect::<Vec<_>>().join("\n").into_bytes()),
     };
     unsafe { out.write(Buf::from_vec(bytes)) };
     code
@@ -397,6 +481,15 @@ pub unsafe fn export_call(
 #[macro_export]
 macro_rules! export_modules {
     ($($ty:ident),* $(,)?) => {
+        $crate::export_entries!($($ty),*);
+        $crate::export_abi!();
+    };
+}
+
+/// What [`export_modules!`] makes for a compiled program: `lineit_natives()`.
+#[macro_export]
+macro_rules! export_entries {
+    ($($ty:ident),* $(,)?) => {
         /// The modules of this crate, for a compiled program.
         pub fn lineit_natives() -> Vec<$crate::native::Entry> {
             vec![$($crate::native::Entry {
@@ -404,13 +497,22 @@ macro_rules! export_modules {
                 new: |p| Box::new(<$ty as $crate::native::Native>::new(p)),
             }),*]
         }
+    };
+}
 
-        #[unsafe(no_mangle)]
+/// What [`export_modules!`] makes for the editor: the C ABI, around
+/// `lineit_natives()`. Its functions' names end in the crate's
+/// (`lineit_native_call_mypackage_native`...), so a program can link
+/// several crates.
+#[macro_export]
+macro_rules! export_abi {
+    () => {
+        #[unsafe(export_name = concat!("lineit_native_abi_", env!("CARGO_CRATE_NAME")))]
         pub extern "C" fn lineit_native_abi() -> u32 {
             $crate::native::ABI
         }
 
-        #[unsafe(no_mangle)]
+        #[unsafe(export_name = concat!("lineit_native_new_", env!("CARGO_CRATE_NAME")))]
         pub unsafe extern "C" fn lineit_native_new(
             name: *const u8,
             name_len: usize,
@@ -420,7 +522,7 @@ macro_rules! export_modules {
             unsafe { $crate::native::export_new(&lineit_natives(), name, name_len, params, params_len) }
         }
 
-        #[unsafe(no_mangle)]
+        #[unsafe(export_name = concat!("lineit_native_call_", env!("CARGO_CRATE_NAME")))]
         pub unsafe extern "C" fn lineit_native_call(
             state: *mut ::std::ffi::c_void,
             what: i32,
@@ -433,14 +535,14 @@ macro_rules! export_modules {
             unsafe { $crate::native::export_call(state, what, input, input_len, args, args_len, out) }
         }
 
-        #[unsafe(no_mangle)]
+        #[unsafe(export_name = concat!("lineit_native_free_", env!("CARGO_CRATE_NAME")))]
         pub unsafe extern "C" fn lineit_native_free(state: *mut ::std::ffi::c_void) {
             if !state.is_null() {
                 drop(unsafe { Box::from_raw(state as *mut Box<dyn $crate::native::Native>) });
             }
         }
 
-        #[unsafe(no_mangle)]
+        #[unsafe(export_name = concat!("lineit_native_free_buf_", env!("CARGO_CRATE_NAME")))]
         pub unsafe extern "C" fn lineit_native_free_buf(b: $crate::native::Buf) {
             drop(unsafe { $crate::native::Buf::into_vec(b) });
         }

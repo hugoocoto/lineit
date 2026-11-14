@@ -33,6 +33,9 @@ struct Search {
     screen: Pos2,
     query: String,
     pending: Option<Pending>,
+    /// The square goes with its right edge (true) or left edge at this x:
+    /// it isn't measured yet.
+    edge: Option<(f32, bool)>,
     selected: usize,
     opened: Instant,
 }
@@ -86,6 +89,8 @@ pub struct App {
     theme: Theme,
     mode: RunMode,
     show_output: bool,
+    /// The bottom panel shows the tests' report, not the output.
+    show_tests: bool,
     settings_query: String,
     /// The section of the Settings tab to scroll to, chosen on its left.
     settings_jump: Option<&'static str>,
@@ -99,6 +104,8 @@ pub struct App {
     last_autosave: Instant,
     /// When the module folders last changed, to reload them.
     modules_stamp: Option<std::time::SystemTime>,
+    /// The folders of the canvases the modules were loaded for.
+    reg_dirs: Vec<PathBuf>,
     last_stamp_check: Instant,
     /// The binary, to hand over to a rebuilt one (see session.rs).
     exe: Option<Exe>,
@@ -108,7 +115,7 @@ pub struct App {
     single: Option<super::single::Single>,
     /// When config.lua and settings.lua last changed, to read them again.
     config_stamp: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
-    font_applied: String,
+    font_applied: Option<String>,
     /// The squares being made into a subgraph, waiting for its name.
     subgraph_of: BTreeSet<SquareId>,
     preview_job: Option<PreviewJob>,
@@ -168,11 +175,18 @@ fn stamp(dir: &Path) -> Option<std::time::SystemTime> {
 impl App {
     pub fn new(cc: &eframe::CreationContext, start: Start) -> App {
         let cfg = Config::load(&lineit_core::paths::config_dir());
-        let dir = match &start {
-            Start::Files(files) => files.first().and_then(|f| f.parent()).map(Path::to_path_buf),
-            Start::Session(_) => None,
-        };
-        let reg = Arc::new(lineit_core::registry(dir.as_deref()));
+        // the modules and languages of every canvas it opens, before they're
+        // laid out (their squares' sizes depend on them)
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Start::Files(files) = &start {
+            for d in files.iter().filter_map(|f| f.parent()).map(Path::to_path_buf) {
+                if !dirs.contains(&d) {
+                    dirs.push(d);
+                }
+            }
+        }
+        let dir_refs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+        let reg = Arc::new(lineit_core::registry_for(&dir_refs));
         let theme = Theme::from_config(&cfg);
         let mut app = App {
             tabs: Vec::new(),
@@ -183,6 +197,7 @@ impl App {
             theme,
             mode: RunMode::Run,
             show_output: true,
+            show_tests: false,
             settings_query: String::new(),
             settings_jump: None,
             settings_focus: false,
@@ -192,8 +207,9 @@ impl App {
             compiling: None,
             last_autosave: Instant::now(),
             modules_stamp: None,
+            reg_dirs: Vec::new(),
             last_stamp_check: Instant::now(),
-            font_applied: String::new(),
+            font_applied: None,
             subgraph_of: BTreeSet::new(),
             preview_job: None,
             previewed: HashMap::new(),
@@ -360,8 +376,8 @@ impl App {
             }
         });
         let name = self.cfg.text("font.name");
-        if name != self.font_applied {
-            self.font_applied = name.clone();
+        if self.font_applied.as_ref() != Some(&name) {
+            self.font_applied = Some(name.clone());
             let mut fonts = egui::FontDefinitions::default();
             // a name installed, or a file
             // a name that isn't a font keeps the built-in one (Settings says so)
@@ -376,6 +392,24 @@ impl App {
                     Err(e) => self.status(&format!("font {}: {e}", path.display()), true),
                 }
             }
+            // the same fonts unhinted for the text that zooms with the
+            // canvas: hinted, it grows in steps and shakes against its box
+            for (family, name) in [
+                (egui::FontFamily::Proportional, super::canvas::ZOOMED_TEXT),
+                (egui::FontFamily::Monospace, super::canvas::ZOOMED_MONO),
+            ] {
+                let mut list = Vec::new();
+                for font in fonts.families.get(&family).cloned().unwrap_or_default() {
+                    let unhinted = format!("{font} unhinted");
+                    if let Some(data) = fonts.font_data.get(&font) {
+                        let mut data = (**data).clone();
+                        data.tweak.hinting = Some(false);
+                        fonts.font_data.insert(unhinted.clone(), Arc::new(data));
+                        list.push(unhinted);
+                    }
+                }
+                fonts.families.insert(egui::FontFamily::Name(name.into()), list);
+            }
             ctx.set_fonts(fonts);
         }
     }
@@ -383,15 +417,33 @@ impl App {
     fn module_stamp(&self) -> Option<std::time::SystemTime> {
         let mut s = stamp(&lineit_core::paths::modules_dir());
         s = s.max(stamp(&lineit_core::paths::packages_dir()));
+        s = s.max(stamp(&lineit_core::paths::data_dir().join("languages")));
         for (_, t, _) in &self.tabs {
             s = s.max(stamp(&t.dir().join("modules")));
+            s = s.max(stamp(&t.dir().join("languages")));
         }
         s
     }
 
+    /// The folders of the canvases open, the active one's last (its modules
+    /// go before another's of the same name).
+    fn tab_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let active = self.tabs.get(self.active).map(|(_, t, _)| t.dir());
+        for (_, t, _) in &self.tabs {
+            let d = t.dir();
+            if !dirs.contains(&d) && Some(&d) != active.as_ref() {
+                dirs.push(d);
+            }
+        }
+        dirs.extend(active);
+        dirs
+    }
+
     fn reload_modules(&mut self) {
-        let dir = self.tabs.get(self.active).map(|(_, t, _)| t.dir());
-        self.reg = Arc::new(lineit_core::registry(dir.as_deref()));
+        self.reg_dirs = self.tab_dirs();
+        let dirs: Vec<&Path> = self.reg_dirs.iter().map(PathBuf::as_path).collect();
+        self.reg = Arc::new(lineit_core::registry_for(&dirs));
         let reg = self.reg.clone();
         for (_, t, _) in &mut self.tabs {
             t.update(&reg, false, true);
@@ -623,6 +675,119 @@ impl App {
         tab.status = None;
         let first = if mode == RunMode::Step { Cmd::Step } else { Cmd::Run };
         tab.run = Some(Runner::start(prog, tab.dir(), first, ctx.clone()));
+        // a run of the canvas, not of a test
+        self.tabs[self.active].2.tests.debugging = None;
+        self.show_output = true;
+    }
+
+    /// Runs the tests of the canvas, and opens their report.
+    fn run_tests(&mut self) {
+        if self.tab().settings {
+            return;
+        }
+        let reg = self.reg.clone();
+        let (_, tab, state) = &mut self.tabs[self.active];
+        // what the status said of a test before is the report's to say now
+        tab.status = None;
+        state.tests.run_all(tab, reg);
+        self.show_output = true;
+        self.show_tests = true;
+    }
+
+    /// Runs test NAME by steps: with none, the first that failed the last
+    /// time the tests ran (or the first test).
+    pub(super) fn debug_named(&mut self, name: Option<&str>, ctx: &egui::Context) {
+        let (_, tab, state) = &self.tabs[self.active];
+        let cases = lineit_core::codetest::cases(&tab.canvas);
+        let case = match name {
+            Some(n) => cases.iter().find(|(_, c)| c == n).map(|(s, _)| *s),
+            None => cases
+                .iter()
+                .find(|(s, _)| state.tests.case_result(*s) == Some(false))
+                .or(cases.first())
+                .map(|(s, _)| *s),
+        };
+        match case {
+            Some(c) => self.debug_test(c, ctx),
+            None => {
+                let msg = match name {
+                    Some(n) => format!("there's no test `{n}`"),
+                    None => "there are no tests: add a test/case square".into(),
+                };
+                self.tab().status = Some((msg, true));
+            }
+        }
+    }
+
+    /// A debugged test's run ended: the status says how the test went.
+    fn finish_debug(&mut self) {
+        let (_, tab, state) = &mut self.tabs[self.active];
+        let Some((_, name)) = &state.tests.debugging else { return };
+        let Some(r) = &tab.run else {
+            state.tests.debugging = None;
+            return;
+        };
+        let v = r.view.lock().unwrap();
+        let text = match v.state {
+            State::Running | State::Paused => return,
+            State::Stopped => (format!("the test `{name}` was stopped"), false),
+            State::Failed => (format!("the test `{name}` failed: {}", v.error.clone().unwrap_or_default()), true),
+            State::Done => match v.checks.iter().find(|c| !c.ok) {
+                Some(c) => {
+                    let what = if c.label.is_empty() { "a check".to_string() } else { c.label.clone() };
+                    (format!("the test `{name}` failed: {what}: expected {}, got {}", c.expected.text(), c.got.text()), true)
+                }
+                None => {
+                    let n = v.checks.len();
+                    (format!("the test `{name}` passed: {n} check{}", if n == 1 { "" } else { "s" }), false)
+                }
+            },
+        };
+        drop(v);
+        tab.status = Some(text);
+        state.tests.debugging = None;
+    }
+
+    /// What the tests' report asked for.
+    fn report_action(&mut self, a: super::tests::ReportAction, ctx: &egui::Context) {
+        use super::tests::ReportAction;
+        match a {
+            ReportAction::RunTests => self.run_tests(),
+            ReportAction::Debug(case) => self.debug_test(case, ctx),
+            ReportAction::Show(sq) => {
+                let (_, tab, state) = &mut self.tabs[self.active];
+                tab.selected.clear();
+                tab.selected.insert(sq);
+                state.vim.focus = Some(sq);
+                state.vim.reveal = Some(sq);
+            }
+        }
+    }
+
+    /// Runs test CASE by steps: from its given values, its checks shown on
+    /// the canvas as the run gets to them.
+    fn debug_test(&mut self, case: SquareId, ctx: &egui::Context) {
+        let reg = self.reg.clone();
+        let clear = self.cfg.bool("output.clear_on_run");
+        let tab = self.tab();
+        if tab.run.as_ref().is_some_and(|r| r.is_live()) {
+            tab.status = Some(("stop the run first".into(), true));
+            return;
+        }
+        let l = lineit_core::lower::lower_test(&tab.canvas, &reg, case);
+        let Some(prog) = l.program else {
+            let n = l.diags.len();
+            tab.status = Some((format!("it can't run: {n} problem{} (in red)", if n == 1 { "" } else { "s" }), true));
+            return;
+        };
+        if clear {
+            tab.output.clear();
+        }
+        let name = tab.canvas.square(case).and_then(|s| s.params.get("name").cloned()).unwrap_or_else(|| "a test".into());
+        tab.status = Some((format!("debugging the test `{name}`: F10 steps, F5 runs"), false));
+        tab.run = Some(Runner::start(prog, tab.dir(), Cmd::Step, ctx.clone()));
+        self.tabs[self.active].2.tests.debugging = Some((case, name));
+        self.mode = RunMode::Step;
         self.show_output = true;
     }
 
@@ -855,6 +1020,9 @@ impl App {
         if key(Modifiers::NONE, Key::F10) {
             self.start(RunMode::Step, ctx);
         }
+        if key(Modifiers::NONE, Key::F6) {
+            self.run_tests();
+        }
         // in the Settings tab, Esc empties its search first
         if self.tab().settings && !self.settings_query.is_empty() && key(Modifiers::NONE, Key::Escape) {
             self.settings_query.clear();
@@ -992,9 +1160,14 @@ impl App {
             close = true;
         }
         if let Some(path) = chosen {
-            let (at, pending) = (s.at, s.pending.clone());
+            let (at, pending, edge) = (s.at, s.pending.clone(), s.edge);
             self.search = None;
             self.add_square(&path, at, pending);
+            if let Some((x, right)) = edge
+                && let Some(id) = self.tab().selected.iter().next().copied()
+            {
+                self.tabs[self.active].2.vim.settle = Some((id, x, right));
+            }
         } else if close {
             self.search = None;
         }
@@ -1411,6 +1584,11 @@ impl App {
                                 self.start(RunMode::Compile, &ctx);
                                 ui.close();
                             }
+                            ui.separator();
+                            if ui.button("Run tests (F6)").on_hover_text("Run each test/case, and the tests of code squares").clicked() {
+                                self.run_tests();
+                                ui.close();
+                            }
                         });
                         let c = arrow.response.rect.center();
                         let color = ui.style().interact(&arrow.response).text_color();
@@ -1557,22 +1735,38 @@ impl App {
         state.strip = Some(panel.response.rect);
     }
 
-    fn output_ui(&mut self, ui: &mut egui::Ui) {
+    /// The bottom panel: the output, or the tests' report. Says what the
+    /// report asked for.
+    fn output_ui(&mut self, ui: &mut egui::Ui) -> Vec<super::tests::ReportAction> {
         if !self.show_output {
-            return;
+            return Vec::new();
         }
         let theme = self.theme.clone();
+        let mut actions = Vec::new();
         egui::Panel::bottom("output").resizable(true).default_size(160.0).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("Output");
-                if ui.small_button("Clear").clicked() {
-                    self.tab().output.clear();
+                if ui.selectable_label(!self.show_tests, egui::RichText::new("Output").strong()).clicked() {
+                    self.show_tests = false;
                 }
-                if ui.small_button("Copy").clicked() {
-                    let text = self.tab().output.join("\n");
-                    ui.ctx().copy_text(text);
+                if ui.selectable_label(self.show_tests, egui::RichText::new("Tests").strong()).on_hover_text("The report of Run tests (F6)").clicked() {
+                    self.show_tests = true;
+                }
+                ui.separator();
+                if !self.show_tests {
+                    if ui.small_button("Clear").clicked() {
+                        self.tab().output.clear();
+                    }
+                    if ui.small_button("Copy").clicked() {
+                        let text = self.tab().output.join("\n");
+                        ui.ctx().copy_text(text);
+                    }
                 }
             });
+            if self.show_tests {
+                let state = &mut self.tabs[self.active].2;
+                actions = super::tests::report_ui(ui, &mut state.tests, &theme);
+                return;
+            }
             let lines = &self.tabs[self.active].1.output;
             let start = lines.len().saturating_sub(2000);
             egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
@@ -1585,6 +1779,7 @@ impl App {
                 }
             });
         });
+        actions
     }
 
     /// Starts working out the previews of the active tab, if its canvas
@@ -1799,6 +1994,11 @@ impl eframe::App for App {
             self.confirm = Some(Confirm::Window);
         }
         self.vim_keys(&ctx);
+        self.finish_debug();
+        // a square to show (from the tests' report too)
+        if !self.vim_on() && !self.tab().settings {
+            self.vim_reveal(&ctx);
+        }
         self.shortcuts(&ctx);
 
         self.ready.frame();
@@ -1833,7 +2033,12 @@ impl eframe::App for App {
                 self.reload_config(&ctx);
             }
             let s = self.module_stamp();
-            if s != self.modules_stamp {
+            // modules changed on disk, or a canvas from another folder opened
+            let mut dirs = self.tab_dirs();
+            dirs.sort();
+            let mut had = self.reg_dirs.clone();
+            had.sort();
+            if s != self.modules_stamp || dirs != had {
                 self.modules_stamp = s;
                 self.reload_modules();
             }
@@ -1886,16 +2091,34 @@ impl eframe::App for App {
 
         self.tabs_ui(ui);
         self.bar_ui(ui);
-        self.output_ui(ui);
+        for a in self.output_ui(ui) {
+            self.report_action(a, &ctx);
+        }
         self.editor_ui(ui);
 
-        let (values, current): (HashMap<(SquareId, String), Value>, BTreeSet<SquareId>) = match &self.tab().run {
-            Some(r) => {
-                let v = r.view.lock().unwrap();
-                (v.values.clone(), v.current.iter().copied().collect())
-            }
-            None => (HashMap::new(), BTreeSet::new()),
-        };
+        type States = HashMap<SquareId, Vec<(String, Value)>>;
+        type Checks = HashMap<SquareId, lineit_core::interp::CheckResult>;
+        type Vars = Vec<(String, Value)>;
+        let (values, current, states, checks, vars): (HashMap<(SquareId, String), Value>, BTreeSet<SquareId>, States, Checks, Vars) =
+            match &self.tabs[self.active].1.run {
+                Some(r) => {
+                    let v = r.view.lock().unwrap();
+                    // the last time the run got to each check
+                    let checks = v.checks.iter().map(|c| (c.square, c.clone())).collect();
+                    // a variable's value is that of the squares of it
+                    let mut values = v.values.clone();
+                    for sq in &self.tabs[self.active].1.canvas.squares {
+                        if matches!(sq.module.as_str(), "var/get" | "var/var")
+                            && let Some(name) = sq.params.get("name")
+                            && let Some((_, val)) = v.vars.iter().find(|(n, _)| n == name)
+                        {
+                            values.insert((sq.id, "value".to_string()), val.clone());
+                        }
+                    }
+                    (values, v.current.iter().copied().collect(), v.states.clone(), checks, v.vars.clone())
+                }
+                None => (HashMap::new(), BTreeSet::new(), HashMap::new(), HashMap::new(), Vec::new()),
+            };
         if self.cfg.bool("canvas.previews") {
             let pure = self.pure_previews(&ctx);
             self.previews(&ctx, &pure);
@@ -1918,6 +2141,9 @@ impl eframe::App for App {
                     actions: Vec::new(),
                     values,
                     current,
+                    states,
+                    checks,
+                    vars,
                     pending: self.search.as_ref().and_then(|s| s.pending.clone().map(|p| (p, s.at))),
                 };
                 canvas::show(ui, &mut cx);
@@ -1927,10 +2153,21 @@ impl eframe::App for App {
         for a in actions {
             match a {
                 Action::Search { at, screen, pending } => {
-                    self.search =
-                        Some(Search { at, screen, query: String::new(), pending, selected: 0, opened: Instant::now() });
+                    self.search = Some(Search {
+                        at,
+                        screen,
+                        query: String::new(),
+                        pending,
+                        edge: None,
+                        selected: 0,
+                        opened: Instant::now(),
+                    });
                 }
                 Action::Delete => self.delete_selection(),
+                Action::ShowReport => {
+                    self.show_output = true;
+                    self.show_tests = true;
+                }
                 Action::Duplicate => {
                     if let Some(t) = self.selection_text() {
                         self.paste(&t, None);

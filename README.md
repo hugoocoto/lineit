@@ -107,7 +107,7 @@ typed and the command line. `:help` lists every key.
 | 0, $, gg, G, Tab             | Start / end of the chain, first / last square, next square      |
 | `/text`, n, N                | Find squares by module, field value or note                     |
 | i, Enter, `3i`               | Type in a field (Tab for the next one, Esc or Enter to finish)  |
-| a, o, O                      | Add a square (module search): free, after, or before this one   |
+| a, o, O + h j k l            | Add a square beside this one (module search): free, after, before; `oj` / `ok` leave room for a second one, `oh` and `Ol` touch |
 | dd, yy, p, P, u, Ctrl+R      | Delete, copy, paste, undo, redo                                 |
 | v, V, then h j k l d y       | Select by moving, or the whole chain, and act on it             |
 | H J K L                      | Move the selected squares a grid step                           |
@@ -157,6 +157,140 @@ rest belong to their canvas, so each copy of a subgraph has its own.
 **Subgraphs.** A canvas with `graph/input` and `graph/output` squares is a
 module. Select squares and press Ctrl+G to make one: it goes to your
 modules folder, and a square of it takes their place.
+
+## Shaders
+
+`image/shader` runs a Godot shader (`.gdshader`, `shader_type canvas_item;`)
+over an image, on the CPU, with no GPU or Godot needed. Its `file` param is
+the shader's path (relative to the canvas); the shader's `uniform`s are the
+inputs of the square (`source_color` vectors take `#rrggbb` or a color name,
+other vectors take numbers: `0.5, 1`; a `sampler2D` takes an image), next to
+`TEXTURE`, the image, and `TIME`, what `TIME` reads. Edit the file with any
+editor: the square follows when it's saved, and what's wrong with it is written
+under the square, with the line. `examples/shader.lua` runs a Bayer dither
+palette filter.
+
+What a `fragment()` sees is what Godot gives it: `UV`, `COLOR`, `TEXTURE`,
+`TEXTURE_PIXEL_SIZE`, `FRAGCOORD`, `SCREEN_UV`, `TIME`..., the types (`vecN`,
+`ivecN`, `uvecN`, `bvecN`, `matN`, arrays, structs), functions with `in`,
+`out` and `inout`, loops, `switch`, `discard`, and the built-in functions of
+the language (`mix`, `smoothstep`, `texture`, `texelFetch`, `pow`...).
+`#define`, `#if` and the like work; `#include` doesn't. It reads `filter_nearest`
+and `repeat_enable` on samplers (the default is linear, clamped, as in Godot's
+2D). Not supported: other shader types (`spatial`, `particles`, `sky`), the
+`vertex()` and `light()` functions (read, not run), samplers that aren't
+`sampler2D`, `determinant` and `inverse`, `modf`, uniform arrays, and
+overloads that differ only by their types. Where Godot and this disagree on
+what is valid, this is the more lenient (`float x = 1;` works).
+
+## Tests
+
+A canvas tests itself with two squares:
+
+- **`test/case`** is a test: it starts the program, like `flow/entry`, but
+  only when its test runs, and nowhere else then. It has a field for each
+  variable of the canvas: what's typed in one is what that variable starts with
+  (empty: as it starts anyway); a list or a record is wired in. A normal run
+  doesn't start there. Its menu (right click) fills its fields from the run
+  (the values the variables have now: after a run, or stepping through one)
+  or from how they start, to write a test from there.
+- **`test/expect`** checks that its `value` is `expected` (typed in, or wired:
+  from a variable the case gives, so one check serves every case) when a tick
+  gets there, and goes on. In a normal run it only goes on.
+
+**Run tests** (F6, in the Run button's menu, `:test` in vim mode, or
+`lineit test FILE`) runs the program once for each `test/case`, and the tests
+of its code squares. The **Tests** panel, next to Output, says how they went:
+what failed first, each with what its case gives, what each failed check
+expected and got, what went wrong, and what it printed; what passed below, a
+line each. A click on a test or a check shows its square. Each `test/case`
+says under it whether it passed.
+
+**Debug**, on a test of the panel (`:debug NAME`, or `:debug` for the first
+that failed), runs that test by steps from what it gives: F10 steps, F5 runs
+on. While it runs, each variable shows its value under its `var/var` square and
+on the pins of `var/get`; each `test/expect` it gets to says how it went, red
+if it failed. [`tests/testing.lua`](tests/testing.lua) has two cases.
+
+## Code squares
+
+`code/function` is a function you write, in Lua, Python, Rust or C, in its
+square (click the code to type; Esc keeps it) or in a file next to the canvas
+(its `file` param). It's read the way its language reads: its parameters are
+its inputs, what it returns its outputs.
+
+```lua
+count = 0  -- a global: the square's state
+
+--- Halves even numbers; counts and passes on the odd ones.
+---@param n integer
+---@param even fun(half: integer)
+---@param odd fun(calls: integer, n: integer)
+function collatz(n, even, odd)
+    Shared.total = Shared.total + n
+    if n % 2 == 0 then
+        return even(n // 2)
+    end
+    count = count + 1
+    return odd(count, n)
+end
+```
+
+| | Lua | Python | Rust | C |
+|---|---|---|---|---|
+| The function | the one not `local` | the one not `_named` | the one `pub fn` | the one not `static` |
+| Types | LuaLS `---@param` (none: what's wired) | hints (none: what's wired) | `i64`, `f64`, `String`, `Vec<T>`, records... | `int64_t`, `double`, `const char *`, `list_int`, `map_str`, records |
+| Outputs | `---@return T name` each | `-> int`, `-> tuple[...]`, a `NamedTuple` | a value, a tuple, a struct | a value, a struct |
+| Exits | `fun(half: integer)` | `Out["half": int]` | `impl FnMut(i64)`, `impl FnMut(Struct)` | `void (*even)(int64_t half)` |
+| State | globals | module variables (`global count`) | the struct of `&mut self` | variables at the top |
+| Globals `::total` | `Shared.total` | `Shared.total` | `shared: &mut Shared` | `Shared *shared` |
+| Runs in | lineit (Lua 5.4) | `python3` | cargo | the C compiler, through cargo |
+
+- **Exits**: a parameter that is a function is a tick output, with its
+  values as outputs. Calling it fires it, when the function returns, in the
+  order called: called in a loop, it fires once for each, each with its own
+  values. A function with exits returns nothing.
+- **State**: each square keeps its own. lineit can read it and set it, so a
+  square's result depends on its state and inputs only.
+- A function with state, exits or globals to set (or nothing to return)
+  runs on ticks: a `tick` input and, without exits, a `then` output. The
+  others are pure, like `math/add`: they run each time their value is read.
+- A file in another language than the square's, code that doesn't read,
+  and what the compiler says are shown with the file's name and line.
+
+**Tests.** Click the line under a code square's code to open its tests: a
+table where each row is a call, with what it's given (inputs, state,
+`::globals`) and what it should give (what it `fires`, its outputs, its state
+after). A row with no state goes on from the one before, so rows test a
+sequence. Values are typed as in fields; lists, maps and records as Lua
+tables (`{1, 2}`, `{a = 1}`). The line says how they went; `lineit test FILE`
+runs them all.
+
+**More languages, from a file.** A language that runs with an interpreter
+can be added without building lineit: a `NAME.lua` file in lineit's
+`languages` folder (next to `modules`, in its data folder) or in a
+`languages` folder next to the canvas. It names the interpreter and has a
+small program, in that language, that tells lineit a function's signature
+(the language reads its own code: lineit parses nothing) and runs it. See
+[`examples/languages/javascript.lua`](examples/languages/javascript.lua),
+which adds JavaScript (with Node.js) and is used by
+[`examples/code_js.lua`](examples/code_js.lua), and
+`crates/lineit-core/src/registry/code/file.rs` for what the program answers.
+
+**Crashes and Stop.** In the editor and `lineit run`, Rust and C code runs
+in a process of its own, as Python and languages from files do: a crash in
+it ends the run with an error, not lineit, and Stop ends a square stuck in a
+loop (its process is killed; a Lua square, which runs in lineit, checks for
+Stop as it goes). In the editor, what those processes write to stdout and
+stderr shows in the Output.
+
+**Printing** from a code square (`print`, `println!`, `printf`) goes to the
+program's output, in order with its own lines.
+
+`tests/code.lua`, `code_python.lua`, `code_rust.lua` and `code_c.lua` are
+the same canvas in each. Python needs `python3` (or `python`) on the
+machine, Rust and C need cargo (and C a C compiler), when running and in the
+compiled program.
 
 # Modules of your own
 
@@ -209,6 +343,7 @@ install the ones you trust.
     lineit [FILE...]                    the editor, with these canvases
     lineit run FILE [--for SECONDS]     run a canvas, without the editor
     lineit check FILE                   what's wrong with a canvas, if anything
+    lineit test FILE                    run the tests of its code squares
     lineit compile FILE [-o OUT]        a program of the canvas, next to it
     lineit new-package NAME [--native]  make a package
     lineit pack DIR / install FILE      share one / install one

@@ -41,6 +41,12 @@ pub struct View {
     pub current: Vec<SquareId>,
     /// The last value of each output that keeps one, by square and output.
     pub values: HashMap<(SquareId, String), Value>,
+    /// What each code square keeps, when the program last paused or ended.
+    pub states: HashMap<SquareId, Vec<(String, Value)>>,
+    /// The variables of the canvas, and their values.
+    pub vars: Vec<(String, Value)>,
+    /// How the `test/expect`s it got to went (in a test's run).
+    pub checks: Vec<lineit_core::interp::CheckResult>,
     pub error: Option<String>,
     pub started: Instant,
     pub ops: u64,
@@ -62,6 +68,9 @@ impl Runner {
             output: Vec::new(),
             current: Vec::new(),
             values: HashMap::new(),
+            states: HashMap::new(),
+            checks: Vec::new(),
+            vars: Vec::new(),
             error: None,
             started: Instant::now(),
             ops: 0,
@@ -69,6 +78,7 @@ impl Runner {
         let v = view.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
+        let stopped = stop.clone();
         std::thread::Builder::new()
             .name("lineit run".into())
             .spawn(move || {
@@ -76,6 +86,8 @@ impl Runner {
                 let mut view = v.lock().unwrap();
                 match r {
                     Ok(state) => view.state = state,
+                    // Stop ended a square that was running: that's a stop
+                    Err(_) if stopped.load(Ordering::Relaxed) => view.state = State::Stopped,
                     Err(e) => {
                         view.state = State::Failed;
                         view.error = Some(e);
@@ -110,13 +122,31 @@ impl Drop for Runner {
     }
 }
 
+/// Gives the view what the program printed and nobody took yet, when
+/// dropped.
+struct OutputOnDrop(Arc<lineit_core::interp::World>, Arc<Mutex<View>>);
+
+impl Drop for OutputOnDrop {
+    fn drop(&mut self) {
+        let lines = self.0.take_output();
+        if let Ok(mut v) = self.1.lock() {
+            v.output.extend(lines);
+        }
+    }
+}
+
 fn publish(it: &mut Interp, view: &Mutex<View>, state: State, ctx: &egui::Context) {
     let squares: Vec<SquareId> = it.current().into_iter().map(|n| it.program().nodes[n as usize].square).collect();
     let values = it.w.shown();
+    // here nothing runs: the code squares can say what they keep
+    let states = it.w.code_states();
     let mut v = view.lock().unwrap();
     v.output.extend(it.w.take_output());
     v.current = squares;
     v.values = values;
+    v.states = states;
+    v.checks = it.w.checks();
+    v.vars = it.w.variables();
     v.state = state;
     v.ops = it.ops_run;
     drop(v);
@@ -133,6 +163,9 @@ fn work(
     ctx: &egui::Context,
 ) -> Result<State, String> {
     let mut it = Interp::new(prog, dir)?;
+    // what it printed reaches the view however this ends, an error too
+    let _rest = OutputOnDrop(it.w.clone(), view.clone());
+    let stopping = stop.clone();
     it.set_stop(stop);
     // while branches run on threads this one waits for them: another one
     // shows what they print and set meanwhile
@@ -141,13 +174,23 @@ fn work(
     {
         let (w, view, ctx, done) = (it.w.clone(), view.clone(), ctx.clone(), done.clone());
         std::thread::spawn(move || {
+            let mut killed = false;
             while !done.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(100));
+                // a square stuck in its code (Python, C...) can't see Stop: its process ends
+                if !killed && stopping.load(Ordering::Relaxed) {
+                    w.kill_externals();
+                    killed = true;
+                }
                 let out = w.take_output();
                 let values = w.shown();
+                let checks = w.checks();
+                let vars = w.variables();
                 let mut v = view.lock().unwrap();
                 v.output.extend(out);
                 v.values = values;
+                v.checks = checks;
+                v.vars = vars;
                 drop(v);
                 ctx.request_repaint();
             }

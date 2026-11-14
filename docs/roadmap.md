@@ -27,16 +27,20 @@ and redoes the inside, with three aims:
 | Packages                | `.lipkg` zip files, made with `lineit pack`                                 |
 | Types                   | Static: inferred over the wires, checked before running                     |
 | Execution model         | Ticks push and data is pulled, as before; fan-outs are parallel branches    |
+| Parallel                | Everything works with branches on threads; read-and-change is one step      |
 | Old canvases or modules | Not supported: a clean break                                                |
 | Distribution            | GitHub Actions on all 3 OSes; release archives, AppImage, Docker (noVNC)    |
 | File dialogs            | A path prompt inside the editor with Tab completion (no native dialog crate)|
 
 Dependencies: `eframe` (the editor), `mlua` (Lua), `zip` (packages), `image`
 (only to read and write image files, as an optional feature of
-`lineit-rt`), `libloading` (Rust modules in the editor). Everything else is
+`lineit-rt`), `tree-sitter` with the `gdshader` grammar and `libm` (for
+`image/shader`, the `shader` feature of `lineit-rt`), the `lua`, `python`, `rust` and `c`
+grammars of tree-sitter (the signatures of `code/function`), `serde_json` (code squares in
+Python, the `process` feature of `lineit-rt`), `libloading` (Rust modules in the editor). Everything else is
 std: the argument parser, the file prompt, threads and the codegen. A
 compiled program depends only on `lineit-rt`, plus `image` if it opens or
-saves images, `mlua` if it uses a Lua module, and the crates of the Rust
+saves images, `tree-sitter` and `libm` if it uses a shader, `mlua` if it uses a Lua module, and the crates of the Rust
 modules it uses.
 
 ## Workspace
@@ -135,12 +139,20 @@ interpreter and the generated code call the same functions in `lineit-rt`
 for anything that isn't a basic operation.
 
 **Interpreter** (Run, Step). Each branch is a task with its own stack of
-frames over the IR. Tasks run in turns on one worker thread, so stepping is
+frames over the IR. Stepping, tasks take turns on one worker thread, so it's
 deterministic: Step lets every live task run up to its next `Enter`, and the
-squares they stop at get an outline. Run goes on until the program ends or
-Stop is pressed. The editor gets output, the current squares and the values
-of slots for tooltips and previews through a channel. Real parallelism is
-the compiled program's job.
+squares they stop at get an outline. Running, the branches of a fan-out run
+on threads of their own, as in a compiled program. Run goes on until the
+program ends or Stop is pressed. The editor gets output, the current squares
+and the values of slots for tooltips and previews through a channel.
+
+**Parallel, always.** Everything must stay correct with branches on threads,
+interpreted or compiled, and give the same results both ways. A statement
+that reads and changes a slot (`n = n + 1`, a code square's `Shared.total
++= 1`, a list item set from itself) is one step for the other branches: the
+statements that change such a slot hold its lock while they do
+(`Program::read_and_changed`), so no change is lost. `tests/parallel.lua`
+checks it.
 
 **Codegen** (Compile). Each handler becomes a function. A set of handlers
 that tick each other in a cycle becomes one function looping over a `match`,
@@ -168,9 +180,10 @@ Output: a crate in `~/.cache/lineit/build/<name>`, built with `cargo build
 - `string`: concat, length, upper, lower, find, substring, split, join, format
 - `io`: print, display
 - `image`: open, save, new, size, pixel, grayscale, invert, flip, rotate,
-  resize, crop, blur, brightness, contrast, tint
+  resize, crop, blur, brightness, contrast, tint, shader (a gdshader file, on the CPU)
 - `graph`: input, output (the pins of a subgraph)
 - `record`: make and split, for every record type
+- `code`: function (a function in Lua, Python, Rust or C, its pins from its signature)
 
 **Lua modules**, in a `.lua` file that returns a table:
 
@@ -218,7 +231,8 @@ file can't stop anyone who changes it.
 Each milestone ends with a build, tests that pass, and a working tree to
 commit. All of them are done (November 2026), checked by the tests (every
 canvas in `tests/` and `examples/` interpreted and compiled, on Linux here;
-CI does the three OSes) and by driving the editor on a virtual screen.
+CI does the three OSes) and by driving the editor on a virtual screen
+(`scripts/screenshot.sh` opens a canvas there and saves a screenshot).
 
 **M0: workspace.** Cargo workspace, the three crates, CI on 3 OSes
 (`cargo test`, `cargo clippy`), the old C tree removed.
@@ -262,19 +276,3 @@ checksums, Rust modules (build, load, link when compiling).
 **M10: shipping.** README, docs (`docs/internals.typ` rewritten), the
 release workflow (archives for 3 OSes, AppImage, Docker with noVNC),
 `install.sh`.
-
-## Later
-
-- A faster interpreter: today it's about 60 ns a loop iteration and 230 ns
-  a square called (compiled programs are about a thousand times faster).
-  Registers and typed slots instead of `Value`s would help most.
-- Branches of compiled programs on a thread pool, not a thread per branch
-  of each fan-out
-- Opening a file in a running editor's new tab (`lineit -t`)
-- Real threads in the interpreter
-- Editing while running applied to the running program (today the program
-  goes on with the canvas it started with)
-- `list/map`, `filter`, `reduce` with a subgraph as the function
-- FFI to C libraries
-- A native file dialog (today: a path prompt with Tab completion)
-- On Windows, no console window when the editor is opened by a double click

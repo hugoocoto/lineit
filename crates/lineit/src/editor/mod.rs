@@ -8,6 +8,7 @@ mod session;
 mod single;
 mod subgraph;
 mod tab;
+mod tests;
 mod theme;
 mod vim;
 

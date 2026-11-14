@@ -41,7 +41,7 @@ Three crates:
 - `lineit-rt`, the runtime: what the interpreter and compiled programs share.
   Values and how they print, strings, lists, images, branches, Lua modules,
   Rust modules. It must build on its own, with no dependency unless a feature
-  asks for one (`image`, `lua`), because lineit writes its source out next to
+  asks for one (`image`, `lua`, `shader`), because lineit writes its source out next to
   every program it compiles (`codegen::write_runtime`).
 - `lineit-core`, everything but the GUI.
 - `lineit`, the command line and the editor (egui).
@@ -299,6 +299,25 @@ being dragged or typed, and the canvas is lowered again when it changed.
 Previews of the images pure squares make are worked out on a thread from the
 expressions lowering hands out (`Lowered::previews`), without running
 anything.
+
+A square's pins can depend on a file: `image/shader` has the uniforms of its
+shader as inputs. Signatures read it through `SigCx::read`, which resolves the
+path against `Canvas::dir` (the folder of the canvas's file, set by whoever
+opens it, not saved) and notes the file's modification time in
+`Lowered::deps`; each frame `Tab::update` compares those times and lowers
+again when one changed.
+
+The shader (`lineit-rt/src/shader*`) is a small interpreter. `prep.rs` is the
+text pass: the preprocessor, and the two things the tree-sitter grammar can't
+read (`1e-3`, `float[3] a`). The grammar (the `tree-sitter-gdshader` crate)
+parses; `parse.rs` turns its tree into `ast.rs`, where every name is a slot
+and constants are folded; `eval.rs` runs `fragment()` for each pixel, over
+`val.rs`'s values (components kept as `f64`, rounded to `f32` or wrapped at
+32 bits after each operation). Math goes through `libm`, so the pixels are the
+same on every machine. A shader is parsed once per text and tried on one pixel,
+so what's wrong with it is told when its square is made, not for each pixel;
+rows are shared among threads. Note that this grammar ends a `for` at its `)`,
+so the statement after it is the body.
 
 Vim mode is three files. `editor/vim.rs` is a state machine with no window:
 keys (`Input`) in, actions (`Act`) out, and the parser of `:` commands; its

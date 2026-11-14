@@ -127,6 +127,11 @@ jobs:
           [ "$("$lineit" --version | tr -d '\r')" = "lineit $(scripts/version.sh)" ]
           "$lineit" run examples/hello.lua | tr -d '\r' | grep -x "Hello, world!"
           "$lineit" check examples/fizzbuzz.lua
+          # code squares from the command line: their tests, and branches
+          # changing the same variables at once
+          "$lineit" test tests/code.lua
+          "$lineit" test tests/code_python.lua
+          "$lineit" run tests/parallel.lua | tr -d '\r' | grep -x "n = 200000, total = 2000"
           cd "$RUNNER_TEMP"
           "$lineit" new-package greet
           "$lineit" pack greet

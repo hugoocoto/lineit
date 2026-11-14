@@ -8,6 +8,7 @@
 //! record types ([`record`]).
 
 pub mod builtin;
+pub mod code;
 pub mod lua;
 pub mod record;
 pub mod subgraph;
@@ -115,6 +116,9 @@ pub struct Signature {
     pub inputs: Vec<PinDef>,
     pub outputs: Vec<PinDef>,
     pub vars: Vec<Class>,
+    /// A code square's function, as read when its pins were said: lowering
+    /// uses it as it is, as its code may come from a file.
+    pub code: Option<Arc<code::Function>>,
 }
 
 impl Signature {
@@ -175,7 +179,15 @@ impl Signature {
 pub trait SigCx {
     /// The type of variable NAME, as seen from the square.
     fn var(&self, name: &str) -> Option<Type>;
+    /// The variables the square sees, by name: its canvas's and the `::`
+    /// ones.
+    fn vars(&self) -> Vec<(String, Type)> {
+        Vec::new()
+    }
     fn record(&self, name: &str) -> Option<Arc<RecordType>>;
+    /// The text of the file PATH (relative to the canvas's folder), which
+    /// the pins then depend on: the editor lowers again when it changes.
+    fn read(&self, path: &str) -> Result<String, String>;
 }
 
 impl dyn SigCx + '_ {
@@ -253,6 +265,7 @@ impl Registry {
         for m in builtin::all() {
             r.add(m);
         }
+        r.add(Arc::new(code::CodeModule::new()));
         r
     }
 

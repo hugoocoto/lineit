@@ -19,6 +19,7 @@ use lineit_rt::lua::LuaModule;
 use lineit_rt::{Record, Type, Value, image as img, ops, rand, text};
 
 use crate::ir::*;
+use crate::model::SquareId;
 
 enum Op {
     Enter(NodeId),
@@ -55,7 +56,23 @@ enum Op {
         outputs: Vec<(String, SlotId)>,
         fires: Vec<(String, Fire)>,
     },
+    Check {
+        square: SquareId,
+        label: String,
+        value: Expr,
+        expected: Expr,
+    },
     Return,
+}
+
+/// How a `test/expect` went, when the run got to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckResult {
+    pub square: SquareId,
+    pub label: String,
+    pub got: Value,
+    pub expected: Value,
+    pub ok: bool,
 }
 
 struct Code {
@@ -80,6 +97,12 @@ fn block(c: &mut Code, b: &Block) {
             Stmt::Do(f, a) => c.ops.push(Op::Do(f.clone(), a.clone())),
             Stmt::Fire(f) => c.ops.push(Op::Fire(f.clone())),
             Stmt::Stop => c.ops.push(Op::Stop),
+            Stmt::Check { square, label, value, expected } => c.ops.push(Op::Check {
+                square: *square,
+                label: label.clone(),
+                value: value.clone(),
+                expected: expected.clone(),
+            }),
             Stmt::Ext { instance, input, inputs, outputs, fires } => c.ops.push(Op::Ext {
                 instance: *instance,
                 input: input.clone(),
@@ -126,9 +149,10 @@ struct Frame {
     handler: HandlerId,
     pc: usize,
     locals: Vec<Value>,
-    /// Fires still to do, the next one last: a Lua module fires several
-    /// outputs, one after the other.
-    pending: Vec<Fire>,
+    /// Fires still to do, the next one last, with the slots that get their
+    /// values just before: a Lua module fires several outputs, one after
+    /// the other.
+    pending: Vec<(Vec<(SlotId, Value)>, Fire)>,
 }
 
 /// The meets of one fan-out, and which ones were reached (by branches on
@@ -202,22 +226,75 @@ pub struct World {
     ext_instances: Vec<(usize, usize)>,
     /// What it printed, for the caller to take.
     pub output: Mutex<Vec<String>>,
+    /// How the `test/expect`s it got to went, in order.
+    checks: Mutex<Vec<CheckResult>>,
     started: Mutex<Instant>,
     /// Relative paths are from here.
     pub base_dir: PathBuf,
     /// Set to end the program: every branch, on every thread, stops at its
     /// next op. Stop sets it from another thread; `flow/stop` from inside.
     pub stop: Arc<AtomicBool>,
+    /// Per slot: whether a statement reads and changes it, so those that
+    /// change it hold its lock ([`Program::read_and_changed`]).
+    locked: Vec<bool>,
+    any_locked: bool,
+    slot_locks: Vec<Mutex<()>>,
+    /// What ends the processes of extensions now, and what they write to
+    /// stderr (see [`lineit_rt::ext::Handles`]).
+    kills: Vec<Box<dyn Fn() + Send + Sync>>,
+    stderrs: Vec<Arc<Mutex<Vec<String>>>>,
 }
 
 impl World {
+    /// Ends the processes of extensions (code in Python, C...): one stuck in
+    /// a call ends it, with an error. For Stop.
+    pub fn kill_externals(&self) {
+        for k in &self.kills {
+            k();
+        }
+    }
+
+    /// The variables of the canvas, by name, and their values now.
+    pub fn variables(&self) -> Vec<(String, Value)> {
+        self.prog.vars.iter().map(|(n, s)| (n.clone(), self.slot(*s as usize))).collect()
+    }
+
+    /// How the `test/expect`s the run got to went, so far.
+    pub fn checks(&self) -> Vec<CheckResult> {
+        lock(&self.checks).clone()
+    }
+
+    /// What the extensions printed, to the output.
+    fn printed(&self) {
+        let lines = lineit_rt::ext::take_printed();
+        if !lines.is_empty() {
+            lock(&self.output).extend(lines);
+        }
+    }
+
+    /// Holds the locks of the SLOTS (that an op changes) that need one, in
+    /// order, until what it returns is dropped: so the op is one step for
+    /// the other branches.
+    fn hold(&self, slots: &[SlotId]) -> Vec<std::sync::MutexGuard<'_, ()>> {
+        if !self.any_locked {
+            return Vec::new();
+        }
+        self.prog.locks_of(slots, &self.locked).into_iter().map(|s| lock(&self.slot_locks[s as usize])).collect()
+    }
+
     pub fn slot(&self, s: usize) -> Value {
         lock(&self.slots[s]).clone()
     }
 
     /// What it printed since the last time.
+    /// What it printed since this was last called, and what the processes
+    /// of its extensions wrote to stderr (if that's kept).
     pub fn take_output(&self) -> Vec<String> {
-        std::mem::take(&mut *lock(&self.output))
+        let mut out = std::mem::take(&mut *lock(&self.output));
+        for e in &self.stderrs {
+            out.append(&mut lock(e));
+        }
+        out
     }
 
     fn stopped(&self) -> bool {
@@ -226,6 +303,21 @@ impl World {
 
     /// The value of each output that shows on a square of the canvas, by
     /// square and output.
+    /// What the code squares keep (their state), by square: ask it when
+    /// nothing runs (it waits for a square that's running).
+    pub fn code_states(&self) -> std::collections::HashMap<crate::model::SquareId, Vec<(String, Value)>> {
+        let mut m = std::collections::HashMap::new();
+        for (k, i) in self.prog.ext_instances.iter().enumerate() {
+            let (module, inst) = self.ext_instances[k];
+            if let Ok(st) = lock(&self.exts[module]).state(inst)
+                && !st.is_empty()
+            {
+                m.insert(i.square, st);
+            }
+        }
+        m
+    }
+
     pub fn shown(&self) -> std::collections::HashMap<(crate::model::SquareId, String), Value> {
         let mut m = std::collections::HashMap::new();
         for (i, s) in self.prog.slots.iter().enumerate() {
@@ -293,7 +385,14 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
             return Ok(Next::Stop);
         }
         let Some(frame) = task.frames.last_mut() else { return Ok(Next::Done) };
-        if let Some(f) = frame.pending.pop() {
+        if let Some((writes, f)) = frame.pending.pop() {
+            {
+                let slots: Vec<SlotId> = writes.iter().map(|(s, _)| *s).collect();
+                let _held = w.hold(&slots);
+                for (s, v) in writes {
+                    *lock(&w.slots[s as usize]) = v;
+                }
+            }
             match f.targets.len() {
                 0 => {}
                 1 => call(task, code, f.targets[0], false)?,
@@ -315,6 +414,7 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 }
             }
             Op::Set(s, e) => {
+                let _held = w.hold(&[*s]);
                 let v = match e {
                     Expr::Local(l) => frame.locals[*l as usize].clone(),
                     _ => w.eval(e, &frame.locals)?,
@@ -330,6 +430,7 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 lock(&w.output).push(v.str().to_string());
             }
             Op::Do(effect, args) => {
+                let _held = w.hold(&effect.writes());
                 let args = args.iter().map(|a| w.eval(a, &frame.locals)).collect::<Result<Vec<_>, _>>()?;
                 w.effect(effect, args);
             }
@@ -363,7 +464,15 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 _ => return Ok(Next::FanOut(fire.clone())),
             },
             Op::Stop => return Ok(Next::Stop),
+            Op::Check { square, label, value, expected } => {
+                let got = w.eval(value, &frame.locals)?;
+                let expected = w.eval(expected, &frame.locals)?;
+                let ok = lineit_rt::value::same(&got, &expected);
+                lock(&w.checks).push(CheckResult { square: *square, label: label.clone(), got, expected, ok });
+            }
             Op::Ext { instance, input, inputs, outputs, fires } => {
+                let slots: Vec<SlotId> = outputs.iter().map(|(_, s)| *s).collect();
+                let _held = w.hold(&slots);
                 let args = inputs.iter().map(|(n, e)| Ok((n.as_str(), w.eval(e, &frame.locals)?))).collect::<Result<
                     Vec<_>,
                     String,
@@ -372,18 +481,21 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 let (m, inst) = w.ext_instances[*instance];
                 let tys: Vec<Type> = outputs.iter().map(|(_, s)| w.prog.slots[*s as usize].ty.clone()).collect();
                 let outs: Vec<(&str, &Type)> = outputs.iter().zip(&tys).map(|((n, _), t)| (n.as_str(), t)).collect();
-                let (got, fired) = lock(&w.exts[m]).tick(inst, input.as_deref(), &args, &outs)?;
-                for ((_, s), v) in outputs.iter().zip(got) {
+                let run = lock(&w.exts[m]).run(inst, input.as_deref(), &args, &outs);
+                w.printed();
+                let run = run?;
+                for ((_, s), v) in outputs.iter().zip(run.set) {
                     if let Some(v) = v {
                         *lock(&w.slots[*s as usize]) = v;
                     }
                 }
                 let mut list = Vec::new();
-                for name in fired {
+                for (name, values) in run.fire {
                     let f = fires.iter().find(|(n, _)| *n == name).ok_or_else(|| {
                         format!("{}: it fires `{name}`, which isn't one of its tick outputs", w.prog.exts[m].path)
                     })?;
-                    list.push(f.1.clone());
+                    let writes = values.into_iter().filter_map(|(o, v)| Some((outputs.get(o)?.1, v))).collect();
+                    list.push((writes, f.1.clone()));
                 }
                 // the first to fire is the last, and goes first
                 list.reverse();
@@ -457,33 +569,57 @@ fn fan_out(task: &mut Task, fire: &Fire, w: &World, code: &[Code]) -> Result<(),
     Ok(())
 }
 
+/// The module of KIND (a Lua module, a code square's function, a Rust
+/// module...), ready to make squares of; PATH names it in errors.
+pub fn open_ext(path: &str, kind: &ExtKind) -> Result<Box<dyn Ext>, String> {
+    Ok(match kind {
+        ExtKind::Lua { source } => Box::new(LuaModule::load(path, source)?),
+        ExtKind::LuaCode { name, glue } => Box::new(lineit_rt::lua::LuaCode::load(name, glue)?),
+        ExtKind::Process { name, commands, args, host, load } => {
+            let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            Box::new(lineit_rt::process::Process::start(name, &commands, &args, host, load)?)
+        }
+        ExtKind::Native { crate_dir, crate_name, ty } => Box::new(
+            crate::native::Dylib::open(crate_dir, crate_name, ty).map_err(|err| format!("{path}: {err}"))?,
+        ),
+    })
+}
+
 impl Interp {
     pub fn new(prog: Program, base_dir: PathBuf) -> Result<Interp, String> {
         let code = prog.handlers.iter().map(compile).collect();
         let mut exts: Vec<Box<dyn Ext>> = Vec::new();
         for e in &prog.exts {
-            exts.push(match &e.kind {
-                ExtKind::Lua { source } => Box::new(LuaModule::load(&e.path, source)?),
-                ExtKind::Native { crate_dir, crate_name, ty } => Box::new(
-                    crate::native::Dylib::open(crate_dir, crate_name, ty)
-                        .map_err(|err| format!("{}: {err}", e.path))?,
-                ),
-            });
+            exts.push(open_ext(&e.path, &e.kind)?);
         }
         let mut ext_instances = Vec::new();
         for i in &prog.ext_instances {
             let params: Vec<(&str, Value)> = i.params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
             ext_instances.push((i.module, exts[i.module].instance(&params)?));
         }
+        let (mut kills, mut stderrs) = (Vec::new(), Vec::new());
+        for e in &mut exts {
+            let h = e.handles();
+            kills.extend(h.kill);
+            stderrs.extend(h.stderr);
+        }
         let prog = Arc::new(prog);
+        let locked = prog.read_and_changed();
         Ok(Interp {
             clock_next: vec![0.0; prog.clocks.len()],
             w: Arc::new(World {
+                kills,
+                stderrs,
+                any_locked: locked.contains(&true),
+                locked,
+                slot_locks: prog.slots.iter().map(|_| Mutex::new(())).collect(),
                 slots: prog.slots.iter().map(|s| Padded(Mutex::new(s.init.clone()))).collect(),
                 prog: prog.clone(),
                 exts: exts.into_iter().map(Mutex::new).collect(),
                 ext_instances,
                 output: Mutex::new(Vec::new()),
+                checks: Mutex::new(Vec::new()),
                 started: Mutex::new(Instant::now()),
                 base_dir,
                 stop: Arc::new(AtomicBool::new(false)),
@@ -848,7 +984,9 @@ impl World {
                     .map(|(n, e)| Ok((n.as_str(), self.eval(e, locals)?)))
                     .collect::<Result<Vec<_>, String>>()?;
                 let (m, inst) = self.ext_instances[*instance];
-                lock(&self.exts[m]).eval(inst, &args, &[(output.as_str(), ty)])?.remove(0)
+                let v = lock(&self.exts[m]).eval(inst, &args, &[(output.as_str(), ty)]);
+                self.printed();
+                v?.remove(0)
             }
         })
     }
@@ -921,6 +1059,7 @@ impl World {
             Func::ImgBrightness => Value::Image(img::brightness(im(0), fl(1))),
             Func::ImgContrast => Value::Image(img::contrast(im(0), fl(1))),
             Func::ImgTint => Value::Image(img::tint(im(0), s(1), fl(2))),
+            Func::ImgShader => Value::Image(lineit_rt::shader::apply_file(im(0), s(1), fl(2), &a[3..])),
         }
     }
 }
@@ -1016,13 +1155,19 @@ pub fn run_to_end(
     mut print: impl FnMut(&str),
 ) -> Result<(), String> {
     let mut it = Interp::new(prog, base_dir)?;
-    it.start()?;
+    // what it printed is printed before what went wrong, if anything did
+    let r = it.start();
+    for line in it.w.take_output() {
+        print(&line);
+    }
+    r?;
     let started = Instant::now();
     loop {
-        let st = it.run(100_000)?;
+        let st = it.run(100_000);
         for line in it.w.take_output() {
             print(&line);
         }
+        let st = st?;
         if st == Status::Idle {
             let Some(wait) = it.next_clock() else { return Ok(()) };
             if let Some(limit) = seconds
@@ -1031,7 +1176,11 @@ pub fn run_to_end(
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_secs_f64(wait));
-            it.tick_clocks(false)?;
+            let r = it.tick_clocks(false);
+            for line in it.w.take_output() {
+                print(&line);
+            }
+            r?;
         }
     }
 }

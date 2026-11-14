@@ -24,6 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use mlua::{Function, Lua, RegistryKey, Table};
 
@@ -34,6 +35,7 @@ pub struct LuaModule {
     lua: Lua,
     module: Table,
     instances: Vec<RegistryKey>,
+    stop: Arc<AtomicBool>,
 }
 
 /// A pin or param as the module declares it.
@@ -64,9 +66,9 @@ fn err(e: mlua::Error) -> String {
 impl LuaModule {
     /// Runs SOURCE, the module's file, which must return its table.
     pub fn load(name: &str, source: &str) -> Result<LuaModule, String> {
-        let lua = Lua::new();
+        let (lua, stop) = new_lua()?;
         let module: Table = lua.load(source).set_name(format!("@{name}")).eval().map_err(|e| format!("{name}: {e}"))?;
-        Ok(LuaModule { lua, module, instances: Vec::new() })
+        Ok(LuaModule { lua, module, instances: Vec::new(), stop })
     }
 
     pub fn spec(&self) -> Result<Spec, String> {
@@ -177,6 +179,210 @@ impl LuaModule {
             None => Vec::new(),
         };
         Ok((self.outputs(got, outputs)?, fire))
+    }
+}
+
+/// A code square's function in Lua (see `code/function` in lineit-core),
+/// through the glue lineit writes around it: a table with `new()`, which
+/// runs the code in a fresh environment for each square (its globals are
+/// the square's state), `call(sq, i)`, which returns the outputs it set and
+/// the outputs it fired, each with its values (`{ name, { pin = value } }`),
+/// and `state(sq)` and `set_state(sq, t)`.
+pub struct LuaCode {
+    lua: Lua,
+    glue: Table,
+    squares: Vec<RegistryKey>,
+    stop: Arc<AtomicBool>,
+}
+
+impl LuaCode {
+    pub fn load(name: &str, glue: &str) -> Result<LuaCode, String> {
+        let (lua, stop) = new_lua()?;
+        let glue: Table = lua.load(glue).set_name(format!("@{name}")).eval().map_err(|e| format!("{name}: {e}"))?;
+        Ok(LuaCode { lua, glue, squares: Vec::new(), stop })
+    }
+
+    fn square(&self, sq: usize) -> Result<mlua::Value, String> {
+        self.lua.registry_value(&self.squares[sq]).map_err(err)
+    }
+
+    fn call(&self, sq: usize, inputs: &[(&str, Value)]) -> Result<(Table, Table), String> {
+        let i = self.lua.create_table().map_err(err)?;
+        for (k, v) in inputs {
+            i.set(*k, to_lua(&self.lua, v)?).map_err(err)?;
+        }
+        let f: Function = self.glue.get("call").map_err(err)?;
+        f.call((self.square(sq)?, i)).map_err(|e| without_traceback(&e))
+    }
+}
+
+/// What went wrong, without Lua's traceback (which goes through lineit's
+/// glue, not only the code).
+fn without_traceback(e: &mlua::Error) -> String {
+    let s = e.to_string();
+    s.split("\nstack traceback:").next().unwrap_or(&s).trim_end().to_string()
+}
+
+/// OUTPUTS' values in T, by name: None for those it doesn't have.
+fn by_name(t: &Table, outputs: &[(&str, &Type)]) -> Result<Vec<Option<Value>>, String> {
+    outputs
+        .iter()
+        .map(|(name, ty)| match t.get::<mlua::Value>(*name).map_err(err)? {
+            mlua::Value::Nil => Ok(None),
+            v => from_lua(v, ty).map(Some).map_err(|e| format!("`{name}`: {e}")),
+        })
+        .collect()
+}
+
+impl crate::ext::Ext for LuaCode {
+    fn handles(&mut self) -> crate::ext::Handles {
+        lua_handles(&self.stop)
+    }
+
+    fn instance(&mut self, _params: &[(&str, Value)]) -> Result<usize, String> {
+        let f: Function = self.glue.get("new").map_err(err)?;
+        let sq: mlua::Value = f.call(()).map_err(err)?;
+        self.squares.push(self.lua.create_registry_value(sq).map_err(err)?);
+        Ok(self.squares.len() - 1)
+    }
+
+    fn eval(&mut self, sq: usize, inputs: &[(&str, Value)], outputs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
+        let (set, _) = self.call(sq, inputs)?;
+        Ok(by_name(&set, outputs)?.into_iter().zip(outputs).map(|(v, (_, t))| v.unwrap_or_else(|| Value::default_of(t))).collect())
+    }
+
+    fn tick(
+        &mut self,
+        sq: usize,
+        input: Option<&str>,
+        inputs: &[(&str, Value)],
+        outputs: &[(&str, &Type)],
+    ) -> Result<crate::ext::Ticked, String> {
+        let run = self.run(sq, input, inputs, outputs)?;
+        let mut set = run.set;
+        let mut fire = Vec::new();
+        for (name, values) in run.fire {
+            for (o, v) in values {
+                set[o] = Some(v);
+            }
+            fire.push(name);
+        }
+        Ok((set, fire))
+    }
+
+    fn run(
+        &mut self,
+        sq: usize,
+        _input: Option<&str>,
+        inputs: &[(&str, Value)],
+        outputs: &[(&str, &Type)],
+    ) -> Result<crate::ext::Run, String> {
+        let (set, fired) = self.call(sq, inputs)?;
+        let mut fire = Vec::new();
+        for f in fired.sequence_values::<Table>() {
+            let f = f.map_err(err)?;
+            let name: String = f.get(1).map_err(err)?;
+            let values: Table = f.get(2).map_err(err)?;
+            let got = by_name(&values, outputs)?;
+            fire.push((name, got.into_iter().enumerate().filter_map(|(o, v)| Some((o, v?))).collect()));
+        }
+        Ok(crate::ext::Run { set: by_name(&set, outputs)?, fire })
+    }
+
+    fn state(&mut self, sq: usize) -> Result<Vec<(String, Value)>, String> {
+        let f: Function = self.glue.get("state").map_err(err)?;
+        let t: Table = f.call(self.square(sq)?).map_err(err)?;
+        let mut v = Vec::new();
+        for pair in t.pairs::<String, mlua::Value>() {
+            let (k, x) = pair.map_err(err)?;
+            if let Some(x) = from_lua_any(x) {
+                v.push((k, x));
+            }
+        }
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(v)
+    }
+
+    fn set_state(&mut self, sq: usize, state: &[(&str, Value)]) -> Result<(), String> {
+        let t = self.lua.create_table().map_err(err)?;
+        for (k, v) in state {
+            t.set(*k, to_lua(&self.lua, v)?).map_err(err)?;
+        }
+        let f: Function = self.glue.get("set_state").map_err(err)?;
+        f.call((self.square(sq)?, t)).map_err(err)
+    }
+}
+
+/// V as a lineit value of whatever type it looks like, to show it (None
+/// for what has no value: functions...). A table with items 1, 2... is a
+/// list, another a map.
+pub fn from_lua_any(v: mlua::Value) -> Option<Value> {
+    Some(match v {
+        mlua::Value::Integer(i) => Value::Int(i),
+        mlua::Value::Number(f) => Value::Float(f),
+        mlua::Value::Boolean(b) => Value::Bool(b),
+        mlua::Value::String(s) => Value::Str(s.to_string_lossy().into()),
+        mlua::Value::Table(t) => {
+            if t.raw_len() > 0 {
+                Value::List(Arc::new(t.sequence_values::<mlua::Value>().filter_map(|x| from_lua_any(x.ok()?)).collect()))
+            } else {
+                let mut m = BTreeMap::new();
+                for (k, x) in t.pairs::<String, mlua::Value>().flatten() {
+                    if let Some(x) = from_lua_any(x) {
+                        m.insert(k, x);
+                    }
+                }
+                Value::Map(Arc::new(m))
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// A Lua whose `print` prints where the program's lines go
+/// ([`crate::ext::print`]), and the flag that stops what it runs (the
+/// program's Stop: Lua checks it every so often, and fails if it's set).
+fn new_lua() -> Result<(Lua, Arc<AtomicBool>), String> {
+    let lua = Lua::new();
+    let stop = Arc::new(AtomicBool::new(false));
+    lua.set_hook(mlua::HookTriggers::new().every_nth_instruction(10_000), stop_hook(stop.clone(), false))
+        .map_err(err)?;
+    let print = lua
+        .create_function(|_, args: mlua::MultiValue| {
+            let parts: Vec<String> =
+                args.iter().map(|v| v.to_string().unwrap_or_else(|_| v.type_name().to_string())).collect();
+            crate::ext::print(&parts.join("\t"));
+            Ok(())
+        })
+        .map_err(err)?;
+    lua.globals().set("print", print).map_err(err)?;
+    Ok((lua, stop))
+}
+
+/// The hook that stops what a Lua runs once FLAG is set: then it checks
+/// at EVERY instruction, so code that catches the error (`pcall` in a
+/// loop) fails again at the next one outside of it.
+fn stop_hook(flag: Arc<AtomicBool>, every: bool) -> impl Fn(&Lua, &mlua::debug::Debug) -> mlua::Result<mlua::VmState> + Send + 'static {
+    move |lua, _| {
+        if !flag.load(Ordering::Relaxed) {
+            return Ok(mlua::VmState::Continue);
+        }
+        if !every {
+            let _ = lua.set_hook(mlua::HookTriggers::new().every_nth_instruction(1), stop_hook(flag.clone(), true));
+        }
+        Err(mlua::Error::runtime("stopped"))
+    }
+}
+
+/// What stops what a Lua runs ([`crate::ext::Handles`]).
+fn lua_handles(stop: &Arc<AtomicBool>) -> crate::ext::Handles {
+    let stop = stop.clone();
+    crate::ext::Handles { kill: Some(Box::new(move || stop.store(true, Ordering::Relaxed))), stderr: None }
+}
+
+impl LuaModule {
+    pub fn handles(&self) -> crate::ext::Handles {
+        lua_handles(&self.stop)
     }
 }
 

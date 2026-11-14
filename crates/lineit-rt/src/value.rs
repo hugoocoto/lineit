@@ -267,3 +267,19 @@ impl<T: Typed> Typed for BTreeMap<String, T> {
         }
     }
 }
+
+/// Whether A and B are the same value (floats: nearly).
+pub fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Float(x), Value::Float(y)) => (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
+        (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => same(&Value::Float(*x as f64), &Value::Float(*y)),
+        (Value::List(x), Value::List(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| same(a, b)),
+        (Value::Map(x), Value::Map(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|((ka, a), (kb, b))| ka == kb && same(a, b))
+        }
+        (Value::Record(x), Value::Record(y)) => {
+            x.fields.len() == y.fields.len() && x.fields.iter().zip(&y.fields).all(|(a, b)| same(a, b))
+        }
+        _ => a == b,
+    }
+}

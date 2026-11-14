@@ -56,7 +56,7 @@ pub fn program_name(canvas: &Path) -> String {
     name
 }
 
-fn fnv(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
         h ^= *b as u64;
@@ -70,6 +70,7 @@ const RT_FILES: &[(&str, &str)] = &[
     ("Cargo.toml", include_str!("../../lineit-rt/Cargo.toml")),
     ("src/lib.rs", include_str!("../../lineit-rt/src/lib.rs")),
     ("src/branch.rs", include_str!("../../lineit-rt/src/branch.rs")),
+    ("src/cabi.rs", include_str!("../../lineit-rt/src/cabi.rs")),
     ("src/ext.rs", include_str!("../../lineit-rt/src/ext.rs")),
     ("src/image.rs", include_str!("../../lineit-rt/src/image.rs")),
     ("src/io.rs", include_str!("../../lineit-rt/src/io.rs")),
@@ -77,7 +78,15 @@ const RT_FILES: &[(&str, &str)] = &[
     ("src/lua.rs", include_str!("../../lineit-rt/src/lua.rs")),
     ("src/native.rs", include_str!("../../lineit-rt/src/native.rs")),
     ("src/ops.rs", include_str!("../../lineit-rt/src/ops.rs")),
+    ("src/process.rs", include_str!("../../lineit-rt/src/process.rs")),
     ("src/rand.rs", include_str!("../../lineit-rt/src/rand.rs")),
+    ("src/shader.rs", include_str!("../../lineit-rt/src/shader.rs")),
+    ("src/shader/ast.rs", include_str!("../../lineit-rt/src/shader/ast.rs")),
+    ("src/shader/builtins.rs", include_str!("../../lineit-rt/src/shader/builtins.rs")),
+    ("src/shader/eval.rs", include_str!("../../lineit-rt/src/shader/eval.rs")),
+    ("src/shader/parse.rs", include_str!("../../lineit-rt/src/shader/parse.rs")),
+    ("src/shader/prep.rs", include_str!("../../lineit-rt/src/shader/prep.rs")),
+    ("src/shader/val.rs", include_str!("../../lineit-rt/src/shader/val.rs")),
     ("src/show.rs", include_str!("../../lineit-rt/src/show.rs")),
     ("src/slot.rs", include_str!("../../lineit-rt/src/slot.rs")),
     ("src/text.rs", include_str!("../../lineit-rt/src/text.rs")),
@@ -118,8 +127,14 @@ pub fn compile(prog: &Program, opts: &Options, log: &mut dyn FnMut(&str)) -> Res
     if uses_images(prog) {
         features.push("\"image\"");
     }
-    if prog.exts.iter().any(|e| matches!(e.kind, ExtKind::Lua { .. })) {
+    if uses(prog, &|f| matches!(f, Func::ImgShader), false) {
+        features.push("\"shader\"");
+    }
+    if prog.exts.iter().any(|e| matches!(e.kind, ExtKind::Lua { .. } | ExtKind::LuaCode { .. })) {
         features.push("\"lua\"");
+    }
+    if prog.exts.iter().any(|e| matches!(e.kind, ExtKind::Process { .. })) {
+        features.push("\"process\"");
     }
     let rt_path = rt.to_string_lossy().replace('\\', "/");
     // Rust modules: their crates, using this runtime
@@ -198,32 +213,37 @@ fn write_if_changed(path: &Path, text: &str) -> Result<(), String> {
 }
 
 fn uses_images(prog: &Program) -> bool {
-    fn expr(e: &Expr) -> bool {
+    uses(prog, &|f| matches!(f, Func::ImgOpen), true)
+}
+
+/// If the program calls a function PICK likes (or, if SAVE, saves an image).
+fn uses(prog: &Program, pick: &dyn Fn(&Func) -> bool, save: bool) -> bool {
+    fn expr(e: &Expr, pick: &dyn Fn(&Func) -> bool) -> bool {
         match e {
-            Expr::Call(Func::ImgOpen, _) => true,
-            Expr::Call(_, a) | Expr::Record(_, a) => a.iter().any(expr),
+            Expr::Call(f, _) if pick(f) => true,
+            Expr::Call(_, a) | Expr::Record(_, a) => a.iter().any(|e| expr(e, pick)),
             Expr::Un(_, a) | Expr::Field(a, ..) | Expr::ListGet(_, a) | Expr::MapGet(_, a) | Expr::MapHas(_, a) => {
-                expr(a)
+                expr(a, pick)
             }
-            Expr::Bin(_, a, b) => expr(a) || expr(b),
-            Expr::If(a, b, c) => expr(a) || expr(b) || expr(c),
-            Expr::Ext { inputs, .. } => inputs.iter().any(|(_, e)| expr(e)),
+            Expr::Bin(_, a, b) => expr(a, pick) || expr(b, pick),
+            Expr::If(a, b, c) => expr(a, pick) || expr(b, pick) || expr(c, pick),
+            Expr::Ext { inputs, .. } => inputs.iter().any(|(_, e)| expr(e, pick)),
             _ => false,
         }
     }
-    fn block(b: &Block) -> bool {
+    fn block(b: &Block, pick: &dyn Fn(&Func) -> bool, save: bool) -> bool {
         b.iter().any(|s| match s {
-            Stmt::Do(Effect::ImageSave { .. }, _) => true,
-            Stmt::Set(_, e) | Stmt::Let(_, e) | Stmt::Print(e) => expr(e),
-            Stmt::Do(_, a) => a.iter().any(expr),
-            Stmt::If(c, a, b) => expr(c) || block(a) || block(b),
-            Stmt::While(c, b) => expr(c) || block(b),
-            Stmt::For { from, to, body, .. } => expr(from) || expr(to) || block(body),
-            Stmt::Ext { inputs, .. } => inputs.iter().any(|(_, e)| expr(e)),
+            Stmt::Do(Effect::ImageSave { .. }, _) if save => true,
+            Stmt::Set(_, e) | Stmt::Let(_, e) | Stmt::Print(e) => expr(e, pick),
+            Stmt::Do(_, a) => a.iter().any(|e| expr(e, pick)),
+            Stmt::If(c, a, b) => expr(c, pick) || block(a, pick, save) || block(b, pick, save),
+            Stmt::While(c, b) => expr(c, pick) || block(b, pick, save),
+            Stmt::For { from, to, body, .. } => expr(from, pick) || expr(to, pick) || block(body, pick, save),
+            Stmt::Ext { inputs, .. } => inputs.iter().any(|(_, e)| expr(e, pick)),
             _ => false,
         })
     }
-    prog.handlers.iter().any(|h| block(&h.body)) || prog.clocks.iter().any(|c| expr(&c.interval))
+    prog.handlers.iter().any(|h| block(&h.body, pick, save)) || prog.clocks.iter().any(|c| expr(&c.interval, pick))
 }
 
 /// The handlers in cycles of fires, grouped (Tarjan's strongly connected
@@ -294,6 +314,9 @@ fn cycles(prog: &Program) -> (Vec<Option<usize>>, Vec<Vec<HandlerId>>) {
 struct Gen<'a> {
     prog: &'a Program,
     shared: bool,
+    /// Per slot: whether the statements that change it hold its lock (with
+    /// fan-outs only, see [`Program::read_and_changed`]).
+    locked: Vec<bool>,
     meets: BTreeSet<HandlerId>,
     group_of: Vec<Option<usize>>,
 }
@@ -531,6 +554,13 @@ impl Gen<'_> {
             Func::ImgBrightness => format!("{rt}::image::brightness({}, {})", r(0), a[1]),
             Func::ImgContrast => format!("{rt}::image::contrast({}, {})", r(0), a[1]),
             Func::ImgTint => format!("{rt}::image::tint({}, {}, {})", r(0), r(1), a[2]),
+            Func::ImgShader => format!(
+                "{rt}::shader::apply_file({}, {}, {}, &[{}])",
+                r(0),
+                r(1),
+                a[2],
+                join(a[3..].iter().map(|x| format!("{rt}::value::Typed::to_value(&{x})")))
+            ),
         }
     }
 
@@ -566,6 +596,17 @@ impl Gen<'_> {
         }
     }
 
+    /// What holds the locks of what of SLOTS needs one, until the end of
+    /// the block it's in (nothing, if none does).
+    fn hold(&self, slots: &[SlotId]) -> String {
+        let locks = self.prog.locks_of(slots, &self.locked);
+        if locks.is_empty() {
+            return String::new();
+        }
+        let l: Vec<String> = locks.iter().map(|s| format!("lineit_rt::slot::lock(&LOCK{s})")).collect();
+        format!("let _held = ({},); ", l.join(", "))
+    }
+
     fn block(&self, b: &Block, locals: &[Type], group: Option<usize>, tail: bool, ind: &str) -> String {
         let mut out = String::new();
         let inner = format!("{ind}    ");
@@ -577,7 +618,7 @@ impl Gen<'_> {
                     let _ = writeln!(out, "{ind}// {} ({})", self.prog.nodes[*n as usize].module, n);
                 }
                 Stmt::Set(s, x) => {
-                    let _ = writeln!(out, "{ind}{{ let v = {}; s.s{s}.set(v); }}", e(x));
+                    let _ = writeln!(out, "{ind}{{ {}let v = {}; s.s{s}.set(v); }}", self.hold(&[*s]), e(x));
                 }
                 Stmt::Let(l, x) => {
                     let _ = writeln!(out, "{ind}l{l} = {};", e(x));
@@ -609,7 +650,7 @@ impl Gen<'_> {
                             format!("let v = lineit_rt::image::save(&a0, &a1); s.s{ok}.set(v);")
                         }
                     };
-                    let _ = writeln!(out, "{ind}{{ {lets}{body} }}");
+                    let _ = writeln!(out, "{ind}{{ {}{lets}{body} }}", self.hold(&effect.writes()));
                 }
                 Stmt::If(c, a, b) => {
                     let _ = writeln!(out, "{ind}if {} {{", e(c));
@@ -634,6 +675,17 @@ impl Gen<'_> {
                     let _ = writeln!(out, "{ind}}}");
                 }
                 Stmt::Fire(f) => out.push_str(&self.fire(f, group, tail, ind)),
+                // a failed check, said: a compiled program has no report
+                Stmt::Check { label, value, expected, .. } => {
+                    let label = if label.is_empty() { String::new() } else { format!(" ({label})") };
+                    let _ = writeln!(
+                        out,
+                        "{ind}{{ let v = lineit_rt::value::Typed::to_value(&{}); let e = lineit_rt::value::Typed::to_value(&{}); if !lineit_rt::value::same(&v, &e) {{ lineit_rt::io::flush(); eprintln!(\"check failed{{}}: expected {{}}, got {{}}\", {}, e.text(), v.text()); }} }}",
+                        e(value),
+                        e(expected),
+                        rust_str(&label)
+                    );
+                }
                 Stmt::Stop => {
                     let _ = writeln!(out, "{ind}{{ lineit_rt::io::flush(); std::process::exit(0); }}");
                 }
@@ -645,20 +697,37 @@ impl Gen<'_> {
                         Some(i) => format!("Some({})", rust_str(i)),
                         None => "None".into(),
                     };
+                    // what it reads and sets, one step for the other branches
+                    let slots: Vec<SlotId> = outputs.iter().map(|(_, s)| *s).collect();
+                    let hold = self.hold(&slots);
                     let _ = writeln!(
                         out,
-                        "{ind}let (got, fired) = ext_tick(s, {instance}, {input}, vec![{}], vec![{outs}]);",
+                        "{ind}let run = {{ {hold}let run = ext_tick(s, {instance}, {input}, vec![{}], vec![{outs}]);",
                         self.lua_args(inputs, locals)
                     );
                     for (i, (_, slot)) in outputs.iter().enumerate() {
                         let _ = writeln!(
                             out,
-                            "{ind}if let Some(v) = got[{i}].clone() {{ s.s{slot}.set(<{} as lineit_rt::value::Typed>::from_value(v)); }}",
+                            "{ind}    if let Some(v) = run.set[{i}].clone() {{ s.s{slot}.set(<{} as lineit_rt::value::Typed>::from_value(v)); }}",
                             self.slot_ty(*slot).rust()
                         );
                     }
+                    let _ = writeln!(out, "{ind}    run\n{ind}}};");
                     if !fires.is_empty() {
-                        let _ = writeln!(out, "{ind}for f in fired {{");
+                        let _ = writeln!(out, "{ind}for (f, values) in run.fire {{");
+                        // each fire's own values, first
+                        let _ = writeln!(out, "{inner}{{ {hold}for (o, v) in values {{");
+                        let _ = writeln!(out, "{inner}    match o {{");
+                        for (i, (_, slot)) in outputs.iter().enumerate() {
+                            let _ = writeln!(
+                                out,
+                                "{inner}        {i} => s.s{slot}.set(<{} as lineit_rt::value::Typed>::from_value(v)),",
+                                self.slot_ty(*slot).rust()
+                            );
+                        }
+                        let _ = writeln!(out, "{inner}        _ => {{}}");
+                        let _ = writeln!(out, "{inner}    }}");
+                        let _ = writeln!(out, "{inner}}} }}");
                         let _ = writeln!(out, "{inner}match f.as_str() {{");
                         for (name, f) in fires {
                             let _ = writeln!(out, "{inner}    {} => {{", rust_str(name));
@@ -739,12 +808,18 @@ pub fn generate(prog: &Program) -> String {
             s.fires(&mut |f| meets.extend(f.meets.iter().copied()));
         }
     }
-    let g = Gen { prog, shared, meets, group_of };
+    let locked = if shared { prog.read_and_changed() } else { vec![false; prog.slots.len()] };
+    let g = Gen { prog, shared, locked, meets, group_of };
     let st = g.state_ty();
     let mut o = String::new();
     o.push_str("// Made by lineit from a canvas: changes here are lost when it compiles it again.\n");
     o.push_str("#![allow(warnings, clippy::all)]\n\n");
     records(&mut o, prog);
+    for (s, l) in g.locked.iter().enumerate() {
+        if *l {
+            let _ = writeln!(o, "static LOCK{s}: std::sync::Mutex<()> = std::sync::Mutex::new(());");
+        }
+    }
 
     // state
     o.push_str("struct State {\n");
@@ -775,6 +850,17 @@ pub fn generate(prog: &Program) -> String {
                 ExtKind::Lua { source } => {
                     format!("lineit_rt::lua::LuaModule::load({}, {})", rust_str(&l.path), rust_str(source))
                 }
+                ExtKind::LuaCode { name, glue } => {
+                    format!("lineit_rt::lua::LuaCode::load({}, {})", rust_str(name), rust_str(glue))
+                }
+                ExtKind::Process { name, commands, args, host, load } => format!(
+                    "lineit_rt::process::Process::start({}, &[{}], &[{}], {}, {})",
+                    rust_str(name),
+                    join(commands.iter().map(|c| rust_str(c))),
+                    join(args.iter().map(|a| rust_str(a))),
+                    rust_str(host),
+                    rust_str(load)
+                ),
                 ExtKind::Native { crate_name, ty, .. } => {
                     format!(
                         "lineit_rt::native::Host::new({}::lineit_natives(), {})",
@@ -811,11 +897,11 @@ pub fn generate(prog: &Program) -> String {
     if lua {
         let _ = writeln!(
             o,
-            "fn ext_eval(s: &State, inst: usize, output: &str, ty: &lineit_rt::Type, inputs: Vec<(&str, lineit_rt::Value)>) -> lineit_rt::Value {{\n    let (m, i) = EXT_INSTANCES[inst];\n    let mut m = s.ext[m].lock().unwrap_or_else(|e| e.into_inner());\n    m.eval(i, &inputs, &[(output, ty)]).unwrap_or_else(|e| lineit_rt::ext::fail(&e)).remove(0)\n}}\n"
+            "fn ext_eval(s: &State, inst: usize, output: &str, ty: &lineit_rt::Type, inputs: Vec<(&str, lineit_rt::Value)>) -> lineit_rt::Value {{\n    let (m, i) = EXT_INSTANCES[inst];\n    let mut m = s.ext[m].lock().unwrap_or_else(|e| e.into_inner());\n    let v = m.eval(i, &inputs, &[(output, ty)]);\n    drop(m);\n    for l in lineit_rt::ext::take_printed() {{ lineit_rt::io::print(&l); }}\n    v.unwrap_or_else(|e| lineit_rt::ext::fail(&e)).remove(0)\n}}\n"
         );
         let _ = writeln!(
             o,
-            "fn ext_tick(s: &State, inst: usize, input: Option<&str>, inputs: Vec<(&str, lineit_rt::Value)>, outputs: Vec<(&str, lineit_rt::Type)>) -> (Vec<Option<lineit_rt::Value>>, Vec<String>) {{\n    let (m, i) = EXT_INSTANCES[inst];\n    let outs: Vec<(&str, &lineit_rt::Type)> = outputs.iter().map(|(n, t)| (*n, t)).collect();\n    let mut m = s.ext[m].lock().unwrap_or_else(|e| e.into_inner());\n    m.tick(i, input, &inputs, &outs).unwrap_or_else(|e| lineit_rt::ext::fail(&e))\n}}\n"
+            "fn ext_tick(s: &State, inst: usize, input: Option<&str>, inputs: Vec<(&str, lineit_rt::Value)>, outputs: Vec<(&str, lineit_rt::Type)>) -> lineit_rt::ext::Run {{\n    let (m, i) = EXT_INSTANCES[inst];\n    let outs: Vec<(&str, &lineit_rt::Type)> = outputs.iter().map(|(n, t)| (*n, t)).collect();\n    let mut m = s.ext[m].lock().unwrap_or_else(|e| e.into_inner());\n    let run = m.run(i, input, &inputs, &outs);\n    drop(m);\n    for l in lineit_rt::ext::take_printed() {{ lineit_rt::io::print(&l); }}\n    run.unwrap_or_else(|e| lineit_rt::ext::fail(&e))\n}}\n"
         );
     }
 
@@ -889,12 +975,20 @@ pub fn generate(prog: &Program) -> String {
 mod tests {
     #[test]
     fn runtime_files_are_all_there() {
+        // every file, folders too
+        fn files(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let name = format!("{prefix}/{}", e.file_name().to_string_lossy());
+                if e.path().is_dir() {
+                    files(&e.path(), &name, out);
+                } else {
+                    out.push(name);
+                }
+            }
+        }
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lineit-rt/src");
-        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .flatten()
-            .map(|e| format!("src/{}", e.file_name().to_string_lossy()))
-            .collect();
+        let mut on_disk = Vec::new();
+        files(&dir, "src", &mut on_disk);
         on_disk.sort();
         let mut embedded: Vec<String> =
             super::RT_FILES.iter().map(|(n, _)| n.to_string()).filter(|n| n.starts_with("src/")).collect();

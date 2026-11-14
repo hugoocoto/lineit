@@ -48,7 +48,8 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 }
 
 impl Tab {
-    pub fn new(canvas: Canvas, path: Option<PathBuf>, reg: &Registry) -> Tab {
+    pub fn new(mut canvas: Canvas, path: Option<PathBuf>, reg: &Registry) -> Tab {
+        canvas.dir = path.as_deref().and_then(Path::parent).map(Path::to_path_buf);
         let lowered = lower::lower(&canvas, reg);
         Tab {
             saved: canvas.clone(),
@@ -244,8 +245,18 @@ impl Tab {
             }
             self.redo.clear();
         }
+        // where the file is says what its paths mean (saved as another: it changes)
+        let dir = self.path.as_deref().and_then(Path::parent).map(Path::to_path_buf);
+        let moved = self.canvas.dir != dir;
+        if moved {
+            self.canvas.dir = dir.clone();
+            self.committed.dir = dir.clone();
+            self.saved.dir = dir;
+        }
+        // a file a square's pins came from (a shader) was changed
+        let stale = self.lowered.deps.iter().any(|(p, t)| mtime(p) != *t);
         let changed = self.lowered_for.as_ref().map(|c| strip_camera(c) != strip_camera(&self.canvas)).unwrap_or(true);
-        if changed || force {
+        if changed || force || moved || stale {
             self.lowered = lower::lower(&self.canvas, reg);
             self.lowered_for = Some(self.canvas.clone());
             self.generation += 1;

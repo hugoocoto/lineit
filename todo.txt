@@ -1,0 +1,46 @@
+diff view
+the text jumps in notes and code modules
+(fix tried: canvas text unhinted; check it zooming)
+a canvas with camera zoom = 1 opens at another place than with other zooms
+
+Implement all the fixes in lineit to check if it's easier to the reviewer to
+review it in lineit than in real code.
+```
+As an input for the challenge, please feel inspired but not limited with the code examples that we have collected for you. The repo is here (please make your own copy of this repo before you start the work) https://github.com/te-industry-tech-office/junction26-messagepack-csharp In the repo, you can find the following branches that contain code changes made by AI.
+
+branch ju26-issue-2283 with agentic implementation of bug #2283 (https://github.com/MessagePack-CSharp/MessagePack-CSharp/issues/2283); this contains a commit of 4 files
+
+branch ju26-issue-2234 with agentic implementation of bug #2234 (https://github.com/MessagePack-CSharp/MessagePack-CSharp/issues/2234); this contains a commit of 4 files
+
+branch ju26-issue-2129 with agentic implementation of issue #2129 (https://github.com/MessagePack-CSharp/MessagePack-CSharp/issues/2129); this contains a commit of 28 files
+
+branch ju26-issue-2297 with agentic implementation of issue #2297 (https://github.com/MessagePack-CSharp/MessagePack-CSharp/issues/2297); this contains a commit of 237 files
+```
+For it: the original C# stays as code squares, the new code is drawn as
+squares. Needs C# code squares (tree-sitter-c-sharp for the signature, run
+with dotnet).
+How to judge "easier to review": time to review, bugs found, confidence,
+against GitHub's diff of the same branches. Decide before trying it.
+
+diff
+- lineit diff A.lua B.lua: by square id, the program only (squares, wires,
+  fields, params); squares that only moved listed apart
+- diff view in the editor: old and new on one canvas, added/removed/changed
+  in colours, moved-only dimmed; ]c [c to go to the next/previous change
+- git: open `git show REV:file` in a tab, a git difftool mode, a textconv
+  driver so git diff prints lineit diff
+- line diffs inside code squares and notes
+- a change in a .graph.lua shown where the subgraph is used
+- check that ids stay predictable on paste, duplicate and Ctrl+G, or a small
+  edit looks like delete everything + add
+
+later
+- faster interpreter: ~60 ns a loop iteration, ~230 ns a square called
+  (compiled is ~1000x faster); registers and typed slots instead of Values
+- compiled branches on a thread pool, not a thread per branch
+- lineit -t: open a file in a running editor's new tab
+- editing while running applied to the running program
+- list/map, filter, reduce with a subgraph as the function
+- FFI to C libraries
+- native file dialog
+- Windows: no console window on double click

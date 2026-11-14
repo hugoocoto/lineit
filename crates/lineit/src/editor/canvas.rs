@@ -102,6 +102,8 @@ pub enum Action {
     Copy,
     Delete,
     Duplicate,
+    /// Open the report of the tests.
+    ShowReport,
 }
 
 #[derive(Default)]
@@ -120,6 +122,8 @@ pub struct CanvasState {
     /// moves over them.
     pub rects: HashMap<SquareId, Rect>,
     pub vim: VimState,
+    /// The tests of code squares: their table, how they went.
+    pub tests: super::tests::TestsUi,
 }
 
 /// What vim mode keeps for a tab.
@@ -140,6 +144,9 @@ pub struct VimState {
     pub hints: Vec<Hint>,
     /// A square to show: its rectangle isn't known yet.
     pub reveal: Option<SquareId>,
+    /// A square just added by `a`, `o` or `O`: once drawn, and so measured,
+    /// it goes with its right edge (true) or its left edge at this x.
+    pub settle: Option<(SquareId, f32, bool)>,
 }
 
 /// A pin of a square, for wiring from the keyboard.
@@ -214,6 +221,8 @@ enum Check {
     /// Anything: inputs that take any type get it from what's typed.
     Any,
     Is(Type),
+    /// Of the type, or nothing (a field that starts empty: a test/case's).
+    IsOrEmpty(Type),
     Param(ParamKind),
 }
 
@@ -260,6 +269,7 @@ fn fields(tab: &Tab, reg: &Registry, id: SquareId) -> Vec<(FieldKey, FieldKind, 
             let ty = info.in_types[i].clone();
             let kind = if ty == Some(Type::Bool) { FieldKind::Bool } else { FieldKind::Typed };
             let check = match &pin.ty {
+                PinTy::Data(lineit_core::registry::TExpr::T(t)) if default.is_empty() => Check::IsOrEmpty(t.clone()),
                 PinTy::Data(lineit_core::registry::TExpr::T(t)) => Check::Is(t.clone()),
                 _ => Check::Any,
             };
@@ -271,6 +281,10 @@ fn fields(tab: &Tab, reg: &Registry, id: SquareId) -> Vec<(FieldKey, FieldKind, 
     }
     if let Some(m) = reg.get(&sq.module) {
         for def in m.params() {
+            // code in a file is typed in the file; tests in their table
+            if sq.module == CODE && (def.name == "tests" || (def.name == "code" && code_file(sq).is_some())) {
+                continue;
+            }
             let kind = match &def.kind {
                 ParamKind::Bool => FieldKind::Bool,
                 ParamKind::Choice(c) => FieldKind::Choice(c.clone()),
@@ -296,7 +310,8 @@ pub fn start_edit(tab: &Tab, reg: &Registry, state: &mut CanvasState, key: &Fiel
         return;
     };
     let choose = kind != FieldKind::Typed;
-    let multiline = tab.canvas.square(key.sq).is_some_and(|s| s.module == NOTE);
+    let multiline =
+        tab.canvas.square(key.sq).is_some_and(|s| s.module == NOTE || (s.module == CODE && key.name == "code"));
     state.edit =
         Some(FieldEdit { key, text: now, error: false, fresh: true, choose, title, check, multiline, rect: None });
 }
@@ -331,6 +346,7 @@ fn valid(check: &Check, text: &str, reg: &Registry) -> bool {
         Check::Any => true,
         Check::Is(Type::Str) => true,
         Check::Is(t) => Value::parse(text, t).is_some(),
+        Check::IsOrEmpty(t) => text.trim().is_empty() || Value::parse(text, t).is_some(),
         Check::Param(ParamKind::Int) => lineit_rt::value::parse_int(text.trim()).is_some(),
         Check::Param(ParamKind::Float) => lineit_rt::value::parse_float(text.trim()).is_some(),
         Check::Param(ParamKind::Type { allow_tick }) => {
@@ -343,11 +359,23 @@ fn valid(check: &Check, text: &str, reg: &Registry) -> bool {
 fn write_field(tab: &mut Tab, key: &FieldKey, text: String) {
     if let Some(sq) = tab.canvas.square_mut(key.sq) {
         if key.param {
-            sq.params.insert(key.name.clone(), text);
+            set_param(sq, &key.name, text);
         } else {
             sq.fields.insert(key.name.clone(), text);
         }
     }
+}
+
+/// Sets param NAME of SQ. A code square whose language changes while its
+/// code is the old language's template gets the new one's.
+fn set_param(sq: &mut Square, name: &str, value: String) {
+    if sq.module == CODE && name == "language" {
+        let (from, code) = (sq.params.get("language").map(String::as_str), sq.params.get("code").map(String::as_str));
+        if let Some(t) = lineit_core::registry::code::switched_template(from, &value, code) {
+            sq.params.insert("code".into(), t);
+        }
+    }
+    sq.params.insert(name.into(), value);
 }
 
 /// Applies what's typed: true if it was valid (then the field closes).
@@ -384,8 +412,10 @@ pub fn edit_keys(ctx: &egui::Context, tab: &mut Tab, reg: &Registry, state: &mut
     let (key, choose, multiline) = (e.key.clone(), e.choose, e.multiline);
     let k = |m: egui::Modifiers, k: egui::Key| ctx.input_mut(|i| i.consume_key(m, k));
     let none = egui::Modifiers::NONE;
-    let back = k(egui::Modifiers::SHIFT, egui::Key::Tab);
-    let tab_key = !back && k(none, egui::Key::Tab);
+    // in code, Tab is a tab
+    let code = multiline && tab.canvas.square(key.sq).is_some_and(|s| s.module == CODE);
+    let back = !code && k(egui::Modifiers::SHIFT, egui::Key::Tab);
+    let tab_key = !code && !back && k(none, egui::Key::Tab);
     // Esc applies what's typed, as Enter does; if it isn't valid the field
     // goes back to what it was
     if k(none, egui::Key::Escape) {
@@ -457,6 +487,13 @@ pub struct Ctx<'a> {
     pub values: HashMap<(SquareId, String), Value>,
     /// Squares the run is stopped before.
     pub current: BTreeSet<SquareId>,
+    /// What code squares keep, when the run last paused or ended.
+    pub states: HashMap<SquareId, Vec<(String, Value)>>,
+    /// How each `test/expect` went, the last time the run got to it.
+    pub checks: HashMap<SquareId, lineit_core::interp::CheckResult>,
+    /// The variables of the run, and their values when it last paused or
+    /// ended (none: no run).
+    pub vars: Vec<(String, Value)>,
     /// The wire the module search was opened with, by dropping it on the
     /// canvas, and where it was dropped: drawn until the search closes.
     pub pending: Option<(Pending, Pos2)>,
@@ -513,9 +550,13 @@ fn draw_wire(painter: &egui::Painter, a: Pos2, b: Pos2, color: Color32, width: f
 }
 
 /// What a square shows below its params: a value or an image, and how tall.
-fn extra_height(sq: &Square, info: Option<&SquareInfo>, cx: &Ctx, width: f32) -> f32 {
+fn extra_height(painter: &egui::Painter, sq: &Square, info: Option<&SquareInfo>, cx: &Ctx, width: f32) -> f32 {
     if sq.module == "io/display" {
         return ROW;
+    }
+    if sq.module == CODE {
+        // and a line for its tests
+        return code_galley(painter, &code_now(sq, cx), 1.0, Color32::WHITE).size().y.max(ROW) + 12.0 + ROW;
     }
     if !cx.cfg.bool("canvas.previews") {
         return 0.0;
@@ -571,11 +612,103 @@ pub const NOTE: &str = "note";
 const NOTE_FILL: Color32 = Color32::from_rgb(255, 236, 140);
 const NOTE_TEXT: Color32 = Color32::from_rgb(52, 44, 20);
 
+/// The fonts of the text that zooms with the canvas (notes and code),
+/// without hinting (see `apply_style`).
+pub const ZOOMED_TEXT: &str = "zoomed";
+pub const ZOOMED_MONO: &str = "zoomed-mono";
+
+fn zoomed_text(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name(ZOOMED_TEXT.into()))
+}
+
+fn zoomed_mono(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name(ZOOMED_MONO.into()))
+}
+
 /// A note's text, as laid out at zoom 1 in a note WIDTH wide.
 fn note_galley(painter: &egui::Painter, text: &str, width: f32, z: f32) -> std::sync::Arc<egui::Galley> {
     let (shown, color) =
         if text.is_empty() { ("Double click to write", NOTE_TEXT.gamma_multiply(0.5)) } else { (text, NOTE_TEXT) };
-    painter.layout(shown.to_string(), FontId::proportional(14.0 * z), color, (width - 20.0) * z)
+    painter.layout(shown.to_string(), zoomed_text(14.0 * z), color, (width - 20.0) * z)
+}
+
+/// The module of code squares: their code is drawn below their params,
+/// and typed there.
+pub const CODE: &str = lineit_core::registry::code::PATH;
+
+/// A code square's code, as laid out: a line each, as long as it is.
+fn code_galley(painter: &egui::Painter, text: &str, z: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
+    painter.layout_no_wrap(text.trim_end().replace('\t', "    "), zoomed_mono(12.0 * z), color)
+}
+
+/// A code square's code in LANG, colored (and, from a file, the line that
+/// says which first, dim).
+fn code_colored(painter: &egui::Painter, text: &str, lang: &str, from_file: bool, z: f32, theme: &Theme) -> std::sync::Arc<egui::Galley> {
+    use lineit_core::registry::code::{Paint, highlight};
+    let font = zoomed_mono(12.0 * z);
+    let text = text.trim_end().replace('\t', "    ");
+    let mut job = egui::text::LayoutJob::default();
+    let fmt = |color: Color32| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
+    let (head, code) = match text.split_once("\n\n") {
+        Some((h, c)) if from_file => (format!("{h}\n\n"), c.to_string()),
+        _ => (String::new(), text.clone()),
+    };
+    job.append(&head, 0.0, fmt(theme.dim));
+    let paint = |p: Paint| match p {
+        Paint::Keyword => theme.accent,
+        Paint::String => theme.str,
+        Paint::Comment => theme.dim,
+        Paint::Number => theme.int,
+        Paint::Function => theme.float,
+        Paint::Type => theme.record,
+        Paint::Constant => theme.bool,
+        Paint::Operator => theme.text,
+    };
+    let mut at = 0;
+    for (range, p) in highlight(lang, &code) {
+        if range.start < at || range.end > code.len() {
+            continue;
+        }
+        job.append(&code[at..range.start], 0.0, fmt(theme.text));
+        job.append(&code[range.clone()], 0.0, fmt(paint(p)));
+        at = range.end;
+    }
+    job.append(&code[at..], 0.0, fmt(theme.text));
+    painter.layout_job(job)
+}
+
+/// The line of the code a problem is on, if it says (`line 5: ...`).
+fn problem_line(message: &str) -> Option<usize> {
+    let (_, after) = message.split_once("line ")?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if after[digits.len()..].starts_with(':') { digits.parse().ok().filter(|n| *n > 0) } else { None }
+}
+
+/// The widest a code square gets: longer lines are cut.
+const CODE_MAX: f32 = 640.0;
+
+/// The file a code square's code is in, if it's in one.
+fn code_file(sq: &Square) -> Option<&str> {
+    sq.params.get("file").map(|f| f.trim()).filter(|f| !f.is_empty())
+}
+
+/// What a code square shows: what's being typed in it, its code, or the
+/// code of its file (as lowering read it), under a line that says which.
+fn code_now(sq: &Square, cx: &Ctx) -> String {
+    if let Some(file) = code_file(sq) {
+        let info = cx.tab.lowered.squares.get(&sq.id);
+        let code = info.and_then(|i| i.sig.code.as_ref()).map(|f| f.source.clone()).unwrap_or_default();
+        return format!("from {file} (edited there)\n\n{code}");
+    }
+    match &cx.state.edit {
+        Some(e) if e.key.sq == sq.id && e.key.name == "code" => e.text.clone(),
+        _ => code_of(sq, cx.reg),
+    }
+}
+
+/// The params of SQ drawn as rows: a code square's code isn't one.
+fn param_rows<'m>(sq: &Square, m: &'m dyn lineit_core::registry::Module) -> Vec<&'m lineit_core::registry::ParamDef> {
+    m.params().iter().filter(|d| !(sq.module == CODE && (d.name == "code" || d.name == "tests"))).collect()
 }
 
 /// The least width of a field next to its input.
@@ -597,6 +730,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
     let (rect, bg) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     cx.state.rect = Some(rect);
     let theme = cx.theme.clone();
+    cx.state.tests.poll(ui.ctx());
+    cx.state.tests.sync(cx.tab);
     let painter = ui.painter_at(rect);
     let zoom_min = cx.cfg.num("canvas.zoom_min") as f32;
     let zoom_max = cx.cfg.num("canvas.zoom_max") as f32;
@@ -666,7 +801,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
     let mut geos: HashMap<SquareId, Geo> = HashMap::new();
     for sq in &cx.tab.canvas.squares {
         let info = cx.tab.lowered.squares.get(&sq.id);
-        let params = cx.reg.get(&sq.module).map(|m| m.params().len()).unwrap_or(0);
+        let params = cx.reg.get(&sq.module).map(|m| param_rows(sq, m.as_ref()).len()).unwrap_or(0);
         if sq.module == NOTE {
             // as tall as its text (what's being typed, while it's typed)
             let text = match &cx.state.edit {
@@ -681,8 +816,12 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             );
             continue;
         }
-        let w = square_width(&painter, sq, info, params, width);
-        let extra = extra_height(sq, info, cx, w);
+        let mut w = square_width(&painter, sq, info, params, width);
+        if sq.module == CODE {
+            let code = code_galley(&painter, &code_now(sq, cx), 1.0, Color32::WHITE).size().x;
+            w = w.max(code + 24.0).min(CODE_MAX);
+        }
+        let extra = extra_height(&painter, sq, info, cx, w);
         geos.insert(sq.id, geometry(sq, info, params, w, extra));
     }
     cx.state.rects = geos.iter().map(|(id, g)| (*id, g.rect)).collect();
@@ -775,9 +914,28 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             Stroke::new(2.0, theme.border)
         };
         painter.rect_stroke(srect, r, border, StrokeKind::Outside);
-        let title = match &module {
-            Some(_) => sq.module.clone(),
-            None => format!("? {}", sq.module),
+        // a code square is its function: its name, and its doc on hover
+        let function = if sq.module == CODE { info.as_ref().and_then(|i| i.sig.code.clone()) } else { None };
+        let title = match (&module, &function) {
+            (_, Some(f)) => {
+                let lang = sq.params.get("language").cloned().unwrap_or_else(lineit_core::registry::code::default_language);
+                format!("{} ({lang})", f.name)
+            }
+            (Some(_), None) => sq.module.clone(),
+            (None, _) => format!("? {}", sq.module),
+        };
+        // what its header says on hover: the module's doc, or a code
+        // square's function's, and what it keeps after a run
+        let doc = match &function {
+            Some(f) => {
+                let mut tip = f.doc.clone();
+                if let Some(st) = cx.states.get(&id) {
+                    let kept: Vec<String> = st.iter().map(|(k, v)| format!("{k} = {}", short(&v.text(), 80))).collect();
+                    tip = format!("{tip}\n\nIt keeps: {}", kept.join(", ")).trim().to_string();
+                }
+                tip
+            }
+            None => module.as_ref().map(|m| m.doc().to_string()).unwrap_or_default(),
         };
         if !note {
             painter.text(
@@ -814,13 +972,48 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             cx.tab.selected.clear();
             cx.tab.selected.insert(id);
         }
-        let doc = module.as_ref().map(|m| m.doc().to_string()).unwrap_or_default();
         let resp = if !doc.is_empty() && header.contains(pointer.unwrap_or_default()) {
             resp.on_hover_text(doc)
         } else {
             resp
         };
         resp.context_menu(|ui| {
+            // a test from now: its fields from the run, or from how the variables start
+            if sq.module == "test/case"
+                && let Some(info) = &info
+            {
+                let typed: Vec<(String, Type)> = info
+                    .sig
+                    .inputs
+                    .iter()
+                    .zip(&info.in_types)
+                    .filter(|(p, _)| p.field.is_some())
+                    .filter_map(|(p, t)| Some((p.name.clone(), t.clone()?)))
+                    .collect();
+                let from_run = !cx.vars.is_empty();
+                let b = ui
+                    .add_enabled(from_run, egui::Button::new("Fill from the run"))
+                    .on_hover_text("Its fields get the values the variables have now in the run (paused, or ended)")
+                    .on_disabled_hover_text("Run or step the canvas first: its fields get the values the variables have then");
+                if b.clicked() {
+                    for (name, _) in &typed {
+                        if let Some((_, v)) = cx.vars.iter().find(|(n, _)| n == name) {
+                            field_changes.push((id, name.clone(), v.text(), false));
+                        }
+                    }
+                    ui.close();
+                }
+                if ui.button("Fill from how they start").on_hover_text("Its fields get what the variables start with (their var/var)").clicked() {
+                    for (name, ty) in &typed {
+                        let decl = cx.tab.canvas.squares.iter().find(|s| s.module == "var/var" && s.params.get("name") == Some(name));
+                        let initial = decl.and_then(|d| d.params.get("initial")).filter(|t| !t.trim().is_empty()).cloned();
+                        let text = initial.unwrap_or_else(|| lineit_core::registry::builtin::default_text(ty).to_string());
+                        field_changes.push((id, name.clone(), text, false));
+                    }
+                    ui.close();
+                }
+                ui.separator();
+            }
             if ui.button("Duplicate (Ctrl+D)").clicked() {
                 cx.actions.push(Action::Duplicate);
                 ui.close();
@@ -862,8 +1055,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         }
 
         // pins, and the fields of unwired inputs
+        let show_widgets = z >= EDIT_ZOOM;
         if let Some(info) = &info {
-            let show_widgets = z >= EDIT_ZOOM;
             for (i, pin) in info.sig.inputs.iter().enumerate() {
                 let p = view.to_screen(g.ins[i]);
                 let ty = info.in_types[i].clone();
@@ -951,10 +1144,13 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     cx.state.drag = Some(Drag::Wire { from: (id, pin.name.clone()), ty: ty.clone(), picked: false });
                 }
             }
-
+        }
+        // its params and what it shows, also when its pins can't be said:
+        // they're how what's wrong with it gets fixed
+        {
             // params
             if let Some(m) = &module {
-                for (k, def) in m.params().iter().enumerate() {
+                for (k, def) in param_rows(&sq, m.as_ref()).into_iter().enumerate() {
                     let y = view.to_screen(pos2(0.0, g.params_top + ROW * k as f32 + ROW / 2.0)).y;
                     let x0 = srect.left() + 8.0 * z;
                     painter.text(pos2(x0, y), Align2::LEFT_CENTER, &def.name, font(12.0), theme.dim);
@@ -1010,7 +1206,72 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
 
             // what it shows
             let extra_top = view.to_screen(pos2(0.0, g.extra_top)).y;
-            if sq.module == "io/display" {
+            if sq.module == CODE {
+                let r = Rect::from_min_max(
+                    pos2(srect.left() + 6.0 * z, extra_top + 2.0 * z),
+                    pos2(srect.right() - 6.0 * z, srect.bottom() - (6.0 + ROW) * z),
+                );
+                // its tests: how they went; a click opens their table
+                use super::tests::Badge;
+                let badge = cx.state.tests.badge(cx.tab, id);
+                let why = if let Badge::Failed(e) = &badge { Some(e.clone()) } else { None };
+                let (label, color) = match badge {
+                    Badge::None => ("add tests".to_string(), theme.dim),
+                    Badge::Running => ("tests running...".to_string(), theme.dim),
+                    Badge::NotRun(n) => (format!("{n} test{}, not run", if n == 1 { "" } else { "s" }), theme.dim),
+                    Badge::Ran(p, n) if p == n => (format!("tests: {p} of {n} passed"), Color32::from_rgb(110, 190, 110)),
+                    Badge::Ran(p, n) => (format!("tests: {} of {n} failed", n - p), theme.error),
+                    Badge::Failed(_) => ("tests can't run".to_string(), theme.error),
+                };
+                let line = Rect::from_min_max(pos2(r.left(), r.bottom()), pos2(r.right(), srect.bottom() - 2.0 * z));
+                painter.text(line.left_center() + vec2(2.0 * z, 0.0), Align2::LEFT_CENTER, label, font(12.0), color);
+                let mut resp = ui.interact(line, Id::unique(("tests", cx.tab_id, id)), Sense::click());
+                if let Some(why) = why {
+                    resp = resp.on_hover_text(why);
+                }
+                if resp.clicked() {
+                    if cx.state.tests.open == Some(id) {
+                        cx.state.tests.open = None;
+                    } else {
+                        cx.state.tests.open = Some(id);
+                        if matches!(cx.state.tests.badge(cx.tab, id), Badge::NotRun(_)) {
+                            cx.state.tests.run(cx.tab, id);
+                        }
+                    }
+                }
+                painter.rect_filled(r, 0.0, theme.field);
+                match cx.state.edit.as_mut().filter(|e| e.key.sq == id && e.key.name == "code") {
+                    Some(e) if show_widgets => code_edit(ui, e, r, z, cx.tab_id, &theme),
+                    _ => {
+                        let from_file = code_file(&sq).is_some();
+                        let lang = sq
+                            .params
+                            .get("language")
+                            .cloned()
+                            .unwrap_or_else(lineit_core::registry::code::default_language);
+                        let g = code_colored(&painter, &code_now(&sq, cx), &lang, from_file, z, &theme);
+                        let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
+                        // the line a problem is on: a bar beside it
+                        let lines = g.rows.len().max(1) as f32;
+                        let line_h = g.size().y / lines;
+                        let skip = if from_file { 2.0 } else { 0.0 };
+                        for line in problems.get(&id).into_iter().flatten().filter_map(|m| problem_line(m)) {
+                            let y = r.min.y + 4.0 * z + (line as f32 - 1.0 + skip) * line_h;
+                            clip.rect_filled(
+                                Rect::from_min_size(pos2(r.min.x, y), vec2(r.width(), line_h)),
+                                0.0,
+                                theme.error.gamma_multiply(0.25),
+                            );
+                        }
+                        clip.galley(r.min + vec2(2.0, 4.0) * z, g, theme.text);
+                        let resp = ui.interact(r, Id::unique(("code", cx.tab_id, id)), Sense::click());
+                        // code in a file is typed in the file
+                        if resp.clicked() && show_widgets && !from_file {
+                            field_clicks.push(FieldKey { sq: id, name: "code".into(), param: true });
+                        }
+                    }
+                }
+            } else if sq.module == "io/display" {
                 let text = cx.values.get(&(id, "value".to_string())).map(|v| v.text()).unwrap_or_else(|| "—".into());
                 painter.text(
                     pos2(srect.left() + 8.0 * z, extra_top + ROW * z / 2.0),
@@ -1019,7 +1280,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     mono(13.0),
                     theme.text,
                 );
-            } else {
+            } else if let Some(info) = &info {
                 for (o, pin) in info.sig.outputs.iter().enumerate() {
                     if info.out_types[o].as_ref() != Some(&Type::Image) {
                         continue;
@@ -1039,6 +1300,46 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             }
         }
 
+        // how its test went, the last time the tests ran: a click shows the report
+        if sq.module == "test/case"
+            && let Some(ok) = cx.state.tests.case_result(id)
+            && !problems.contains_key(&id)
+        {
+            let (text, color) = if ok { ("passed", Color32::from_rgb(110, 190, 110)) } else { ("failed: see the report", theme.error) };
+            let r = painter.text(srect.left_bottom() + vec2(2.0 * z, 4.0 * z), Align2::LEFT_TOP, text, font(12.0), color);
+            if ui.interact(r, Id::unique(("case result", cx.tab_id, id)), Sense::click()).on_hover_text("Open the tests' report").clicked() {
+                cx.actions.push(Action::ShowReport);
+            }
+        }
+
+        // a variable's value, while it runs
+        if sq.module == "var/var"
+            && let Some(v) = cx.values.get(&(id, "value".to_string()))
+            && !problems.contains_key(&id)
+        {
+            painter.text(
+                srect.left_bottom() + vec2(2.0 * z, 4.0 * z),
+                Align2::LEFT_TOP,
+                format!("= {}", short(&v.text(), 60)),
+                font(12.0),
+                theme.dim,
+            );
+        }
+
+        // how its check went, in a test's run
+        if let (Some(c), None) = (cx.checks.get(&id), problems.get(&id)) {
+            let (text, color) = if c.ok {
+                (format!("ok: {}", short(&c.got.text(), 60)), Color32::from_rgb(110, 190, 110))
+            } else {
+                (format!("expected {}, got {}", short(&c.expected.text(), 40), short(&c.got.text(), 40)), theme.error)
+            };
+            let galley = painter.layout(text, font(12.0), color, srect.width().max(200.0 * z));
+            painter.galley(srect.left_bottom() + vec2(0.0, 4.0 * z), galley, color);
+            if !c.ok {
+                painter.rect_stroke(srect, 0.0, Stroke::new(2.0, theme.error), StrokeKind::Outside);
+            }
+        }
+
         // what's wrong with it
         if let Some(msgs) = problems.get(&id) {
             let text = msgs.join("\n");
@@ -1046,6 +1347,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             painter.galley(srect.left_bottom() + vec2(0.0, 4.0 * z), galley, theme.error);
         }
     }
+    super::tests::window(ui.ctx(), cx.tab, &mut cx.state.tests, &theme);
+
     // vim mode: the focus, and the pins to pick
     if cx.state.vim.on {
         let zz = z.max(0.7);
@@ -1071,7 +1374,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
     for (id, name, value, is_param) in field_changes {
         if let Some(sq) = cx.tab.canvas.square_mut(id) {
             if is_param {
-                sq.params.insert(name, value);
+                set_param(sq, &name, value);
             } else {
                 sq.fields.insert(name, value);
             }
@@ -1273,6 +1576,41 @@ pub fn first_fit(info: &SquareInfo, ty: &Option<Type>, output: bool) -> Option<S
     if ty.is_some() { fallback } else { None }
 }
 
+/// The code of a code square: its param, or the module's default.
+fn code_of(sq: &Square, reg: &Registry) -> String {
+    sq.params.get("code").cloned().unwrap_or_else(|| {
+        reg.get(CODE)
+            .and_then(|m| m.params().iter().find(|d| d.name == "code").map(|d| d.default.clone()))
+            .unwrap_or_default()
+    })
+}
+
+/// A code square's code being typed, in R: Enter is a new line, Tab a tab,
+/// Esc or a click away keeps it.
+fn code_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64, theme: &Theme) {
+    e.rect = Some(r);
+    let id = Id::unique(("code-edit", tab_id, e.key.sq));
+    let resp = ui.put(r, |ui: &mut egui::Ui| {
+        ui.add(
+            egui::TextEdit::multiline(&mut e.text)
+                .id(id)
+                .code_editor()
+                .lock_focus(true)
+                .font(zoomed_mono(12.0 * z))
+                .frame(egui::Frame::NONE)
+                .margin(vec2(2.0, 4.0) * z)
+                .desired_width(r.width())
+                .desired_rows(1)
+                .text_color(theme.text),
+        )
+    });
+    if e.fresh {
+        e.fresh = false;
+        resp.request_focus();
+    }
+    ui.painter().rect_stroke(r, 0.0, Stroke::new(2.0, theme.step), StrokeKind::Outside);
+}
+
 /// A note being typed on: its text, on the note, a new line with Enter.
 fn note_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64) {
     e.rect = Some(r);
@@ -1282,7 +1620,7 @@ fn note_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64)
         ui.add(
             egui::TextEdit::multiline(&mut e.text)
                 .id(id)
-                .font(FontId::proportional(14.0 * z))
+                .font(zoomed_text(14.0 * z))
                 .frame(egui::Frame::NONE)
                 .margin(Vec2::ZERO)
                 .desired_width(inner.width())
@@ -1373,4 +1711,17 @@ fn field(
     }
     let edge = if e.error { theme.error } else { theme.step };
     painter.rect_stroke(r, 0.0, Stroke::new(2.0, edge), StrokeKind::Outside);
+}
+
+#[cfg(test)]
+mod code_tests {
+    use super::problem_line;
+
+    #[test]
+    fn lines_of_problems() {
+        assert_eq!(problem_line("bad.lua: line 5: this doesn't read as Lua, near `end`"), Some(5));
+        assert_eq!(problem_line("line 2: `f` returns a value with no type"), Some(2));
+        assert_eq!(problem_line("`x` has no type: add a line 3 above"), None);
+        assert_eq!(problem_line("there's no function"), None);
+    }
 }
