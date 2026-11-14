@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "A clock ticks every half second while the program runs; a counter counts the ticks, and at 10 flow/stop ends the program. Without a stop, a program with a clock runs until you press Stop. io/display shows on its square how long it has been running (value/time).",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/clock", x = 0, y = 0, fields = { interval = "0.5" } },
                 { id = 2, module = "flow/counter", x = 280, y = 0 },

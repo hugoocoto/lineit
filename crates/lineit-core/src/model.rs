@@ -20,6 +20,9 @@ pub struct Canvas {
     /// The folder its file is in, for the paths in its squares (not
     /// saved: whoever opens it sets it).
     pub dir: Option<std::path::PathBuf>,
+    /// Its file had no camera: the editor puts all the squares in view
+    /// (not saved: a canvas written has one).
+    pub no_camera: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

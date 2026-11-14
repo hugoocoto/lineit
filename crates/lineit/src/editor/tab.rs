@@ -94,7 +94,7 @@ impl Tab {
         }
         // no camera saved: all the squares in view (in a window of about
         // 1200x560 for the canvas), not bigger than they are
-        if canvas.camera == lineit_core::model::Camera::default() && !canvas.squares.is_empty() {
+        if canvas.no_camera && !canvas.squares.is_empty() {
             let (x0, x1) =
                 canvas.squares.iter().fold((f32::MAX, f32::MIN), |(a, b), s| (a.min(s.x), b.max(s.x + 200.0)));
             let (y0, y1) =

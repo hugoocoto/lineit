@@ -1,7 +1,7 @@
 diff view
 the text jumps in notes and code modules
-(fix tried: canvas text unhinted; check it zooming)
-a canvas with camera zoom = 1 opens at another place than with other zooms
+(unhinted canvas text only smooths glyph shapes: egui rounds glyphs, row y and
+row heights to pixels, so the text still steps; next: lay out once and scale)
 
 Implement all the fixes in lineit to check if it's easier to the reviewer to
 review it in lineit than in real code.

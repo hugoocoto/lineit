@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "Lists and maps live in variables (var/var declares one, with its type). The list/ and map/ squares change them in place or read them; var/get reads the whole thing. foreach ticks its body once per item.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/entry", x = 0, y = 0 },
                 { id = 2, module = "var/var", x = 0, y = 106, params = { name = "items", type = "list<str>" } },

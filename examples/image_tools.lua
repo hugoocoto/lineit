@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "More image squares, on a photo (symi.png, next to this canvas): each square shows its result, before you run anything. Run prints the colors of some pixels and saves two of the images, as symi-inverted.png and symi-blurred.png. image/new makes an image from nothing. With images.lua, these are all of them.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "image/open", x = 0, y = 0, fields = { path = "symi.png" } },
                 { id = 2, module = "image/resize", x = 280, y = 0, fields = { height = "160", width = "240" } },

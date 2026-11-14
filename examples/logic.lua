@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "Logic and comparisons: bools in, a bool out. flow/select picks one of two values by a bool, as ifelse picks one of two ticks.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "logic/and", x = 0, y = 0, fields = { a = "true", b = "false" } },
                 { id = 2, module = "logic/or", x = 0, y = 128, fields = { a = "true", b = "false" } },

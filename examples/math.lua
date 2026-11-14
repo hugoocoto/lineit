@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "Every math square, each printed: what they do with numbers. Ints stay ints (7 / 2 is 3); a float anywhere makes it a float. Change a field and Run again.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "math/add", x = 0, y = 0, fields = { a = "2", b = "2.5" } },
                 { id = 2, module = "math/subtract", x = 0, y = 128, fields = { a = "10", b = "4" } },

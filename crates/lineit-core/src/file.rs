@@ -71,12 +71,15 @@ pub fn read_canvas(source: &str, name: &str) -> Result<Canvas, String> {
             return Err(format!("made by a newer lineit (format {format}, this one reads {FORMAT})"));
         }
         let mut c = Canvas { doc: get::<String>(t, "doc")?.unwrap_or_default(), ..Canvas::default() };
-        if let Some(cam) = get::<Table>(t, "camera")? {
-            c.camera = Camera {
-                x: get(&cam, "x")?.unwrap_or(0.0),
-                y: get(&cam, "y")?.unwrap_or(0.0),
-                zoom: get(&cam, "zoom")?.unwrap_or(1.0),
-            };
+        match get::<Table>(t, "camera")? {
+            Some(cam) => {
+                c.camera = Camera {
+                    x: get(&cam, "x")?.unwrap_or(0.0),
+                    y: get(&cam, "y")?.unwrap_or(0.0),
+                    zoom: get(&cam, "zoom")?.unwrap_or(1.0),
+                }
+            }
+            None => c.no_camera = true,
         }
         if let Some(squares) = get::<Table>(t, "squares")? {
             for (i, s) in squares.sequence_values::<Table>().enumerate() {
@@ -220,6 +223,9 @@ mod tests {
         assert!(read_canvas("while true do end", "t").unwrap_err().contains("too long"));
         assert!(read_canvas("local t = {} for i = 1, 1e9 do t[i] = i end return t", "t").is_err());
         assert!(read_canvas("return { lineit = 99 }", "t").unwrap_err().contains("newer"));
+        // a camera at 0, 0 and zoom 1 is a camera too
+        assert!(read_canvas("return { lineit = 1 }", "t").unwrap().no_camera);
+        assert!(!read_canvas("return { lineit = 1, camera = { x = 0, y = 0, zoom = 1 } }", "t").unwrap().no_camera);
         let c = read_canvas(
             "return { lineit = 1, squares = { { id = 1, module = 'a' } }, links = { { 1, 'o', 2, 'i' } } }",
             "t",

@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "Branches: the entry's tick goes to three loops, which run at the same time (on threads, once compiled), each adding up a range into a variable of its own. Where their wires meet again, the print runs once, after all three.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/entry", x = 0, y = 0 },
                 { id = 2, module = "var/var", x = 0, y = 106, params = { name = "a", type = "int" } },
