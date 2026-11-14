@@ -148,6 +148,26 @@ on threads of their own, as in a compiled program. Run goes on until the
 program ends or Stop is pressed. The editor gets output, the current squares
 and the values of slots for tooltips and previews through a channel.
 
+**Editing while running.** `Interp::swap` replaces the program with the
+edited one, only when no task is live (between handlers: between two ticks
+of a clock, say; Step too, at the press where the branches finish), so no
+branch ever sees half of each program, whatever its threads do: the one
+thread that drives the interpreter is the only one that touches the world.
+Running branches finish on the old program (they aren't migrated). The
+state carries over: variables by name and the outputs shown on a square by
+square and pin; a value whose type changed is converted as `value/convert`
+does, or starts again; removed squares' state is dropped; clocks keep their
+schedule (or the new interval if that comes first); modules that didn't
+change keep running with their state (a module that builds files, C# or
+Rust, ends before its replacement opens, and opens again if its files
+changed on disk). New entries run, the old ones don't. Everything that can
+fail is worked out before the old program is given up. A canvas with errors
+is not swapped: the old program goes on and the bar says so. A program that
+never goes idle (a loop of wires, a `while` in a fan-out) waits, and the bar
+offers "apply now": the branches stop at their next op, the program changes,
+and its entries run again with the state. The bar note fades after a few
+seconds.
+
 **Parallel, always.** Everything must stay correct with branches on threads,
 interpreted or compiled, and give the same results both ways. A statement
 that reads and changes a slot (`n = n + 1`, a code square's `Shared.total

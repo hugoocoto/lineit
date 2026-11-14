@@ -897,7 +897,7 @@ fn lower_for(canvas: &Canvas, reg: &Registry, test_case: Option<SquareId>) -> Lo
         match clock {
             Ok(Some((interval, b))) => {
                 let h = lw.add_handler(node, format!("clock_{node}"), b, locals);
-                lw.prog.clocks.push(Clock { interval, handler: h });
+                lw.prog.clocks.push(Clock { interval, handler: h, square: n.square });
             }
             Ok(None) => {}
             Err(e) => lw.diags.push(Diag { square: Some(n.square), message: e }),

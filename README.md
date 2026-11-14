@@ -37,6 +37,14 @@ lineit is in alpha: expect breaking changes with any commit.
 - **Run, step or compile the same canvas.** Run it in the editor, go
   through it a square at a time, or compile it to a program that runs
   without the editor.
+- **Edit while it runs.** A change to the canvas goes on to the running
+  program (Run and Step, not compiled ones) once no branch is in the middle
+  of a handler: variables, values on squares, clocks and code squares keep
+  their state (a value of another type is converted), new entries run, and
+  the bar says what happened, or why the edit didn't apply (an error: the
+  old program goes on). A loop that never ends waits for "apply now", which
+  stops its branches where they are and runs the entries again with the
+  state.
 - **Compiled means compiled.** A canvas becomes a typed IR, and Compile
   turns that into Rust that cargo builds with every optimization: loops are
   loops, numbers are `i64` and `f64`. There's no interpreter in the program.

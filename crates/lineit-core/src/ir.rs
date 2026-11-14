@@ -59,6 +59,9 @@ pub struct Clock {
     /// Seconds between ticks, read each time.
     pub interval: Expr,
     pub handler: HandlerId,
+    /// The square of the canvas it is, or is inside of: what a clock is
+    /// told from another when the program is swapped for an edited one.
+    pub square: SquareId,
 }
 
 /// A square of the flattened canvas.
