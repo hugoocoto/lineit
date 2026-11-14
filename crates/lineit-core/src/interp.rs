@@ -437,9 +437,6 @@ pub struct Swapped {
     pub reset: Vec<String>,
     /// Those of variables and squares that are gone.
     pub dropped: usize,
-    /// Values that have nothing to tell them from another (inside a subgraph,
-    /// private to a square), which start again.
-    pub unkeyed: usize,
     /// Entries of the edit that weren't there, which run now.
     pub started: usize,
 }
@@ -456,9 +453,6 @@ impl std::fmt::Display for Swapped {
         if self.dropped > 0 {
             write!(f, ", dropped {}", self.dropped)?;
         }
-        if self.unkeyed > 0 {
-            write!(f, ", {} inside subgraphs or private start again", self.unkeyed)?;
-        }
         if self.started > 0 {
             write!(f, ", ran {} new entr{}", self.started, if self.started == 1 { "y" } else { "ies" })?;
         }
@@ -467,11 +461,14 @@ impl std::fmt::Display for Swapped {
 }
 
 /// What tells a slot of one program from another in the next: where it
-/// shows on a square of the canvas, or the variable's name.
+/// shows on a square of the canvas, the variable's name, or where it is.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum SlotKey {
     Shown(SquareId, String),
     Var(String),
+    /// Where it is (see [`crate::ir::SlotDef::home`]): what tells those
+    /// inside subgraphs and those private to a square.
+    Home(Vec<SquareId>, String),
 }
 
 type Keyed = (SlotKey, usize);
@@ -480,12 +477,16 @@ fn slot_name(k: &Keyed) -> String {
     match &k.0 {
         SlotKey::Shown(sq, pin) => format!("{pin} of square {sq}"),
         SlotKey::Var(n) => n.clone(),
+        SlotKey::Home(path, what) => {
+            let what = what.split_once(' ').map_or(what.as_str(), |(_, w)| w);
+            let path: Vec<String> = path.iter().map(|sq| sq.to_string()).collect();
+            format!("{what} of square {}", path.join("/"))
+        }
     }
 }
 
-/// The keys of each slot (it can be a variable and show on a square), each
-/// with how many before it have the same (variables of the same name in
-/// copies of a subgraph).
+/// The keys of each slot (it can be a variable and show on a square, and
+/// every one has a home), each with how many before it have the same.
 fn slot_keys(p: &Program) -> Vec<Vec<Keyed>> {
     let mut keys: Vec<Vec<SlotKey>> = p
         .slots
@@ -494,6 +495,9 @@ fn slot_keys(p: &Program) -> Vec<Vec<Keyed>> {
         .collect();
     for (name, s) in &p.vars {
         keys[*s as usize].push(SlotKey::Var(name.clone()));
+    }
+    for (k, s) in keys.iter_mut().zip(&p.slots) {
+        k.push(SlotKey::Home(s.home.0.clone(), s.home.1.clone()));
     }
     let mut seen: HashMap<SlotKey, usize> = HashMap::new();
     keys.into_iter()
@@ -1027,10 +1031,6 @@ impl Interp {
         }
         let mut matched = vec![false; oldp.slots.len()];
         for (i, ks) in slot_keys(&prog).iter().enumerate() {
-            if ks.is_empty() {
-                report.unkeyed += 1;
-                continue;
-            }
             let Some((k, o)) = ks.iter().find_map(|k| olds.get(k).map(|o| (k, *o))).filter(|(_, o)| !matched[*o])
             else {
                 continue;
@@ -1049,7 +1049,7 @@ impl Interp {
                 report.reset.push(slot_name(k));
             }
         }
-        report.dropped = old_keys.iter().enumerate().filter(|(i, ks)| !ks.is_empty() && !matched[*i]).count();
+        report.dropped = (0..oldp.slots.len()).filter(|i| !matched[*i]).count();
         // the clocks: one that's still there keeps its time, or the new
         // interval if that comes first
         let now = lock(&w.started).elapsed().as_secs_f64();

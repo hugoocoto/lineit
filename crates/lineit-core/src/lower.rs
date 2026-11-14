@@ -110,6 +110,9 @@ pub struct FNode {
     pub square: SquareId,
     /// Whether it's on the canvas itself, not inside a subgraph.
     pub top: bool,
+    /// The squares from the canvas down to it: the subgraph (or function)
+    /// squares it's inside of, then its own id in the last one's canvas.
+    pub path: Vec<SquareId>,
     pub params: BTreeMap<String, String>,
     pub scope: usize,
     pub sig: Signature,
@@ -146,6 +149,7 @@ struct GNode {
     port: String,
     square: SquareId,
     top: bool,
+    path: Vec<SquareId>,
     scope: usize,
     params: BTreeMap<String, String>,
     fields: BTreeMap<String, String>,
@@ -169,6 +173,10 @@ struct Flattener<'a> {
     /// (subgraph square on the canvas, output, its graph/output port)
     top_subs: Vec<(SquareId, String, usize)>,
     scopes: usize,
+    /// The squares (see [`FNode::path`]) of the subgraph or function square
+    /// each scope is the inside of, and of the one being expanded now.
+    scope_paths: HashMap<usize, Vec<SquareId>>,
+    path: Vec<SquareId>,
     diags: Vec<Diag>,
     in_fn: Option<(String, bool)>,
 }
@@ -197,6 +205,7 @@ impl Flattener<'_> {
                 port: String::new(),
                 square: at,
                 top: top.is_none(),
+                path: self.path.iter().copied().chain([sq.id]).collect(),
                 scope,
                 params: sq.params.clone(),
                 fields: sq.fields.clone(),
@@ -228,7 +237,10 @@ impl Flattener<'_> {
                 }
                 self.scopes += 1;
                 stack.push(sq.module.clone());
+                self.path.push(sq.id);
+                self.scope_paths.insert(self.scopes, self.path.clone());
                 let inner = self.expand(&sub.canvas, self.scopes, Some(at), stack);
+                self.path.pop();
                 stack.pop();
                 for (name, g) in &inner.inputs {
                     if let Some(v) = sq.fields.get(name) {
@@ -250,7 +262,7 @@ impl Flattener<'_> {
                     m.params().iter().find(|d| matches!(d.kind, ParamKind::Function { .. })).map(|d| (d, &d.kind))
                 {
                     let path = sq.params.get(&def.name).unwrap_or(&def.default);
-                    self.function(path, owner, args, at, stack);
+                    self.function(path, owner, args, at, sq.id, stack);
                 }
             }
         }
@@ -276,9 +288,18 @@ impl Flattener<'_> {
 
 impl Flattener<'_> {
     /// Inlines the subgraph PATH as the function of the square OWNER (a node
-    /// of the flat canvas), which ARGS say where the inputs come from. If
-    /// it's not there or it's wrong, OWNER's signature says so.
-    fn function(&mut self, path: &str, owner: usize, args: &[String], at: SquareId, stack: &mut Vec<String>) {
+    /// of the flat canvas, square ID of its canvas), which ARGS say where the
+    /// inputs come from. If it's not there or it's wrong, OWNER's signature
+    /// says so.
+    fn function(
+        &mut self,
+        path: &str,
+        owner: usize,
+        args: &[String],
+        at: SquareId,
+        id: SquareId,
+        stack: &mut Vec<String>,
+    ) {
         let reg = self.reg;
         let Some(sub) = reg.get(path).and_then(|m| m.subgraph()) else { return };
         if stack.iter().any(|s| s == path) {
@@ -292,7 +313,10 @@ impl Flattener<'_> {
         stack.push(path.into());
         let tick = sub.ports("graph/input").iter().any(|p| p.1 == "tick");
         let saved = self.in_fn.replace((path.into(), tick));
+        self.path.push(id);
+        self.scope_paths.insert(self.scopes, self.path.clone());
         let inner = self.expand(&sub.canvas, self.scopes, Some(at), stack);
+        self.path.pop();
         self.in_fn = saved;
         stack.pop();
         let mut args = args.iter();
@@ -366,6 +390,9 @@ pub struct Flat {
     /// gets its value from.
     pub sub_outputs: Vec<(SquareId, String, Source)>,
     pub vars: HashMap<(usize, String), VarDecl>,
+    /// Per scope of a subgraph or function: the path of its square (see
+    /// [`FNode::path`]). The canvas's own and the `::` scope aren't here.
+    pub scope_paths: HashMap<usize, Vec<SquareId>>,
     pub diags: Vec<Diag>,
     /// The wires of the canvas that go into a data input with more than one.
     pub double: Vec<Link>,
@@ -374,9 +401,18 @@ pub struct Flat {
 }
 
 pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
-    let mut f = Flattener { reg, g: Vec::new(), top_subs: Vec::new(), scopes: 0, diags: Vec::new(), in_fn: None };
+    let mut f = Flattener {
+        reg,
+        g: Vec::new(),
+        top_subs: Vec::new(),
+        scopes: 0,
+        scope_paths: HashMap::new(),
+        path: Vec::new(),
+        diags: Vec::new(),
+        in_fn: None,
+    };
     f.expand(canvas, 0, None, &mut Vec::new());
-    let Flattener { g, mut diags, top_subs, .. } = f;
+    let Flattener { g, mut diags, top_subs, scope_paths, .. } = f;
     let deps = std::cell::RefCell::new(Vec::new());
     let dir = canvas.dir.as_deref();
 
@@ -423,6 +459,7 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
                     module: m.clone(),
                     square: n.square,
                     top: n.top,
+                    path: n.path.clone(),
                     params: n.params.clone(),
                     scope: n.scope,
                     in_types: vec![None; sig.inputs.len()],
@@ -601,7 +638,7 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
         .into_iter()
         .map(|(sq, name, port)| (sq, name, source(&g, &flat_of, &nodes, port, "value", 0)))
         .collect();
-    Flat { nodes, sub_outputs, vars, diags, double, deps: deps.into_inner() }
+    Flat { nodes, sub_outputs, vars, scope_paths, diags, double, deps: deps.into_inner() }
 }
 
 // ---------------------------------------------------------------- lowering
@@ -748,7 +785,8 @@ impl<'a> Lx<'_, 'a> {
             ident(&n.sig.outputs[o].name)
         );
         let shows = n.top.then(|| (n.square, n.sig.outputs[o].name.clone()));
-        let s = self.lw.new_slot(ty.clone(), Value::default_of(&ty), name, shows);
+        let home = (n.path.clone(), format!("out {}", n.sig.outputs[o].name));
+        let s = self.lw.new_slot(ty.clone(), Value::default_of(&ty), name, shows, home);
         self.lw.out_slots.insert((self.node, o), s);
         s
     }
@@ -757,7 +795,8 @@ impl<'a> Lx<'_, 'a> {
     pub fn private_slot(&mut self, what: &str, ty: Type, init: Value) -> SlotId {
         let name =
             format!("{}_{}_{}", ident(self.n().module.path().rsplit('/').next().unwrap_or("")), self.node, ident(what));
-        self.lw.new_slot(ty, init, name, None)
+        let home = (self.n().path.clone(), format!("own {what}"));
+        self.lw.new_slot(ty, init, name, None, home)
     }
 
     /// The slot of variable NAME, as seen from here.
@@ -773,7 +812,10 @@ impl<'a> Lx<'_, 'a> {
             Value::parse(&d.init, &d.ty)
                 .ok_or_else(|| format!("`{}` isn't a {} (the start of `{name}`)", d.init, d.ty))?
         };
-        let s = self.lw.new_slot(d.ty.clone(), init, format!("var_{}", ident(name.trim_start_matches(':'))), None);
+        let at = self.lw.flat.scope_paths.get(&key.0).cloned().unwrap_or_default();
+        let home = (at, format!("var {name}"));
+        let s =
+            self.lw.new_slot(d.ty.clone(), init, format!("var_{}", ident(name.trim_start_matches(':'))), None, home);
         self.lw.var_slots.insert(key, s);
         Ok(s)
     }
@@ -831,8 +873,15 @@ impl<'a> Lx<'_, 'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    fn new_slot(&mut self, ty: Type, init: Value, name: String, shows: Option<(SquareId, String)>) -> SlotId {
-        self.prog.slots.push(SlotDef { ty, init, name, shows });
+    fn new_slot(
+        &mut self,
+        ty: Type,
+        init: Value,
+        name: String,
+        shows: Option<(SquareId, String)>,
+        home: (Vec<SquareId>, String),
+    ) -> SlotId {
+        self.prog.slots.push(SlotDef { ty, init, name, shows, home });
         (self.prog.slots.len() - 1) as SlotId
     }
 
