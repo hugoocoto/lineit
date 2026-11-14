@@ -552,6 +552,8 @@ pub enum Ex {
     Test,
     /// `:debug [NAME]`: run test NAME (the first that failed, with none) by steps.
     Debug(Option<String>),
+    /// `:bisect [here|good|bad|skip|undo|end]`.
+    Bisect(Bisect),
     Output,
     ClearOutput,
     Add(String),
@@ -566,6 +568,20 @@ pub enum Ex {
     Help,
 }
 
+/// What `:bisect` asks for, and what the bar's buttons and keys do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bisect {
+    /// Record the run and ask, from the end of it.
+    Start,
+    /// The same, from the last run of the focused square.
+    Here,
+    Good,
+    Bad,
+    Skip,
+    Undo,
+    End,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SetOp {
     Show(String),
@@ -577,6 +593,7 @@ pub enum SetOp {
 /// The commands, to complete and to list.
 pub const COMMANDS: &[&str] = &[
     "add",
+    "bisect",
     "compile",
     "debug",
     "disconnect",
@@ -640,6 +657,16 @@ pub fn parse_ex(line: &str) -> Result<Ex, String> {
         "compile" | "make" => no_args(Ex::Compile),
         "test" | "tests" => no_args(Ex::Test),
         "debug" => Ok(Ex::Debug((!rest.is_empty()).then(|| rest.to_string()))),
+        "bisect" | "bis" => match rest {
+            "" => Ok(Ex::Bisect(Bisect::Start)),
+            "here" | "h" => Ok(Ex::Bisect(Bisect::Here)),
+            "good" | "g" => Ok(Ex::Bisect(Bisect::Good)),
+            "bad" | "b" => Ok(Ex::Bisect(Bisect::Bad)),
+            "skip" | "s" => Ok(Ex::Bisect(Bisect::Skip)),
+            "undo" | "u" => Ok(Ex::Bisect(Bisect::Undo)),
+            "end" | "e" => Ok(Ex::Bisect(Bisect::End)),
+            r => Err(format!(":bisect {r}: here, good, bad, skip, undo or end")),
+        },
         "output" | "out" => no_args(Ex::Output),
         "clear" | "cl" => no_args(Ex::ClearOutput),
         "add" | "a" if rest.is_empty() => Err(":add needs a module (math/add)".into()),
@@ -707,6 +734,9 @@ pub fn complete_ex(line: &str, keys: &[&str]) -> Option<String> {
             names.extend(keys.iter().filter_map(|k| k.split_once('.').map(|(_, s)| s)));
             common(names, name).map(|c| format!("{head} {neg}{c}"))
         }
+        Some(r) if head == "bisect" => {
+            common(vec!["here", "good", "bad", "skip", "undo", "end"], r).map(|c| format!("{head} {c}"))
+        }
         Some(_) => None,
     }
 }
@@ -757,6 +787,8 @@ COMMANDS (Tab completes)
   :w [file]  :q  :q!  :qa  :wq  :e file  :tabnew  :tabn [N]  :tabp  :tabc
   :run  :step  :stop  :compile  :output  :clear  :3 (the third square)
   :test (the tests, F6)  :debug NAME (a test by steps; no NAME: the first that failed)
+  :bisect (record the run, then asked where the bug is; :bisect here starts at
+  the focused square; :bisect good | bad | skip | undo | end answer; F7 F8 F9)
   :add module  :set key=value | key | nokey | key! | key?
   :settings  :subgraph  :open  :disconnect  :dup  :undo  :redo  :help
 ";
@@ -1018,6 +1050,15 @@ mod tests {
             assert_eq!(parse_ex(c), Ok(e));
         }
         assert_eq!(parse_ex("help"), Ok(Ex::Help));
+        assert_eq!(parse_ex("bisect"), Ok(Ex::Bisect(Bisect::Start)));
+        assert_eq!(parse_ex("bisect here"), Ok(Ex::Bisect(Bisect::Here)));
+        for (c, b) in [("good", Bisect::Good), ("bad", Bisect::Bad), ("skip", Bisect::Skip)] {
+            assert_eq!(parse_ex(&format!("bisect {c}")), Ok(Ex::Bisect(b)));
+            assert_eq!(parse_ex(&format!("bisect {}", &c[..1])), Ok(Ex::Bisect(b)));
+        }
+        assert_eq!(parse_ex("bisect u"), Ok(Ex::Bisect(Bisect::Undo)));
+        assert_eq!(parse_ex("bisect end"), Ok(Ex::Bisect(Bisect::End)));
+        assert!(parse_ex("bisect maybe").is_err());
     }
 
     #[test]
@@ -1045,5 +1086,7 @@ mod tests {
         assert_eq!(complete_ex("set nocanvas.sn", &keys), Some("set nocanvas.snap".into()));
         assert_eq!(complete_ex("set sn", &keys), Some("set snap".into()));
         assert_eq!(complete_ex("zzz", &keys), None);
+        assert_eq!(complete_ex("bis", &keys), Some("bisect".into()));
+        assert_eq!(complete_ex("bisect go", &keys), Some("bisect good".into()));
     }
 }

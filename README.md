@@ -82,7 +82,7 @@ its corner.
 | Drag a plugged input                 | Take its wire, to put it elsewhere or drop it        |
 | Click a wire, then Delete            | Remove it (Shift+click selects more)                 |
 | Type in a field next to an input     | The value it has while nothing is wired to it        |
-| Right click on a square              | Duplicate, copy, disconnect, make a subgraph, delete |
+| Right click on a square              | Duplicate, copy, disconnect, make a subgraph, bisect up to it, delete |
 | Add a `note` square, double click it | A post-it to write on: Enter is a new line, Esc done |
 | Drag on the canvas, or Shift+click   | Select with a box, or add to the selection           |
 | Right or middle drag / mouse wheel   | Pan / zoom                                           |
@@ -96,12 +96,26 @@ its corner.
 | Ctrl+Tab, Ctrl+PageUp/PageDown       | Next / previous tab                                  |
 | Ctrl+G                               | Make a subgraph of the selection                     |
 | F5, F10, Shift+F5                    | Run, step, stop                                      |
+| F7, F8, F9, Shift+F7, Esc            | While bisecting: good, bad, skip, undo, end          |
 | Ctrl+,                               | Settings                                             |
 
 (Cmd instead of Ctrl on macOS.) Hovering a pin shows its type, and while a
 program runs, its value. Squares that make images show them, without
 running anything. While stepping, the squares about to run have a yellow
 outline. What's wrong with a square is written under it, in red.
+
+**Bisect** (in the Run button's menu, or right click a square: *Bisect up
+to here*) finds the square a bug is in, like `git bisect`. It runs the
+program once, recording every square that ran, then asks about points of the
+run: the square is centered with a violet outline, what it showed is written
+over it (and the index of the loop it's in, if it is), and the Output panel has what the run printed up to there. Answer
+Good (the values are right after it), Bad or Skip in the bar, or with F7, F8
+and F9 (Undo is Shift+F7, End is Esc): each answer cuts what's left in half,
+and the squares that can't be the bug fade. Branches that run in parallel
+aren't before or after each other, so a good answer on one says nothing
+about the other. At the end the bar says which run of which square the bug
+is in. Changing the canvas ends it, as the run was of the canvas as it was;
+Run and Step wait until it's ended.
 
 The bar at the bottom runs, steps, compiles (More) and stops, and has
 **Output** (what the program prints) and **File**.
@@ -129,11 +143,12 @@ typed and the command line. `:help` lists every key.
 | gd, gt, gT                   | Open the subgraph, next / previous tab                          |
 | `]c`, `[c`                   | Next / previous change in a diff view (see below)               |
 | Ctrl+E/Y/D/U, zh zl zz zf, + - = | Pan, center on the focus, fit everything, zoom              |
-| `:`                          | Commands: `:w` `:q` `:e` `:tabnew` `:run` `:step` `:compile` `:add math/add` `:set key=value` `:settings` `:subgraph` `:help` (Tab completes) |
+| `:`                          | Commands: `:w` `:q` `:e` `:tabnew` `:run` `:step` `:compile` `:bisect` `:add math/add` `:set key=value` `:settings` `:subgraph` `:help` (Tab completes) |
 
 `:q` refuses to close a tab with changes (`:q!` does it anyway); on the last
 tab it quits. Ctrl+D and Ctrl+R are vim's here (duplicate is `yy` `p`, or
-`:dup`); every other Ctrl shortcut above keeps working, and so does the
+`:dup`); `:bisect here` starts from the focused square, and `:bisect good`,
+`bad`, `skip`, `undo` and `end` answer (F7 F8 F9 work too); every other Ctrl shortcut above keeps working, and so does the
 mouse. In the Settings tab, j and k move between the settings, Space flips
 one, h and l change it, `i` types in a text, `r` resets, `/` searches.
 
@@ -391,6 +406,8 @@ install the ones you trust.
     lineit check FILE                   what's wrong with a canvas, if anything
     lineit test FILE                    run the tests of its code squares
     lineit diff A B [--view]            what changed between two canvases
+    lineit bisect FILE [--bad SQUARE[:RUN]] [--limit N] [--answers GBS]
+                                        find the square where a run went wrong
     lineit show FILE|REV:PATH...        open canvases, or files as git has them, read-only
     lineit text FILE                    a canvas as text, for git (see Diffs)
     lineit compile FILE [-o OUT]        a program of the canvas, next to it
@@ -403,6 +420,30 @@ install the ones you trust.
 compile downloads and builds what the program needs; the next ones only
 build the program. Lua modules in a compiled program need a C compiler, as
 Rust on Windows already does.
+
+# Bisect
+
+When a run comes out wrong and you don't know where, `lineit bisect FILE`
+runs it once, recording every square that ran, and asks about points of it
+like `git bisect`: it says a square and the values after it ran (its outputs,
+the variables, what it printed, the index of the loop it's in) and you answer `good` (they are right),
+`bad`, `skip` (can't tell), `undo` or `quit`, or the first letter. Each answer
+halves what's left, until one run of one square is. Branches that run in
+parallel aren't before or after each other, so a good answer on one doesn't
+clear the other. If you skip too many it ends with the squares it can't tell
+apart, and if everything was good, no square that ran is to blame: the bug is
+in what you expected, or in something that didn't run.
+
+    lineit bisect FILE                  the end of the run is wrong
+    lineit bisect FILE --bad 4          ...or the last run of square 4
+    lineit bisect FILE --bad 4:3        ...or its 3rd run (runs count from 1, as in
+                                        "run 3 of 5")
+    lineit bisect FILE --limit 5000     record at most 5000 square runs (100000)
+    lineit bisect FILE --answers gbbs   start with these answers
+
+It ends with the line that replays your answers (`--answers gbbs`), so you
+can go back, or script it: the answers also come from standard input, one a
+line, so it works piped. A canvas with a clock runs until the limit.
 
 # Diffs
 

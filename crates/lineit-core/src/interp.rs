@@ -204,6 +204,28 @@ struct Task {
     done: bool,
     /// It ran a square in this step.
     entered: bool,
+    /// The square it ran in this step (Step only: the trace asks).
+    ran: Option<NodeId>,
+}
+
+/// A branch, as the trace sees it (Step only).
+pub(crate) struct TaskView {
+    /// The branch that fanned it out.
+    pub parent: Option<usize>,
+    /// Waiting for the branches it fanned out.
+    pub waiting: bool,
+    /// The square it ran in this step, if it did.
+    pub ran: Option<NodeId>,
+    /// The squares whose handlers it's in, the outermost first: a loop's,
+    /// under the squares of its body.
+    pub inside: Vec<NodeId>,
+}
+
+/// When [`Interp::step_with`] calls: before a branch's turn, or after.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Turn {
+    Before,
+    After,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -236,6 +258,9 @@ pub struct World {
     /// Set to end the program: every branch, on every thread, stops at its
     /// next op. Stop sets it from another thread; `flow/stop` from inside.
     pub stop: Arc<AtomicBool>,
+    /// Set when the program itself ends (`flow/stop`), which `stop` also
+    /// says when something else sets it: the trace tells them apart.
+    pub(crate) ended: AtomicBool,
     /// Set to make every branch stop at its next op without ending the
     /// program: the edit that restarts the branches ([`Interp::abandon`]).
     pub interrupt: Arc<AtomicBool>,
@@ -290,6 +315,7 @@ impl World {
             checks: Mutex::new(Vec::new()),
             started: Mutex::new(Instant::now()),
             base_dir,
+            ended: AtomicBool::new(false),
             stop,
             interrupt,
         }
@@ -581,13 +607,14 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
         let pc = frame.pc;
         frame.pc += 1;
         match &code[h].ops[pc] {
-            Op::Enter(_) => {
+            Op::Enter(n) => {
                 if stepping {
                     if task.entered {
                         frame.pc -= 1;
                         return Ok(Next::Budget);
                     }
                     task.entered = true;
+                    task.ran = Some(*n);
                 }
             }
             Op::Set(s, e) => {
@@ -640,7 +667,10 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 }
                 _ => return Ok(Next::FanOut(fire.clone())),
             },
-            Op::Stop => return Ok(Next::Stop),
+            Op::Stop => {
+                w.ended.store(true, Ordering::Relaxed);
+                return Ok(Next::Stop);
+            }
             Op::Check { square, label, value, expected } => {
                 let got = w.eval(value, &frame.locals)?;
                 let expected = w.eval(expected, &frame.locals)?;
@@ -725,7 +755,8 @@ fn fan_out(task: &mut Task, fire: &Fire, w: &World, code: &[Code]) -> Result<(),
     let mut inside = task.inside.clone();
     inside.push(meets.clone());
     let branch = |h: HandlerId, inside: Vec<Arc<Meets>>| -> Result<(), String> {
-        let mut t = Task { frames: Vec::new(), inside, waiting: None, parent: None, done: false, entered: false };
+        let mut t =
+            Task { frames: Vec::new(), inside, waiting: None, parent: None, done: false, entered: false, ran: None };
         call(&mut t, code, h, false)?;
         run_branch(&mut t, w, code)
     };
@@ -1111,6 +1142,7 @@ impl Interp {
             parent: None,
             done: false,
             entered: false,
+            ran: None,
         });
         let t = self.tasks.len() - 1;
         self.fire(t, fire)?;
@@ -1178,6 +1210,13 @@ impl Interp {
     /// Lets every branch run its next square, and stops each before the one
     /// after.
     pub fn step(&mut self) -> Result<Status, String> {
+        self.step_with(|_, _, _| {})
+    }
+
+    /// [`Interp::step`], calling TURN with the branch (its [`TaskView`] is
+    /// at that index) right before its turn and right after it, even if the
+    /// turn failed: what the trace needs to tell what each branch did.
+    pub(crate) fn step_with(&mut self, mut turn: impl FnMut(&Interp, usize, Turn)) -> Result<Status, String> {
         if self.is_idle() {
             if self.clock_next.is_empty() {
                 return Ok(Status::Idle);
@@ -1186,16 +1225,36 @@ impl Interp {
         }
         for t in &mut self.tasks {
             t.entered = false;
+            t.ran = None;
         }
         let mut i = 0;
         while i < self.tasks.len() {
             if !self.tasks[i].done && self.tasks[i].waiting.is_none() {
-                self.run_task(i, u64::MAX, true)?;
+                turn(self, i, Turn::Before);
+                let r = self.run_task(i, u64::MAX, true);
+                turn(self, i, Turn::After);
+                r?;
             }
             i += 1;
         }
         self.gc();
         Ok(if self.is_idle() { Status::Idle } else { Status::Paused })
+    }
+
+    /// How many branches there are (tasks, done ones too, until all are).
+    pub(crate) fn task_count(&self) -> usize {
+        self.tasks.len()
+    }
+
+    pub(crate) fn task(&self, i: usize) -> TaskView {
+        let t = &self.tasks[i];
+        let inside = t.frames.iter().map(|f| self.prog.handlers[f.handler as usize].node).collect();
+        TaskView { parent: t.parent, waiting: t.waiting.is_some(), ran: t.ran, inside }
+    }
+
+    /// Whether clocks may start more branches when these end.
+    pub(crate) fn has_clocks(&self) -> bool {
+        !self.clock_next.is_empty()
     }
 
     /// Forgets tasks that are done, if all are.
@@ -1251,6 +1310,7 @@ impl Interp {
                         parent: Some(t),
                         done: false,
                         entered,
+                        ran: None,
                     };
                     call(&mut task, &self.code, h, false)?;
                     self.tasks.push(task);

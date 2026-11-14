@@ -49,6 +49,8 @@ pub struct Tab {
     pub label: Option<String>,
     /// Set in a diff view: what each square and wire is in it.
     pub diff: Option<Merged>,
+    /// A bisect of the canvas, being recorded or asked (see bisect.rs).
+    pub bisect: Option<super::bisect::Bisecting>,
 }
 
 /// Lays out a canvas written by hand without positions.
@@ -101,6 +103,7 @@ impl Tab {
             settings: false,
             label: None,
             diff: None,
+            bisect: None,
         }
     }
 
