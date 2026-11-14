@@ -7,11 +7,28 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# `lineit` is the program, with a console on Windows (the commands print, wait
+# and have exit codes); `lineitw` is the same editor with no console window,
+# for a double click, the Start menu and file associations. It's built
+# everywhere but is only a message outside Windows.
+[lib]
+name = "lineit_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lineit"
+path = "src/main.rs"
+
+[[bin]]
+name = "lineitw"
+path = "src/lineitw.rs"
+
 [dependencies]
 lineit-core = { path = "../lineit-core" }
 lineit-rt = { path = "../lineit-rt" }
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 mlua = { version = "0.12", features = ["lua54", "vendored", "send"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 
 [lints]
 workspace = true

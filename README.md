@@ -20,7 +20,13 @@ On Linux or macOS:
 
 On Windows, download `lineit-x86_64-pc-windows-msvc.zip` from the
 [latest release](https://github.com/hugoocoto/lineit/releases/latest), unzip
-it and run `lineit.exe`. On Linux there's an AppImage there too.
+it. There are two programs in it: `lineitw.exe` opens the editor with no
+console window (for a double click, the Start menu, "Open with" and file
+associations), and `lineit.exe` is the one for a terminal: `lineit run`,
+`check` and the other commands print there and wait, with exit codes as
+usual, and `lineit` alone opens the editor from it (the terminal is busy
+until it's closed). They share the editor running: a file given to one opens
+in a tab of the other's. On Linux there's an AppImage there too.
 
 Or, with [Docker](https://docs.docker.com/get-docker/), in the folder to
 work in, then open <http://localhost:6080>:
@@ -473,6 +479,10 @@ and puts one new square in.
 **File > Settings** (Ctrl+,) opens the Settings tab: every setting, in
 sections, with a search (Ctrl+F) and a Reset for each. It applies
 changes at once: they're saved to `settings.lua` in the config folder.
+Open and Save as use the system's file dialog (`editor.native_dialogs`); where
+there's none (no desktop portal or zenity, a container, the noVNC image) or
+it's turned off, lineit asks for the path in a prompt of its own, with Tab
+completion.
 `config.lua` there, if you write one, is read before it, and is real Lua:
 `lineit config` prints one with every setting. Themes: `dark`, `light`,
 `nord`, `gruvbox`, or your own in `themes`.

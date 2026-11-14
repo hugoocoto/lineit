@@ -41,7 +41,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 
 use serde_json::{Value as Json, json};
@@ -216,14 +216,15 @@ impl FileLanguage {
         let request = json!({ "op": "signature", "source": source }).to_string();
         let mut tried = Vec::new();
         for cmd in &self.commands {
-            let child = Command::new(cmd)
+            let mut command = lineit_rt::ext::command(cmd);
+            command
                 .args(&self.args)
                 .arg(&self.host)
                 .envs(self.env.iter().map(|(k, v)| (k, v)))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn();
+                .stderr(Stdio::piped());
+            let child = command.spawn();
             let mut child = match child {
                 Ok(c) => c,
                 Err(e) => {

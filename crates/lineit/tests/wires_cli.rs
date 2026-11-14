@@ -1,4 +1,6 @@
 //! `lineit check`, `run` and `compile` refuse a canvas with two wires into a data input.
+// tests start the programs as a user does
+#![allow(clippy::disallowed_methods)]
 
 use std::process::Command;
 

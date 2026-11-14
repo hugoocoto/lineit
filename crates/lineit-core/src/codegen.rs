@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use lineit_rt::{Type, Value};
 
@@ -168,7 +168,7 @@ pub fn compile(prog: &Program, opts: &Options, log: &mut dyn FnMut(&str)) -> Res
     let cargo = std::env::var_os("CARGO").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cargo"));
     let target = crate::paths::cache_dir().join("target");
     let build = |offline: bool, log: &mut dyn FnMut(&str)| -> Result<bool, String> {
-        let mut cmd = Command::new(&cargo);
+        let mut cmd = lineit_rt::ext::command(&cargo);
         cmd.arg("build").arg("--manifest-path").arg(dir.join("Cargo.toml")).arg("--color=never");
         if !opts.debug {
             cmd.arg("--release");

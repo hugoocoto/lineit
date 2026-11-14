@@ -137,6 +137,31 @@ pub fn stderr_stdio() -> std::process::Stdio {
     if captures_stderr() { std::process::Stdio::piped() } else { std::process::Stdio::inherit() }
 }
 
+static NO_WINDOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// On Windows, the processes started from now on get no console window (the
+/// program has no console of its own, see lineit's console.rs). Nothing
+/// elsewhere.
+pub fn no_console_windows() {
+    NO_WINDOW.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The one way lineit starts a process (`Command::new` is disallowed by
+/// clippy.toml, so a spawn can't forget it): a [`std::process::Command`] set
+/// up for [`no_console_windows`].
+#[allow(clippy::disallowed_methods)]
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    if NO_WINDOW.load(std::sync::atomic::Ordering::Relaxed) {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 thread_local! {
     static PRINTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }

@@ -3,6 +3,8 @@
 //!
 //! With `LINEIT_TEST_COMPILE=1`, each is also compiled (with cargo, so it
 //! takes a while) and the program must print the same.
+// tests start the programs as a user does
+#![allow(clippy::disallowed_methods)]
 
 use std::path::{Path, PathBuf};
 

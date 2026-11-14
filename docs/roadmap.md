@@ -30,7 +30,8 @@ and redoes the inside, with three aims:
 | Parallel                | Everything works with branches on threads; read-and-change is one step      |
 | Old canvases or modules | Not supported: a clean break                                                |
 | Distribution            | GitHub Actions on all 3 OSes; release archives, AppImage, Docker (noVNC)    |
-| File dialogs            | A path prompt inside the editor with Tab completion (no native dialog crate)|
+| File dialogs            | The system's dialog (`rfd`); a path prompt with Tab completion where there's none, or if turned off (`editor.native_dialogs`) |
+| Windows console         | Two programs on Windows: `lineit.exe` (console: the commands, exit codes) and `lineitw.exe` (no console window, only the editor) from one crate (lib `lineit_app`; `lineitw` is built everywhere, as a message outside Windows, so a plain `cargo build` on Windows has both) |
 
 Dependencies: `eframe` (the editor), `mlua` (Lua), `zip` (packages), `image`
 (only to read and write image files, as an optional feature of
@@ -38,8 +39,8 @@ Dependencies: `eframe` (the editor), `mlua` (Lua), `zip` (packages), `image`
 `image/shader`, the `shader` feature of `lineit-rt`), the `lua`, `python`, `rust`, `c` and `c-sharp`
 grammars of tree-sitter (the signatures of `code/function`), `serde_json` (code squares in
 Python and C#, the `process` feature of `lineit-rt`), `quick-xml` (the doc comments of C#), `fs4` (a file lock around C# builds), `libloading` (Rust modules in the editor), `similar` (the line diffs of
-`lineit diff`). Everything else is
-std: the argument parser, the file prompt, threads and the codegen. A
+`lineit diff`), `rfd` (the system's file dialogs; on Linux it asks the desktop portal through libdbus, loaded when used, so nothing is linked, and falls back to zenity; the editor checks that a portal with a file chooser, or zenity, is installed, and uses its own prompt if not). Everything else is
+std: the argument parser, the file prompt (where there's no dialog), threads and the codegen. A
 compiled program depends only on `lineit-rt`, plus `image` if it opens or
 saves images, `tree-sitter` and `libm` if it uses a shader, `mlua` if it uses a Lua module, and the crates of the Rust
 modules it uses.

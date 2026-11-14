@@ -161,7 +161,7 @@ const MIN_SDK: u32 = 10;
 pub fn sdk_ready() -> bool {
     static READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *READY.get_or_init(|| {
-        let out = std::process::Command::new("dotnet").arg("--version").output();
+        let out = lineit_rt::ext::command("dotnet").arg("--version").output();
         let version = out.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
         version.and_then(|v| v.split('.').next()?.trim().parse::<u32>().ok()).is_some_and(|major| major >= MIN_SDK)
     })

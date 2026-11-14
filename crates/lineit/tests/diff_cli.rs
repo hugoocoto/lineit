@@ -1,4 +1,6 @@
 //! `lineit diff` and `lineit text`: output and exit codes, and with git.
+// tests start the programs as a user does
+#![allow(clippy::disallowed_methods)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
