@@ -21,7 +21,14 @@ squares. Needs C# code squares (tree-sitter-c-sharp for the signature, run
 with dotnet).
 How to judge "easier to review" (chosen): time to review, bugs found (known
 or seeded in each branch), confidence (a short questionnaire after each
-review), against GitHub's diff of the same branches. Details still to decide.
+review), against GitHub's diff of the same branches. Bugs: seeded, two sets
+per branch of the same kind and difficulty, set A in the C# version and set B
+in the lineit one, so the second review isn't helped by the first. Reviewer:
+me, alternating per branch which form comes first.
+3 bugs per set. The answer key is written to a file I don't open until
+after reviewing.
+Repo: a local clone at ~/code/junction26-messagepack-csharp, copies of it
+for the agents.
 Plan: once C# squares are merged, one agent per branch (2283, 2234, 2129,
 2297), each on its own copy of the repo.
 
