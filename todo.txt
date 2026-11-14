@@ -1,7 +1,7 @@
 diff view
 the text jumps in notes and code modules
-(unhinted canvas text only smooths glyph shapes: egui rounds glyphs, row y and
-row heights to pixels, so the text still steps; next: lay out once and scale)
+(fix: laid out at a power of two and scaled; check it zooming with the mouse,
+and while typing in them: the text box is still laid out at the zoom)
 
 Implement all the fixes in lineit to check if it's easier to the reviewer to
 review it in lineit than in real code.

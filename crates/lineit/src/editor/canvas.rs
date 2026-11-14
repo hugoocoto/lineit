@@ -625,6 +625,32 @@ fn zoomed_mono(size: f32) -> FontId {
     FontId::new(size, egui::FontFamily::Name(ZOOMED_MONO.into()))
 }
 
+/// The size the text of zoom Z is laid out at: a power of two at or above
+/// it, scaled to Z when drawn ([`paint_scaled`]). Laid out at Z itself,
+/// egui rounds glyphs and rows to pixels at each zoom, and the text shakes
+/// and grows in steps against its box.
+fn laid_at(z: f32) -> f32 {
+    2f32.powf(z.log2().ceil()).clamp(0.25, 8.0)
+}
+
+/// Draws G (laid out at [`laid_at`]) at POS, S times as big.
+fn paint_scaled(painter: &egui::Painter, pos: Pos2, g: &egui::Galley, s: f32) {
+    let [w, h] = painter.ctx().fonts(|f| f.font_image_size());
+    let mut mesh = egui::Mesh::default();
+    for row in &g.rows {
+        let at = row.pos.to_vec2();
+        let first = mesh.vertices.len() as u32;
+        mesh.indices.extend(row.visuals.mesh.indices.iter().map(|i| i + first));
+        mesh.vertices.extend(row.visuals.mesh.vertices.iter().map(|v| egui::epaint::Vertex {
+            pos: pos + (v.pos.to_vec2() + at) * s,
+            // in texels in the galley; the atlas's 0 to 1 in a mesh
+            uv: pos2(v.uv.x / w as f32, v.uv.y / h as f32),
+            color: v.color,
+        }));
+    }
+    painter.add(mesh);
+}
+
 /// A note's text, as laid out at zoom 1 in a note WIDTH wide.
 fn note_galley(painter: &egui::Painter, text: &str, width: f32, z: f32) -> std::sync::Arc<egui::Galley> {
     let (shown, color) =
@@ -895,8 +921,13 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             painter.rect_filled(srect, r, NOTE_FILL);
             if !editing_note {
                 let text = sq.params.get("text").cloned().unwrap_or_default();
-                let g = note_galley(&painter, &text, srect.width() / z, z);
-                painter.galley(srect.min + vec2(10.0, 10.0) * z, g, NOTE_TEXT);
+                // its lines as at zoom 1, so they don't change with the zoom
+                let rows = note_galley(&painter, &text, srect.width() / z, 1.0);
+                let lines: Vec<String> = rows.rows.iter().map(|r| r.row.text()).collect();
+                let color = if text.is_empty() { NOTE_TEXT.gamma_multiply(0.5) } else { NOTE_TEXT };
+                let b = laid_at(z);
+                let g = painter.layout_no_wrap(lines.join("\n"), zoomed_text(14.0 * b), color);
+                paint_scaled(&painter, srect.min + vec2(10.0, 10.0) * z, &g, z / b);
             }
         } else {
             painter.rect_filled(srect, r, theme.square);
@@ -1249,11 +1280,12 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                             .get("language")
                             .cloned()
                             .unwrap_or_else(lineit_core::registry::code::default_language);
-                        let g = code_colored(&painter, &code_now(&sq, cx), &lang, from_file, z, &theme);
+                        let b = laid_at(z);
+                        let g = code_colored(&painter, &code_now(&sq, cx), &lang, from_file, b, &theme);
                         let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
                         // the line a problem is on: a bar beside it
                         let lines = g.rows.len().max(1) as f32;
-                        let line_h = g.size().y / lines;
+                        let line_h = g.size().y * z / b / lines;
                         let skip = if from_file { 2.0 } else { 0.0 };
                         for line in problems.get(&id).into_iter().flatten().filter_map(|m| problem_line(m)) {
                             let y = r.min.y + 4.0 * z + (line as f32 - 1.0 + skip) * line_h;
@@ -1263,7 +1295,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                                 theme.error.gamma_multiply(0.25),
                             );
                         }
-                        clip.galley(r.min + vec2(2.0, 4.0) * z, g, theme.text);
+                        paint_scaled(&clip, r.min + vec2(2.0, 4.0) * z, &g, z / b);
                         let resp = ui.interact(r, Id::unique(("code", cx.tab_id, id)), Sense::click());
                         // code in a file is typed in the file
                         if resp.clicked() && show_widgets && !from_file {
