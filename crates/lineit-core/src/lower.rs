@@ -19,8 +19,8 @@ use std::sync::Arc;
 use lineit_rt::{RecordType, Type, Value};
 
 use crate::ir::*;
-use crate::model::{Canvas, SquareId};
-use crate::registry::{Module, Params, PinTy, Registry, SigCx, Signature};
+use crate::model::{Canvas, Link, Square, SquareId};
+use crate::registry::{FnPorts, Module, ParamKind, Params, PinTy, Registry, SigCx, Signature};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Diag {
@@ -40,10 +40,30 @@ pub fn square_height(info: &SquareInfo, params: usize) -> f32 {
 /// Lays out CANVAS with its squares' real heights.
 pub fn arrange(canvas: &mut Canvas, reg: &Registry) {
     let l = lower(canvas, reg);
-    canvas.arrange(&|sq| {
-        let params = reg.get(&sq.module).map(|m| m.params().len()).unwrap_or(0);
-        l.squares.get(&sq.id).map(|i| square_height(i, params))
-    });
+    // a code square's code, as lowering read it (from its file, too): it's
+    // drawn below its other params, a line each, as wide as its widest
+    let code = |sq: &Square| -> Option<String> {
+        let info = l.squares.get(&sq.id)?;
+        info.sig.code.as_ref().map(|f| f.source.trim_end().to_string())
+    };
+    canvas.arrange(
+        &|sq| {
+            let mut params = reg.get(&sq.module).map(|m| m.params().len()).unwrap_or(0);
+            // as the editor draws it: its code and tests aren't rows of
+            // params; its code is, a line each (14), with its line of tests
+            // below (from a file: a line that says so, and a blank one)
+            let extra = code(sq).map_or(0.0, |c| {
+                params = params.saturating_sub(2);
+                let from_file = sq.params.get("file").is_some_and(|f| !f.trim().is_empty());
+                let lines = c.lines().count() + if from_file { 2 } else { 0 };
+                lines.max(2) as f32 * 14.0 + 12.0 + 22.0
+            });
+            l.squares.get(&sq.id).map(|i| square_height(i, params) + extra)
+        },
+        &|sq| {
+            code(sq).map(|c| (c.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * 7.3 + 24.0).min(640.0))
+        },
+    );
 }
 
 /// What the editor shows of a square: its pins and their types.
@@ -58,10 +78,16 @@ pub struct Lowered {
     /// None if there are diagnostics.
     pub program: Option<Program>,
     pub diags: Vec<Diag>,
+    /// The wires of the canvas that go into a data input with more than
+    /// one: the editor marks them.
+    pub double: Vec<Link>,
     pub squares: HashMap<SquareId, SquareInfo>,
     /// The expressions of the images that pure squares on the canvas make,
     /// for the editor to show without running anything.
     pub previews: Vec<(SquareId, String, Expr)>,
+    /// The files the signatures were worked out from, and when each was
+    /// changed (None: it wasn't there).
+    pub deps: Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>,
 }
 
 /// Where a data input gets its value.
@@ -92,6 +118,9 @@ pub struct FNode {
     pub targets: Vec<Vec<(NodeId, usize)>>,
     pub in_types: Vec<Option<Type>>,
     pub out_types: Vec<Option<Type>>,
+    /// For a square that calls a function: where each of the function's
+    /// data outputs gets its value from, the type of the output and its name.
+    pub fn_outs: Vec<(Source, Type, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -113,13 +142,20 @@ struct GNode {
     kind: GKind,
     /// For a port: its type, if it's data.
     port_ty: Option<Type>,
+    /// For a port: its name.
+    port: String,
     square: SquareId,
     top: bool,
     scope: usize,
     params: BTreeMap<String, String>,
     fields: BTreeMap<String, String>,
-    /// (input, source node, source output)
-    incoming: Vec<(String, usize, String)>,
+    /// The function it's inside of, and whether that has a tick input.
+    in_fn: Option<(String, bool)>,
+    /// For a square that calls a function: its `graph/output` ports.
+    fn_outs: Vec<usize>,
+    /// (input, source node, source output, the wire's place in the main
+    /// canvas's links, if it's one of them)
+    incoming: Vec<(String, usize, String, Option<usize>)>,
 }
 
 enum Mapping {
@@ -134,6 +170,7 @@ struct Flattener<'a> {
     top_subs: Vec<(SquareId, String, usize)>,
     scopes: usize,
     diags: Vec<Diag>,
+    in_fn: Option<(String, bool)>,
 }
 
 struct Ports {
@@ -153,14 +190,18 @@ impl Flattener<'_> {
                 self.diags.push(Diag { square: Some(at), message: format!("there's no module `{}`", sq.module) });
                 continue;
             };
+            let in_fn = self.in_fn.clone();
             let gnode = |kind| GNode {
                 kind,
                 port_ty: None,
+                port: String::new(),
                 square: at,
                 top: top.is_none(),
                 scope,
                 params: sq.params.clone(),
                 fields: sq.fields.clone(),
+                in_fn: in_fn.clone(),
+                fn_outs: Vec::new(),
                 incoming: Vec::new(),
             };
             if sq.module == "graph/input" || sq.module == "graph/output" {
@@ -168,6 +209,7 @@ impl Flattener<'_> {
                 let mut n = gnode(GKind::Pass);
                 n.fields = BTreeMap::new();
                 n.port_ty = Type::parse(&p.str("type"), &|r| self.reg.records.get(r).cloned());
+                n.port = p.str("name");
                 if sq.module == "graph/input" {
                     n.fields.insert("value".into(), p.str("default"));
                     ports.inputs.insert(p.str("name"), self.g.len());
@@ -200,11 +242,19 @@ impl Flattener<'_> {
                 }
                 map.insert(sq.id, Mapping::Sub { inputs: inner.inputs, outputs: inner.outputs });
             } else {
-                map.insert(sq.id, Mapping::Real(self.g.len()));
+                let owner = self.g.len();
+                map.insert(sq.id, Mapping::Real(owner));
                 self.g.push(gnode(GKind::Real(m.clone())));
+                // a square that calls a function: the subgraph is inlined here, once
+                if let Some((def, ParamKind::Function { args })) =
+                    m.params().iter().find(|d| matches!(d.kind, ParamKind::Function { .. })).map(|d| (d, &d.kind))
+                {
+                    let path = sq.params.get(&def.name).unwrap_or(&def.default);
+                    self.function(path, owner, args, at, stack);
+                }
             }
         }
-        for l in &canvas.links {
+        for (li, l) in canvas.links.iter().enumerate() {
             let src = match map.get(&l.from) {
                 Some(Mapping::Real(g)) => Some((*g, l.output.clone())),
                 Some(Mapping::Sub { outputs, .. }) => outputs.get(&l.output).map(|g| (*g, "value".to_string())),
@@ -217,10 +267,47 @@ impl Flattener<'_> {
             };
             // wires to pins that aren't there (any more) are left out
             if let (Some((sg, so)), Some((dg, di))) = (src, dst) {
-                self.g[dg].incoming.push((di, sg, so));
+                self.g[dg].incoming.push((di, sg, so, top.is_none().then_some(li)));
             }
         }
         ports
+    }
+}
+
+impl Flattener<'_> {
+    /// Inlines the subgraph PATH as the function of the square OWNER (a node
+    /// of the flat canvas), which ARGS say where the inputs come from. If
+    /// it's not there or it's wrong, OWNER's signature says so.
+    fn function(&mut self, path: &str, owner: usize, args: &[String], at: SquareId, stack: &mut Vec<String>) {
+        let reg = self.reg;
+        let Some(sub) = reg.get(path).and_then(|m| m.subgraph()) else { return };
+        if stack.iter().any(|s| s == path) {
+            self.diags.push(Diag {
+                square: Some(at),
+                message: format!("`{path}` has itself inside: {} -> {path}", stack.join(" -> ")),
+            });
+            return;
+        }
+        self.scopes += 1;
+        stack.push(path.into());
+        let tick = sub.ports("graph/input").iter().any(|p| p.1 == "tick");
+        let saved = self.in_fn.replace((path.into(), tick));
+        let inner = self.expand(&sub.canvas, self.scopes, Some(at), stack);
+        self.in_fn = saved;
+        stack.pop();
+        let mut args = args.iter();
+        for (name, ty, _) in sub.ports("graph/input") {
+            let out = if ty == "tick" { Some("call") } else { args.next().map(String::as_str) };
+            if let (Some(g), Some(out)) = (inner.inputs.get(&name), out) {
+                self.g[*g].incoming.push(("value".into(), owner, out.into(), None));
+            }
+        }
+        self.g[owner].fn_outs = sub
+            .ports("graph/output")
+            .into_iter()
+            .filter(|p| p.1 != "tick")
+            .filter_map(|(name, ..)| inner.outputs.get(&name).copied())
+            .collect();
     }
 }
 
@@ -228,6 +315,8 @@ struct VarCx<'a> {
     vars: &'a HashMap<(usize, String), VarDecl>,
     scope: usize,
     reg: &'a Registry,
+    dir: Option<&'a std::path::Path>,
+    deps: &'a std::cell::RefCell<Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>>,
 }
 
 pub fn var_scope(name: &str, scope: usize) -> usize {
@@ -238,8 +327,35 @@ impl SigCx for VarCx<'_> {
     fn var(&self, name: &str) -> Option<Type> {
         self.vars.get(&(var_scope(name, self.scope), name.to_string())).map(|d| d.ty.clone())
     }
+    fn vars(&self) -> Vec<(String, Type)> {
+        let mut v: Vec<(String, Type)> = self
+            .vars
+            .iter()
+            .filter(|((scope, _), _)| *scope == self.scope || *scope == GLOBAL_SCOPE)
+            .map(|((_, n), d)| (n.clone(), d.ty.clone()))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
     fn record(&self, name: &str) -> Option<Arc<RecordType>> {
         self.reg.records.get(name).cloned()
+    }
+    fn read(&self, path: &str) -> Result<String, String> {
+        let p = std::path::Path::new(path);
+        let full = match self.dir {
+            Some(d) if p.is_relative() => d.join(p),
+            _ => p.to_path_buf(),
+        };
+        let stamp = std::fs::metadata(&full).and_then(|m| m.modified()).ok();
+        self.deps.borrow_mut().push((full.clone(), stamp));
+        std::fs::read_to_string(&full).map_err(|e| format!("{}: {e}", full.display()))
+    }
+    fn function(&self, path: &str) -> Result<FnPorts, String> {
+        if path.trim().is_empty() {
+            return Err("it needs a function: the path of a subgraph".into());
+        }
+        let m = self.reg.get(path).ok_or_else(|| format!("there's no function `{path}`"))?;
+        m.subgraph().ok_or_else(|| format!("`{path}` isn't a subgraph"))?.fn_ports(self)
     }
 }
 
@@ -251,12 +367,18 @@ pub struct Flat {
     pub sub_outputs: Vec<(SquareId, String, Source)>,
     pub vars: HashMap<(usize, String), VarDecl>,
     pub diags: Vec<Diag>,
+    /// The wires of the canvas that go into a data input with more than one.
+    pub double: Vec<Link>,
+    /// The files the signatures came from (see [`Lowered::deps`]).
+    pub deps: Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>,
 }
 
 pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
-    let mut f = Flattener { reg, g: Vec::new(), top_subs: Vec::new(), scopes: 0, diags: Vec::new() };
+    let mut f = Flattener { reg, g: Vec::new(), top_subs: Vec::new(), scopes: 0, diags: Vec::new(), in_fn: None };
     f.expand(canvas, 0, None, &mut Vec::new());
     let Flattener { g, mut diags, top_subs, .. } = f;
+    let deps = std::cell::RefCell::new(Vec::new());
+    let dir = canvas.dir.as_deref();
 
     // variables
     let mut vars: HashMap<(usize, String), VarDecl> = HashMap::new();
@@ -267,7 +389,7 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
         }
         let p = Params { defs: m.params(), values: &n.params };
         let name = p.str("name");
-        let cx = VarCx { vars: &vars, scope: n.scope, reg };
+        let cx = VarCx { vars: &vars, scope: n.scope, reg, dir, deps: &deps };
         let ty = match (&cx as &dyn SigCx).parse_type(&p.str("type")) {
             Ok(t) => t,
             Err(e) => {
@@ -293,7 +415,7 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
     let mut nodes: Vec<FNode> = Vec::new();
     for (i, n) in g.iter().enumerate() {
         let GKind::Real(m) = &n.kind else { continue };
-        let cx = VarCx { vars: &vars, scope: n.scope, reg };
+        let cx = VarCx { vars: &vars, scope: n.scope, reg, dir, deps: &deps };
         match m.signature(&Params { defs: m.params(), values: &n.params }, &cx) {
             Ok(sig) => {
                 flat_of[i] = Some(nodes.len() as NodeId);
@@ -305,12 +427,28 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
                     scope: n.scope,
                     in_types: vec![None; sig.inputs.len()],
                     out_types: vec![None; sig.outputs.len()],
+                    fn_outs: Vec::new(),
                     inputs: Vec::new(),
                     targets: Vec::new(),
                     sig,
                 });
             }
             Err(e) => diags.push(Diag { square: Some(n.square), message: e }),
+        }
+    }
+
+    // a function that has no tick input is read, not run: nothing in it can run on ticks
+    for (i, n) in g.iter().enumerate() {
+        if let (Some((path, false)), Some(f)) = (&n.in_fn, flat_of[i])
+            && nodes[f as usize].sig.has_tick_input()
+        {
+            diags.push(Diag {
+                square: Some(n.square),
+                message: format!(
+                    "`{}` runs on ticks, inside the function `{path}`: give the function a graph/input of type tick",
+                    nodes[f as usize].module.path()
+                ),
+            });
         }
     }
 
@@ -327,8 +465,8 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
                 },
                 None => Source::None,
             },
-            GKind::Pass => match g[at].incoming.iter().rev().find(|(i, _, _)| i == "value") {
-                Some((_, sg, so)) => source(g, flat_of, nodes, *sg, so, depth + 1),
+            GKind::Pass => match g[at].incoming.iter().rev().find(|(i, _, _, _)| i == "value") {
+                Some((_, sg, so, _)) => source(g, flat_of, nodes, *sg, so, depth + 1),
                 None => g[at]
                     .fields
                     .get("value")
@@ -339,7 +477,7 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
     }
     let mut outgoing: HashMap<(usize, String), Vec<(usize, String)>> = HashMap::new();
     for (d, n) in g.iter().enumerate() {
-        for (input, s, out) in &n.incoming {
+        for (input, s, out, _) in &n.incoming {
             outgoing.entry((*s, out.clone())).or_default().push((d, input.clone()));
         }
     }
@@ -374,10 +512,10 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
         let sig = nodes[f as usize].sig.clone();
         let mut inputs = Vec::new();
         for pin in &sig.inputs {
-            let wire = n.incoming.iter().rev().find(|(inp, _, _)| *inp == pin.name);
+            let wire = n.incoming.iter().rev().find(|(inp, _, _, _)| *inp == pin.name);
             inputs.push(match (&pin.ty, wire) {
                 (PinTy::Tick, _) => Source::None,
-                (_, Some((_, sg, so))) => source(&g, &flat_of, &nodes, *sg, so, 0),
+                (_, Some((_, sg, so, _))) => source(&g, &flat_of, &nodes, *sg, so, 0),
                 (_, None) => match (&pin.field, n.fields.get(&pin.name)) {
                     (Some(_), Some(v)) => Source::Field(v.clone(), None),
                     (Some(d), None) => Source::Field(d.clone(), None),
@@ -393,25 +531,59 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
             }
             tgts.push(t);
         }
+        let fn_outs = n
+            .fn_outs
+            .iter()
+            .filter_map(|p| {
+                Some((source(&g, &flat_of, &nodes, *p, "value", 0), g[*p].port_ty.clone()?, g[*p].port.clone()))
+            })
+            .collect();
         nodes[f as usize].inputs = inputs;
         nodes[f as usize].targets = tgts;
+        nodes[f as usize].fn_outs = fn_outs;
     }
 
     // tick wires into data inputs and the other way round
-    let mut bad = Vec::new();
+    let mut bad: Vec<(SquareId, String)> = Vec::new();
+    // and more than one wire into a data input (a tick input takes any number):
+    // a real square's, or a port's (a subgraph's input, or a graph/output)
+    let mut double = Vec::new();
+    for (i, n) in g.iter().enumerate() {
+        let pins: Vec<(String, String)> = match &n.kind {
+            GKind::Real(_) => match flat_of[i] {
+                Some(f) => nodes[f as usize]
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter(|p| p.ty != PinTy::Tick)
+                    .map(|p| (p.name.clone(), p.name.clone()))
+                    .collect(),
+                None => continue,
+            },
+            GKind::Pass if n.port_ty.is_some() => vec![("value".into(), n.port.clone())],
+            GKind::Pass => continue,
+        };
+        for (pin, name) in pins {
+            let wires: Vec<_> = n.incoming.iter().filter(|w| w.0 == pin).collect();
+            if wires.len() > 1 {
+                bad.push((n.square, format!("`{name}` takes one wire, and has {}", wires.len())));
+                double.extend(wires.iter().filter_map(|w| w.3).map(|li| canvas.links[li].clone()));
+            }
+        }
+    }
     for (f, n) in nodes.iter().enumerate() {
         for (i, s) in n.inputs.iter().enumerate() {
             if let Source::Wire(sn, so) = s
                 && nodes[*sn as usize].sig.outputs[*so].ty == PinTy::Tick
             {
-                bad.push((f, format!("a tick goes into `{}`, which takes data", n.sig.inputs[i].name)));
+                bad.push((nodes[f].square, format!("a tick goes into `{}`, which takes data", n.sig.inputs[i].name)));
             }
         }
         for (o, ts) in n.targets.iter().enumerate() {
             for (tn, ti) in ts {
                 if nodes[*tn as usize].sig.inputs[*ti].ty != PinTy::Tick {
                     bad.push((
-                        *tn as usize,
+                        nodes[*tn as usize].square,
                         format!("`{}` takes data, and a tick goes into it", nodes[*tn as usize].sig.inputs[*ti].name),
                     ));
                 }
@@ -419,14 +591,17 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
             }
         }
     }
-    for (f, m) in bad {
-        diags.push(Diag { square: Some(nodes[f].square), message: m });
+    // a subgraph used twice reports once
+    bad.sort();
+    bad.dedup();
+    for (square, message) in bad {
+        diags.push(Diag { square: Some(square), message });
     }
     let sub_outputs = top_subs
         .into_iter()
         .map(|(sq, name, port)| (sq, name, source(&g, &flat_of, &nodes, port, "value", 0)))
         .collect();
-    Flat { nodes, sub_outputs, vars, diags }
+    Flat { nodes, sub_outputs, vars, diags, double, deps: deps.into_inner() }
 }
 
 // ---------------------------------------------------------------- lowering
@@ -445,6 +620,9 @@ pub struct Lowerer<'a> {
     exts: HashMap<String, usize>,
     ext_nodes: HashMap<NodeId, usize>,
     diags: Vec<Diag>,
+    /// Lowering for a test: the `test/case` square it starts from (and
+    /// nothing else starts the program).
+    test_case: Option<SquareId>,
 }
 
 /// What a module lowers its square with.
@@ -491,6 +669,29 @@ impl<'a> Lx<'_, 'a> {
         self.n().out_types[o].clone().unwrap_or(Type::Int)
     }
 
+    /// The square of the canvas it is, or is inside of.
+    pub fn square(&self) -> SquareId {
+        self.n().square
+    }
+
+    /// The `test/case` square the program is lowered for, if it's for one.
+    pub fn test_case(&self) -> Option<SquareId> {
+        self.lw.test_case
+    }
+
+    /// What's typed in data input I's field, if it has nothing wired.
+    pub fn field_text(&self, i: usize) -> Option<String> {
+        match &self.n().inputs[i] {
+            Source::Field(text, _) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    /// The type of slot S.
+    pub fn slot_ty(&self, s: SlotId) -> Type {
+        self.lw.prog.slots[s as usize].ty.clone()
+    }
+
     pub fn record(&self, name: &str) -> Option<Arc<RecordType>> {
         self.lw.reg.records.get(name).cloned()
     }
@@ -498,7 +699,18 @@ impl<'a> Lx<'_, 'a> {
     /// The value of data input I: what's wired to it, or its field.
     pub fn input(&mut self, i: usize) -> Result<Expr, String> {
         let ty = self.in_ty(i);
-        match self.n().inputs[i].clone() {
+        self.source(self.n().inputs[i].clone(), ty)
+    }
+
+    /// What function output K gives (read after the function has run), as
+    /// the type of that output.
+    pub fn fn_result(&mut self, k: usize) -> Result<Expr, String> {
+        let (src, ty, _) = self.n().fn_outs.get(k).cloned().ok_or("the function has no such output")?;
+        self.source(src, ty)
+    }
+
+    fn source(&mut self, src: Source, ty: Type) -> Result<Expr, String> {
+        match src {
             Source::Wire(src, o) => {
                 let e = self.lw.pull(src, o)?;
                 let from = self.lw.flat.nodes[src as usize].out_types[o].clone().unwrap_or(Type::Int);
@@ -592,7 +804,8 @@ impl<'a> Lx<'_, 'a> {
             self.lw.prog.exts.push(ExtDef { path: path.to_string(), kind: kind.clone() });
             self.lw.prog.exts.len() - 1
         });
-        self.lw.prog.ext_instances.push(ExtInstance { module, params });
+        let square = self.n().square;
+        self.lw.prog.ext_instances.push(ExtInstance { module, params, square });
         let i = self.lw.prog.ext_instances.len() - 1;
         self.lw.ext_nodes.insert(self.node, i);
         i
@@ -699,6 +912,16 @@ impl<'a> Lowerer<'a> {
 }
 
 pub fn lower(canvas: &Canvas, reg: &Registry) -> Lowered {
+    lower_for(canvas, reg, None)
+}
+
+/// CANVAS lowered to run test CASE (a `test/case` square of it): it starts
+/// there, with the values it gives, and nowhere else.
+pub fn lower_test(canvas: &Canvas, reg: &Registry, case: SquareId) -> Lowered {
+    lower_for(canvas, reg, Some(case))
+}
+
+fn lower_for(canvas: &Canvas, reg: &Registry, test_case: Option<SquareId>) -> Lowered {
     let mut flat = flatten(canvas, reg);
     let mut diags = std::mem::take(&mut flat.diags);
     crate::types::infer(&mut flat.nodes, &mut diags);
@@ -713,7 +936,8 @@ pub fn lower(canvas: &Canvas, reg: &Registry) -> Lowered {
     // subgraph squares: their ports' types are in their signature
     for sq in &canvas.squares {
         if let Some(m) = reg.get(&sq.module).filter(|m| m.subgraph().is_some()) {
-            let cx = VarCx { vars: &flat.vars, scope: 0, reg };
+            let deps = std::cell::RefCell::new(Vec::new());
+            let cx = VarCx { vars: &flat.vars, scope: 0, reg, dir: canvas.dir.as_deref(), deps: &deps };
             if let Ok(sig) = m.signature(&Params { defs: m.params(), values: &sq.params }, &cx) {
                 let concrete = |p: &crate::registry::PinDef| match &p.ty {
                     PinTy::Data(crate::registry::TExpr::T(t)) => Some(t.clone()),
@@ -726,7 +950,7 @@ pub fn lower(canvas: &Canvas, reg: &Registry) -> Lowered {
         }
     }
     if !diags.is_empty() {
-        return Lowered { program: None, diags, squares, previews: Vec::new() };
+        return Lowered { program: None, diags, double: flat.double, squares, previews: Vec::new(), deps: flat.deps };
     }
 
     let mut lw = Lowerer {
@@ -743,6 +967,7 @@ pub fn lower(canvas: &Canvas, reg: &Registry) -> Lowered {
         exts: HashMap::new(),
         ext_nodes: HashMap::new(),
         diags: Vec::new(),
+        test_case,
     };
     lw.prog.nodes =
         flat.nodes.iter().map(|n| NodeInfo { square: n.square, module: n.module.path().to_string() }).collect();
@@ -753,6 +978,11 @@ pub fn lower(canvas: &Canvas, reg: &Registry) -> Lowered {
         }
         let m = n.module.clone();
         let (start, locals) = lw.with_locals(|lw| m.start(&mut lw.cx(node)));
+        // a test starts at its case only
+        let start = match test_case {
+            Some(case) if !(n.top && n.square == case) => Ok(None),
+            _ => start,
+        };
         match start {
             Ok(Some(b)) => {
                 let h = lw.add_handler(node, format!("start_{node}"), b, locals);
@@ -765,13 +995,22 @@ pub fn lower(canvas: &Canvas, reg: &Registry) -> Lowered {
         match clock {
             Ok(Some((interval, b))) => {
                 let h = lw.add_handler(node, format!("clock_{node}"), b, locals);
-                lw.prog.clocks.push(Clock { interval, handler: h });
+                lw.prog.clocks.push(Clock { interval, handler: h, square: n.square });
             }
             Ok(None) => {}
             Err(e) => lw.diags.push(Diag { square: Some(n.square), message: e }),
         }
         lw.drain();
     }
+    // the variables to show: the canvas's and the global ones
+    let mut vars: Vec<(String, SlotId)> = lw
+        .var_slots
+        .iter()
+        .filter(|((scope, _), _)| *scope == 0 || *scope == GLOBAL_SCOPE)
+        .map(|((_, n), s)| (n.clone(), *s))
+        .collect();
+    vars.sort();
+    lw.prog.vars = vars;
     // pure squares that make images, for previews
     let mut previews = Vec::new();
     for (i, n) in flat.nodes.iter().enumerate() {
@@ -802,8 +1041,15 @@ pub fn lower(canvas: &Canvas, reg: &Registry) -> Lowered {
     let mut diags = std::mem::take(&mut lw.diags);
     diags.dedup();
     if !diags.is_empty() {
-        return Lowered { program: None, diags, squares, previews: Vec::new() };
+        return Lowered {
+            program: None,
+            diags,
+            double: flat.double.clone(),
+            squares,
+            previews: Vec::new(),
+            deps: flat.deps.clone(),
+        };
     }
     prog.find_meets();
-    Lowered { program: Some(prog), diags, squares, previews }
+    Lowered { program: Some(prog), diags, double: flat.double.clone(), squares, previews, deps: flat.deps.clone() }
 }

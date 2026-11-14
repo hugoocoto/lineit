@@ -8,6 +8,7 @@
 //! record types ([`record`]).
 
 pub mod builtin;
+pub mod code;
 pub mod lua;
 pub mod record;
 pub mod subgraph;
@@ -36,6 +37,12 @@ pub enum ParamKind {
     },
     /// The name of a variable.
     Var,
+    /// The path of a subgraph the square calls: a function. ARGS are the
+    /// outputs of the square the subgraph's data inputs are wired from, in
+    /// order (a `tick` input is wired from the square's `call` output).
+    Function {
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +122,9 @@ pub struct Signature {
     pub inputs: Vec<PinDef>,
     pub outputs: Vec<PinDef>,
     pub vars: Vec<Class>,
+    /// A code square's function, as read when its pins were said: lowering
+    /// uses it as it is, as its code may come from a file.
+    pub code: Option<Arc<code::Function>>,
 }
 
 impl Signature {
@@ -171,11 +181,37 @@ impl Signature {
     }
 }
 
+/// The pins of a subgraph used as a function, as the square that calls it
+/// sees them.
+#[derive(Clone, Debug)]
+pub struct FnPorts {
+    /// It has a `tick` input: it runs on ticks, and the caller ticks it for
+    /// each call. Without one it's pure, and the caller reads its outputs.
+    pub tick: bool,
+    /// Its data inputs, from top to bottom: (name, type, default).
+    pub inputs: Vec<(String, Type, String)>,
+    /// Its data outputs, from top to bottom.
+    pub outputs: Vec<(String, Type)>,
+}
+
 /// What a module can look up to say its pins.
 pub trait SigCx {
     /// The type of variable NAME, as seen from the square.
     fn var(&self, name: &str) -> Option<Type>;
+    /// The variables the square sees, by name: its canvas's and the `::`
+    /// ones.
+    fn vars(&self) -> Vec<(String, Type)> {
+        Vec::new()
+    }
     fn record(&self, name: &str) -> Option<Arc<RecordType>>;
+    /// The text of the file PATH (relative to the canvas's folder), which
+    /// the pins then depend on: the editor lowers again when it changes.
+    fn read(&self, path: &str) -> Result<String, String>;
+    /// The pins of the subgraph PATH, to use it as a function.
+    fn function(&self, path: &str) -> Result<FnPorts, String> {
+        let _ = path;
+        Err("there are no functions here".into())
+    }
 }
 
 impl dyn SigCx + '_ {
@@ -253,6 +289,7 @@ impl Registry {
         for m in builtin::all() {
             r.add(m);
         }
+        r.add(Arc::new(code::CodeModule::new()));
         r
     }
 
@@ -262,6 +299,18 @@ impl Registry {
 
     pub fn get(&self, path: &str) -> Option<&Arc<dyn Module>> {
         self.modules.get(path)
+    }
+
+    /// The subgraphs that can be a function with INPUTS data inputs and one
+    /// data output, for the editor to offer.
+    pub fn functions(&self, inputs: usize) -> Vec<String> {
+        let data = |s: &subgraph::Subgraph, m: &str| s.ports(m).iter().filter(|p| p.1 != "tick").count();
+        self.modules
+            .iter()
+            .filter_map(|(path, m)| m.subgraph().map(|s| (path, s)))
+            .filter(|(_, s)| data(s, "graph/input") == inputs && data(s, "graph/output") == 1)
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     pub fn add_record(&mut self, r: Arc<RecordType>) {

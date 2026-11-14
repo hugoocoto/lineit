@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "Modules of your own, from the modules folder next to this canvas: a subgraph (average), a Lua module (shout) and a record type (point). Ctrl+G makes a subgraph of the squares you select.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/entry", x = 0, y = 0 },
                 { id = 2, module = "flow/sequence", x = 280, y = 0, params = { count = "3" } },

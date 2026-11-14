@@ -17,6 +17,9 @@ use super::runner::{Cmd, Runner, State};
 use super::session::{self, Exe, Ready};
 use super::tab::Tab;
 use super::theme::{self, Theme};
+use super::vim::{SAct, Vim};
+
+mod vimctl;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -30,6 +33,9 @@ struct Search {
     screen: Pos2,
     query: String,
     pending: Option<Pending>,
+    /// The square goes with its right edge (true) or left edge at this x:
+    /// it isn't measured yet.
+    edge: Option<(f32, bool)>,
     selected: usize,
     opened: Instant,
 }
@@ -39,6 +45,15 @@ enum PromptKind {
     Open,
     SaveAs,
     SubgraphName,
+}
+
+/// What a close is waiting to be confirmed for, when there are changes.
+#[derive(Clone, Copy, PartialEq)]
+enum Confirm {
+    /// The tab with this id.
+    Tab(u64),
+    /// The window: every tab with changes.
+    Window,
 }
 
 struct Prompt {
@@ -74,6 +89,8 @@ pub struct App {
     theme: Theme,
     mode: RunMode,
     show_output: bool,
+    /// The bottom panel shows the tests' report, not the output.
+    show_tests: bool,
     settings_query: String,
     /// The section of the Settings tab to scroll to, chosen on its left.
     settings_jump: Option<&'static str>,
@@ -83,10 +100,18 @@ pub struct App {
     tab_in_view: Option<u64>,
     search: Option<Search>,
     prompt: Option<Prompt>,
+    /// A system file dialog open (see dialog.rs).
+    dialog: Option<super::dialog::Dialog>,
+    /// A dialog to open on the next frame (it needs the window, see `ui`).
+    dialog_request: Option<super::dialog::Request>,
+    /// There's no dialog to show (see dialog.rs): the path prompt is used.
+    no_dialogs: bool,
     compiling: Option<Compiling>,
     last_autosave: Instant,
     /// When the module folders last changed, to reload them.
     modules_stamp: Option<std::time::SystemTime>,
+    /// The folders of the canvases the modules were loaded for.
+    reg_dirs: Vec<PathBuf>,
     last_stamp_check: Instant,
     /// The binary, to hand over to a rebuilt one (see session.rs).
     exe: Option<Exe>,
@@ -96,12 +121,37 @@ pub struct App {
     single: Option<super::single::Single>,
     /// When config.lua and settings.lua last changed, to read them again.
     config_stamp: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
-    font_applied: String,
+    font_applied: Option<String>,
     /// The squares being made into a subgraph, waiting for its name.
     subgraph_of: BTreeSet<SquareId>,
     preview_job: Option<PreviewJob>,
     /// Per tab, the generation its previews are for.
     previewed: HashMap<u64, u64>,
+    /// Vim mode: the keys' state (see vim.rs and app/vimctl.rs).
+    vim: Vim,
+    /// What `yy` and `dd` took, as a canvas, for `p`: egui can't read the
+    /// clipboard on its own.
+    register: Option<String>,
+    /// `:help` is open, scrolled this far down; the bool is a `g` waiting
+    /// for its second key.
+    help: bool,
+    help_offset: f32,
+    help_g: bool,
+    /// The tab the vim keys were last for.
+    vim_tab: u64,
+    /// What `/` looked for last, for `n`.
+    last_search: String,
+    /// The setting the Settings tab's cursor is on, and what the keys asked
+    /// of it since the last frame.
+    settings_sel: usize,
+    settings_ops: Vec<SAct>,
+    /// Tab and arrow keys taken from the input before egui could use them
+    /// to move its focus (see `vim_hook`).
+    vim_held: Vec<egui::Event>,
+    /// A close asked for, with changes in what it closes.
+    confirm: Option<Confirm>,
+    /// The window may close: it was asked for, and confirmed or clean.
+    quit_ok: bool,
 }
 
 /// The newest change in DIR and its folders.
@@ -131,11 +181,25 @@ fn stamp(dir: &Path) -> Option<std::time::SystemTime> {
 impl App {
     pub fn new(cc: &eframe::CreationContext, start: Start) -> App {
         let cfg = Config::load(&lineit_core::paths::config_dir());
-        let dir = match &start {
-            Start::Files(files) => files.first().and_then(|f| f.parent()).map(Path::to_path_buf),
-            Start::Session(_) => None,
-        };
-        let reg = Arc::new(lineit_core::registry(dir.as_deref()));
+        // the modules and languages of every canvas it opens, before they're
+        // laid out (their squares' sizes depend on them)
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Start::Files(files) = &start {
+            for d in files.iter().filter_map(|f| f.parent()).map(Path::to_path_buf) {
+                if !dirs.contains(&d) {
+                    dirs.push(d);
+                }
+            }
+        }
+        if let Start::Views(views) = &start {
+            for d in views.iter().filter_map(|v| v.new.dir.clone()) {
+                if !dirs.contains(&d) {
+                    dirs.push(d);
+                }
+            }
+        }
+        let dir_refs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+        let reg = Arc::new(lineit_core::registry_for(&dir_refs));
         let theme = Theme::from_config(&cfg);
         let mut app = App {
             tabs: Vec::new(),
@@ -146,20 +210,37 @@ impl App {
             theme,
             mode: RunMode::Run,
             show_output: true,
+            show_tests: false,
             settings_query: String::new(),
             settings_jump: None,
             settings_focus: false,
             tab_in_view: None,
             search: None,
             prompt: None,
+            dialog: None,
+            dialog_request: None,
+            no_dialogs: !super::dialog::available(),
             compiling: None,
             last_autosave: Instant::now(),
             modules_stamp: None,
+            reg_dirs: Vec::new(),
             last_stamp_check: Instant::now(),
-            font_applied: String::new(),
+            font_applied: None,
             subgraph_of: BTreeSet::new(),
             preview_job: None,
             previewed: HashMap::new(),
+            vim: Vim::new(),
+            register: None,
+            help: false,
+            help_offset: 0.0,
+            help_g: false,
+            vim_tab: 0,
+            last_search: String::new(),
+            settings_sel: 0,
+            settings_ops: Vec::new(),
+            vim_held: Vec::new(),
+            confirm: None,
+            quit_ok: false,
             exe: Exe::current(),
             ready: Ready::from_env(),
             single: super::single::listen(cc.egui_ctx.clone()),
@@ -173,6 +254,12 @@ impl App {
             Start::Files(files) => {
                 for f in files {
                     app.open(&f);
+                }
+            }
+            Start::Views(views) => {
+                for v in views {
+                    let t = Tab::view(v.old.as_ref(), v.new, v.label, &app.reg);
+                    app.add_tab(t);
                 }
             }
             Start::Session(s) => {
@@ -226,16 +313,20 @@ impl App {
     /// Hands over to the rebuilt binary; closes this window if it took over.
     fn hand_over(&mut self, ctx: &egui::Context) {
         let Some(exe) = &self.exe else { return };
-        let tabs: Vec<String> = self.tabs.iter().map(|(_, t, _)| t.session()).collect();
+        // read-only views (git's files, diffs) aren't kept: they'd come back editable
+        let kept: Vec<usize> = (0..self.tabs.len()).filter(|i| self.tabs[*i].1.label.is_none()).collect();
+        let tabs: Vec<String> = kept.iter().map(|i| self.tabs[*i].1.session()).collect();
+        let active = kept.iter().position(|i| *i >= self.active).unwrap_or(0);
         let (pos, size) = ctx.input(|i| {
             let v = i.viewport();
             (v.outer_rect.map(|r| [r.min.x, r.min.y]), v.inner_rect.map(|r| [r.width(), r.height()]))
         });
-        let text = session::write(&tabs, self.active, self.show_output, &session::Window { pos, size });
+        let text = session::write(&tabs, active, self.show_output, &session::Window { pos, size });
         match exe.hand_over(&text) {
             Ok(()) => {
                 // the runs stop as their tabs go
                 self.tabs.clear();
+                self.quit_ok = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Err(e) => {
@@ -257,6 +348,16 @@ impl App {
 
     fn tab(&mut self) -> &mut Tab {
         &mut self.tabs[self.active].1
+    }
+
+    /// Whether the tab is read-only (a view of git's file, or a diff): says
+    /// so on the bar, for what was asked of it.
+    fn read_only(&mut self) -> bool {
+        let ro = self.tab().label.is_some();
+        if ro {
+            self.status("this tab is read-only", true);
+        }
+        ro
     }
 
     fn add_tab(&mut self, t: Tab) {
@@ -310,8 +411,8 @@ impl App {
             }
         });
         let name = self.cfg.text("font.name");
-        if name != self.font_applied {
-            self.font_applied = name.clone();
+        if self.font_applied.as_ref() != Some(&name) {
+            self.font_applied = Some(name.clone());
             let mut fonts = egui::FontDefinitions::default();
             // a name installed, or a file
             // a name that isn't a font keeps the built-in one (Settings says so)
@@ -326,6 +427,24 @@ impl App {
                     Err(e) => self.status(&format!("font {}: {e}", path.display()), true),
                 }
             }
+            // the same fonts unhinted for the text that zooms with the
+            // canvas: hinted, it grows in steps and shakes against its box
+            for (family, name) in [
+                (egui::FontFamily::Proportional, super::canvas::ZOOMED_TEXT),
+                (egui::FontFamily::Monospace, super::canvas::ZOOMED_MONO),
+            ] {
+                let mut list = Vec::new();
+                for font in fonts.families.get(&family).cloned().unwrap_or_default() {
+                    let unhinted = format!("{font} unhinted");
+                    if let Some(data) = fonts.font_data.get(&font) {
+                        let mut data = (**data).clone();
+                        data.tweak.hinting = Some(false);
+                        fonts.font_data.insert(unhinted.clone(), Arc::new(data));
+                        list.push(unhinted);
+                    }
+                }
+                fonts.families.insert(egui::FontFamily::Name(name.into()), list);
+            }
             ctx.set_fonts(fonts);
         }
     }
@@ -333,15 +452,33 @@ impl App {
     fn module_stamp(&self) -> Option<std::time::SystemTime> {
         let mut s = stamp(&lineit_core::paths::modules_dir());
         s = s.max(stamp(&lineit_core::paths::packages_dir()));
+        s = s.max(stamp(&lineit_core::paths::data_dir().join("languages")));
         for (_, t, _) in &self.tabs {
             s = s.max(stamp(&t.dir().join("modules")));
+            s = s.max(stamp(&t.dir().join("languages")));
         }
         s
     }
 
+    /// The folders of the canvases open, the active one's last (its modules
+    /// go before another's of the same name).
+    fn tab_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let active = self.tabs.get(self.active).map(|(_, t, _)| t.dir());
+        for (_, t, _) in &self.tabs {
+            let d = t.dir();
+            if !dirs.contains(&d) && Some(&d) != active.as_ref() {
+                dirs.push(d);
+            }
+        }
+        dirs.extend(active);
+        dirs
+    }
+
     fn reload_modules(&mut self) {
-        let dir = self.tabs.get(self.active).map(|(_, t, _)| t.dir());
-        self.reg = Arc::new(lineit_core::registry(dir.as_deref()));
+        self.reg_dirs = self.tab_dirs();
+        let dirs: Vec<&Path> = self.reg_dirs.iter().map(PathBuf::as_path).collect();
+        self.reg = Arc::new(lineit_core::registry_for(&dirs));
         let reg = self.reg.clone();
         for (_, t, _) in &mut self.tabs {
             t.update(&reg, false, true);
@@ -355,7 +492,7 @@ impl App {
     // ------------------------------------------------------------ files
 
     fn save(&mut self, ctx: &egui::Context) {
-        if self.tab().settings {
+        if self.tab().settings || self.read_only() {
             return;
         }
         match self.tab().path.clone() {
@@ -367,7 +504,79 @@ impl App {
         }
     }
 
-    fn ask(&mut self, kind: PromptKind, _ctx: &egui::Context) {
+    fn ask(&mut self, kind: PromptKind, ctx: &egui::Context) {
+        // a read-only tab is saved nowhere, and has no squares to put in a subgraph
+        if kind != PromptKind::Open && self.read_only() {
+            return;
+        }
+        // the system's dialog for a file, if there's one and it's wanted
+        if kind != PromptKind::SubgraphName && self.cfg.bool("editor.native_dialogs") && !self.no_dialogs {
+            if self.dialog.is_some() || self.dialog_request.is_some() {
+                self.status("a file dialog is already open", true);
+                return;
+            }
+            let name = self
+                .tab()
+                .path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map_or("canvas.lua".into(), |n| n.to_string_lossy().into_owned());
+            self.dialog_request = Some(super::dialog::Request {
+                tab: self.tabs[self.active].0,
+                save: kind == PromptKind::SaveAs,
+                dir: self.tab().dir(),
+                name,
+            });
+            // it's opened by `ui`, which has the window to put it over
+            ctx.request_repaint();
+            return;
+        }
+        self.ask_prompt(kind);
+    }
+
+    /// The answer of the system's dialog, when it's there.
+    fn dialog_poll(&mut self) {
+        use super::dialog::Answer;
+        let Some(d) = &self.dialog else { return };
+        let (save, tab) = (d.save, d.tab);
+        let kind = if save { PromptKind::SaveAs } else { PromptKind::Open };
+        let answer = d.poll();
+        if matches!(answer, Answer::Waiting) {
+            return;
+        }
+        self.dialog = None;
+        let at = self.tabs.iter().position(|(id, ..)| *id == tab);
+        match answer {
+            Answer::Waiting | Answer::Cancelled => {}
+            // the dialog's thread died: the prompt takes its place, for the tab that asked
+            Answer::Failed => {
+                self.no_dialogs = true;
+                if let Some(i) = at {
+                    self.active = i;
+                }
+                self.ask_prompt(kind);
+            }
+            Answer::Chosen(path) if !save => {
+                if path.is_dir() {
+                    self.status("that's a folder: which file?", true);
+                } else {
+                    self.open(&path);
+                }
+            }
+            Answer::Chosen(path) => match at {
+                None => self.status(&format!("not saved to {}: its tab was closed meanwhile", path.display()), true),
+                Some(i) => {
+                    let path = if path.extension().is_none() { path.with_extension("lua") } else { path };
+                    match self.tabs[i].1.save_to(&path) {
+                        Ok(()) => self.status(&format!("saved {}", path.display()), false),
+                        Err(e) => self.status(&e, true),
+                    }
+                }
+            },
+        }
+    }
+
+    fn ask_prompt(&mut self, kind: PromptKind) {
         let dir = self.tab().dir();
         let (title, text) = match kind {
             PromptKind::Open => ("Open", format!("{}/", dir.display())),
@@ -427,9 +636,110 @@ impl App {
         let _ = ctx;
     }
 
+    /// Closes tab I, after asking if it has changes.
+    fn ask_close(&mut self, i: usize) {
+        if self.tabs[i].1.dirty() {
+            self.active = i;
+            self.confirm = Some(Confirm::Tab(self.tabs[i].0));
+        } else {
+            self.close_tab(i);
+        }
+    }
+
+    /// Closes the window, after asking if any tab has changes.
+    fn ask_quit(&mut self, ctx: &egui::Context) {
+        if self.tabs.iter().any(|(_, t, _)| t.dirty()) {
+            self.confirm = Some(Confirm::Window);
+        } else {
+            self.quit_ok = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// The popup for a close with changes: Save (Enter), Discard (D) or
+    /// Cancel (Esc, which `shortcuts` takes).
+    fn confirm_ui(&mut self, ctx: &egui::Context) {
+        let Some(what) = self.confirm else { return };
+        let dirty: Vec<String> = match what {
+            Confirm::Tab(id) => self.tabs.iter().filter(|(i, ..)| *i == id).map(|(_, t, _)| t.title()).collect(),
+            Confirm::Window => self.tabs.iter().filter(|(_, t, _)| t.dirty()).map(|(_, t, _)| t.title()).collect(),
+        };
+        if dirty.is_empty() {
+            self.confirm = None;
+            return;
+        }
+        let (mut save, mut discard, mut cancel) = (false, false, false);
+        egui::Modal::new(egui::Id::unique("lineit confirm")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(egui::RichText::new("Unsaved changes").strong());
+            for t in &dirty {
+                ui.label(t.trim_end_matches(" •"));
+            }
+            ui.label("Save them before closing?");
+            ui.horizontal(|ui| {
+                save = ui.button("Save (Enter)").clicked();
+                discard = ui.button("Discard (D)").clicked();
+                cancel = ui.button("Cancel (Esc)").clicked();
+            });
+        });
+        let none = Modifiers::NONE;
+        ctx.input_mut(|i| {
+            save |= i.consume_key(none, Key::Enter);
+            discard |= i.consume_key(none, Key::D);
+        });
+        if cancel {
+            self.confirm = None;
+        } else if discard {
+            self.confirm = None;
+            self.quit_confirmed(what, ctx, false);
+        } else if save {
+            self.confirm = None;
+            self.quit_confirmed(what, ctx, true);
+        }
+    }
+
+    /// The close in WHAT goes ahead, after saving the tabs with changes if SAVE.
+    /// A tab with no file yet asks for one instead, and the close waits.
+    fn quit_confirmed(&mut self, what: Confirm, ctx: &egui::Context, save: bool) {
+        if save {
+            for i in 0..self.tabs.len() {
+                let (id, t, _) = &mut self.tabs[i];
+                if !t.dirty() || (what != Confirm::Window && what != Confirm::Tab(*id)) {
+                    continue;
+                }
+                match t.path.clone() {
+                    Some(p) => {
+                        if let Err(e) = t.save_to(&p) {
+                            self.active = i;
+                            self.status(&e, true);
+                            return;
+                        }
+                    }
+                    None => {
+                        self.active = i;
+                        self.ask(PromptKind::SaveAs, ctx);
+                        self.status("save it, then close again", false);
+                        return;
+                    }
+                }
+            }
+        }
+        match what {
+            Confirm::Tab(id) => {
+                if let Some(i) = self.tabs.iter().position(|(t, ..)| *t == id) {
+                    self.close_tab(i);
+                }
+            }
+            Confirm::Window => {
+                self.quit_ok = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
     fn close_tab(&mut self, i: usize) {
         let (_, t, _) = self.tabs.remove(i);
-        if !t.settings {
+        if !t.settings && t.label.is_none() {
             self.closed.push((t.canvas, t.path));
         }
         if self.tabs.is_empty() {
@@ -443,6 +753,9 @@ impl App {
 
     fn start(&mut self, mode: RunMode, ctx: &egui::Context) {
         if self.tab().settings {
+            return;
+        }
+        if self.read_only() {
             return;
         }
         self.mode = mode;
@@ -471,7 +784,131 @@ impl App {
         }
         tab.status = None;
         let first = if mode == RunMode::Step { Cmd::Step } else { Cmd::Run };
-        tab.run = Some(Runner::start(prog, tab.dir(), first, ctx.clone()));
+        tab.run = Some(Runner::start(prog, tab.canvas.clone(), tab.generation, tab.dir(), first, ctx.clone()));
+        // a run of the canvas, not of a test
+        self.tabs[self.active].2.tests.debugging = None;
+        self.show_output = true;
+    }
+
+    /// Runs the tests of the canvas, and opens their report.
+    fn run_tests(&mut self) {
+        if self.tab().settings || self.read_only() {
+            return;
+        }
+        let reg = self.reg.clone();
+        let (_, tab, state) = &mut self.tabs[self.active];
+        // what the status said of a test before is the report's to say now
+        tab.status = None;
+        state.tests.run_all(tab, reg);
+        self.show_output = true;
+        self.show_tests = true;
+    }
+
+    /// Runs test NAME by steps: with none, the first that failed the last
+    /// time the tests ran (or the first test).
+    pub(super) fn debug_named(&mut self, name: Option<&str>, ctx: &egui::Context) {
+        let (_, tab, state) = &self.tabs[self.active];
+        let cases = lineit_core::codetest::cases(&tab.canvas);
+        let case = match name {
+            Some(n) => cases.iter().find(|(_, c)| c == n).map(|(s, _)| *s),
+            None => cases
+                .iter()
+                .find(|(s, _)| state.tests.case_result(*s) == Some(false))
+                .or(cases.first())
+                .map(|(s, _)| *s),
+        };
+        match case {
+            Some(c) => self.debug_test(c, ctx),
+            None => {
+                let msg = match name {
+                    Some(n) => format!("there's no test `{n}`"),
+                    None => "there are no tests: add a test/case square".into(),
+                };
+                self.tab().status = Some((msg, true));
+            }
+        }
+    }
+
+    /// A debugged test's run ended: the status says how the test went.
+    fn finish_debug(&mut self) {
+        let (_, tab, state) = &mut self.tabs[self.active];
+        let Some((_, name)) = &state.tests.debugging else { return };
+        let Some(r) = &tab.run else {
+            state.tests.debugging = None;
+            return;
+        };
+        let v = r.view.lock().unwrap();
+        let text = match v.state {
+            State::Running | State::Paused => return,
+            State::Stopped => (format!("the test `{name}` was stopped"), false),
+            State::Failed => (format!("the test `{name}` failed: {}", v.error.clone().unwrap_or_default()), true),
+            State::Done => match v.checks.iter().find(|c| !c.ok) {
+                Some(c) => {
+                    let what = if c.label.is_empty() { "a check".to_string() } else { c.label.clone() };
+                    (
+                        format!(
+                            "the test `{name}` failed: {what}: expected {}, got {}",
+                            c.expected.text(),
+                            c.got.text()
+                        ),
+                        true,
+                    )
+                }
+                None => {
+                    let n = v.checks.len();
+                    (format!("the test `{name}` passed: {n} check{}", if n == 1 { "" } else { "s" }), false)
+                }
+            },
+        };
+        drop(v);
+        tab.status = Some(text);
+        state.tests.debugging = None;
+    }
+
+    /// What the tests' report asked for.
+    fn report_action(&mut self, a: super::tests::ReportAction, ctx: &egui::Context) {
+        use super::tests::ReportAction;
+        match a {
+            ReportAction::RunTests => self.run_tests(),
+            ReportAction::Debug(case) => self.debug_test(case, ctx),
+            ReportAction::Show(sq) => {
+                let (_, tab, state) = &mut self.tabs[self.active];
+                tab.selected.clear();
+                tab.selected.insert(sq);
+                state.vim.focus = Some(sq);
+                state.vim.reveal = Some(sq);
+            }
+        }
+    }
+
+    /// Runs test CASE by steps: from its given values, its checks shown on
+    /// the canvas as the run gets to them.
+    fn debug_test(&mut self, case: SquareId, ctx: &egui::Context) {
+        if self.read_only() {
+            return;
+        }
+        let reg = self.reg.clone();
+        let clear = self.cfg.bool("output.clear_on_run");
+        let tab = self.tab();
+        if tab.run.as_ref().is_some_and(|r| r.is_live()) {
+            tab.status = Some(("stop the run first".into(), true));
+            return;
+        }
+        let l = lineit_core::lower::lower_test(&tab.canvas, &reg, case);
+        let Some(prog) = l.program else {
+            let n = l.diags.len();
+            tab.status = Some((format!("it can't run: {n} problem{} (in red)", if n == 1 { "" } else { "s" }), true));
+            return;
+        };
+        if clear {
+            tab.output.clear();
+        }
+        let name =
+            tab.canvas.square(case).and_then(|s| s.params.get("name").cloned()).unwrap_or_else(|| "a test".into());
+        tab.status = Some((format!("debugging the test `{name}`: F10 steps, F5 runs"), false));
+        tab.run = Some(Runner::start(prog, tab.canvas.clone(), tab.generation, tab.dir(), Cmd::Step, ctx.clone()));
+        self.tabs[self.active].2.tests.debugging = Some((case, name));
+        self.mode = RunMode::Step;
         self.show_output = true;
     }
 
@@ -576,12 +1013,14 @@ impl App {
     }
 
     fn paste(&mut self, text: &str, at: Option<Pos2>) {
+        if self.read_only() {
+            return;
+        }
         let Ok(c) = lineit_core::file::read_canvas(text, "the clipboard") else { return };
         if c.squares.is_empty() {
             return;
         }
         let tab = self.tab();
-        let mut next = tab.canvas.next_id();
         let mut ids = HashMap::new();
         let min_x = c.squares.iter().map(|s| s.x).fold(f32::INFINITY, f32::min);
         let min_y = c.squares.iter().map(|s| s.y).fold(f32::INFINITY, f32::min);
@@ -591,13 +1030,15 @@ impl App {
         };
         tab.selected.clear();
         for mut s in c.squares {
-            ids.insert(s.id, next);
-            s.id = next;
+            // a square keeps its id if nothing on the canvas has it (cut and
+            // paste changes nothing in a diff); a copy gets a new one
+            let id = if tab.canvas.square(s.id).is_none() { s.id } else { tab.canvas.next_id() };
+            ids.insert(s.id, id);
+            s.id = id;
             s.x += dx;
             s.y += dy;
-            tab.selected.insert(next);
-            tab.canvas.squares.push(s);
-            next += 1;
+            tab.selected.insert(id);
+            tab.canvas.add(s);
         }
         for l in c.links {
             if let (Some(a), Some(b)) = (ids.get(&l.from), ids.get(&l.to)) {
@@ -607,6 +1048,9 @@ impl App {
     }
 
     fn delete_selection(&mut self) {
+        if self.read_only() {
+            return;
+        }
         let tab = self.tab();
         let sel = std::mem::take(&mut tab.selected);
         for id in sel {
@@ -617,8 +1061,12 @@ impl App {
     }
 
     fn add_square(&mut self, path: &str, at: Pos2, pending: Option<Pending>) {
+        if self.read_only() {
+            return;
+        }
         let reg = self.reg.clone();
         let step = self.cfg.num("canvas.grid_step") as f32;
+        let vim = self.vim_on();
         let tab = self.tab();
         let id = tab.canvas.next_id();
         let (x, y) = ((at.x / step).round() * step, (at.y / step).round() * step);
@@ -651,6 +1099,12 @@ impl App {
         let reg = self.reg.clone();
         let (_, tab, state) = &mut self.tabs[self.active];
         tab.update(&reg, true, true);
+        state.vim.reveal = Some(id);
+        if vim && tab.canvas.camera.zoom < canvas::EDIT_ZOOM {
+            // too small for text boxes: the new square couldn't be typed in
+            let cam = &mut tab.canvas.camera;
+            (cam.zoom, cam.x, cam.y) = (canvas::EDIT_ZOOM, x + 100.0, y + 40.0);
+        }
         canvas::start_first(tab, &reg, state, id);
     }
 
@@ -679,7 +1133,7 @@ impl App {
             self.add_tab(t);
         }
         if key(cmd, Key::W) {
-            self.close_tab(self.active);
+            self.ask_close(self.active);
         }
         if key(cmd_shift, Key::Tab) || key(cmd, Key::PageUp) {
             self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
@@ -697,11 +1151,18 @@ impl App {
         if key(Modifiers::NONE, Key::F10) {
             self.start(RunMode::Step, ctx);
         }
+        if key(Modifiers::NONE, Key::F6) {
+            self.run_tests();
+        }
         // in the Settings tab, Esc empties its search first
         if self.tab().settings && !self.settings_query.is_empty() && key(Modifiers::NONE, Key::Escape) {
             self.settings_query.clear();
         }
-        if key(Modifiers::NONE, Key::Escape) && self.search.take().is_none() && self.prompt.take().is_none() {
+        if key(Modifiers::NONE, Key::Escape)
+            && self.search.take().is_none()
+            && self.prompt.take().is_none()
+            && self.confirm.take().is_none()
+        {
             self.tab().selected.clear();
             self.tab().selected_links.clear();
         }
@@ -710,8 +1171,10 @@ impl App {
             return;
         }
         if key(cmd_shift, Key::Z) || key(cmd, Key::Y) {
-            self.tab().redo();
-        } else if key(cmd, Key::Z) {
+            if !self.read_only() {
+                self.tab().redo();
+            }
+        } else if key(cmd, Key::Z) && !self.read_only() {
             self.tab().undo();
         }
         if key(cmd, Key::A) {
@@ -830,9 +1293,14 @@ impl App {
             close = true;
         }
         if let Some(path) = chosen {
-            let (at, pending) = (s.at, s.pending.clone());
+            let (at, pending, edge) = (s.at, s.pending.clone(), s.edge);
             self.search = None;
             self.add_square(&path, at, pending);
+            if let Some((x, right)) = edge
+                && let Some(id) = self.tab().selected.iter().next().copied()
+            {
+                self.tabs[self.active].2.vim.settle = Some((id, x, right));
+            }
         } else if close {
             self.search = None;
         }
@@ -889,7 +1357,8 @@ impl App {
 
     /// Shows the Settings tab, opened if it isn't.
     fn open_settings(&mut self) {
-        self.settings_focus = true;
+        // vim mode starts on the rows: / goes to the search
+        self.settings_focus = !self.vim_on();
         match self.tabs.iter().position(|(_, t, _)| t.settings) {
             Some(i) => self.active = i,
             None => {
@@ -964,6 +1433,9 @@ impl App {
                 sections.push(sec);
             }
         }
+        // vim mode: the row the cursor is on, and what the keys asked of it
+        let vim = self.vim_on();
+        let (sel, op, moved) = if vim { self.settings_cursor(&shown, &sections) } else { (usize::MAX, None, false) };
         // as wide as its widest entry, which never wraps, in whatever font
         let entries: Vec<(&'static str, String)> = sections
             .iter()
@@ -992,23 +1464,48 @@ impl App {
                     }
                     egui::Grid::new(("settings", *sec)).num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
                         for d in shown.iter().filter(|d| section(d.key) == *sec) {
-                            ui.vertical(|ui| {
+                            let active = vim && shown.iter().position(|x| x.key == d.key) == Some(sel);
+                            let cell = ui.vertical(|ui| {
                                 // wide enough for a description on a line or two
                                 ui.set_width(360.0);
                                 ui.label(pretty(d.key));
                                 ui.label(egui::RichText::new(d.doc).color(theme.dim).small());
                             });
+                            if active {
+                                let r = cell.response.rect.expand(4.0);
+                                ui.painter().rect_stroke(
+                                    r,
+                                    0.0,
+                                    egui::Stroke::new(2.0, theme.accent),
+                                    egui::StrokeKind::Outside,
+                                );
+                                if moved {
+                                    ui.scroll_to_rect(r.expand(40.0), None);
+                                }
+                            }
+                            let op = if active { op.clone() } else { None };
                             let v = self.cfg.get(d.key);
                             let new = match (&d.kind, v.clone()) {
                                 (SKind::Bool, SValue::Bool(mut b)) => {
+                                    if matches!(op, Some(SAct::Toggle | SAct::Activate | SAct::Change(_))) {
+                                        b = !b;
+                                    }
                                     ui.checkbox(&mut b, "");
                                     SValue::Bool(b)
                                 }
                                 (SKind::Num { min, max, step }, SValue::Num(mut n)) => {
+                                    if let Some(SAct::Change(d)) = op {
+                                        n = ((n + d as f64 * step).clamp(*min, *max) * 1e6).round() / 1e6;
+                                    }
                                     ui.add(egui::DragValue::new(&mut n).range(*min..=*max).speed(*step));
                                     SValue::Num(n)
                                 }
                                 (SKind::Theme, SValue::Text(mut t)) => {
+                                    if let Some(SAct::Change(d)) = op
+                                        && let Some(i) = themes.iter().position(|x| *x == t)
+                                    {
+                                        t = themes[(i as i32 + d).rem_euclid(themes.len() as i32) as usize].clone();
+                                    }
                                     egui::ComboBox::from_id_salt("theme").selected_text(&t).show_ui(ui, |ui| {
                                         for name in &themes {
                                             ui.selectable_value(&mut t, name.clone(), name);
@@ -1021,11 +1518,14 @@ impl App {
                                     ui.vertical(|ui| {
                                         // a grid cell shrinks to what's in it: this one is wide
                                         ui.set_min_width(420.0);
-                                        ui.add(
+                                        let r = ui.add(
                                             egui::TextEdit::singleline(&mut t)
                                                 .hint_text("a font's name, or a .ttf/.otf file")
                                                 .desired_width(420.0),
                                         );
+                                        if matches!(op, Some(SAct::Activate | SAct::Toggle)) {
+                                            r.request_focus();
+                                        }
                                         if !t.trim().is_empty() && lineit_core::fonts::find(&t).is_none() {
                                             ui.colored_label(
                                                 theme.error,
@@ -1049,7 +1549,10 @@ impl App {
                                     SValue::Text(t)
                                 }
                                 (_, SValue::Text(mut t)) => {
-                                    ui.add_sized([420.0, 22.0], egui::TextEdit::singleline(&mut t));
+                                    let r = ui.add_sized([420.0, 22.0], egui::TextEdit::singleline(&mut t));
+                                    if matches!(op, Some(SAct::Activate | SAct::Toggle)) {
+                                        r.request_focus();
+                                    }
                                     SValue::Text(t)
                                 }
                                 (_, v) => {
@@ -1059,7 +1562,9 @@ impl App {
                             };
                             let default = (d.default)();
                             let reset = ui.add_enabled(new != default, egui::Button::new("Reset"));
-                            if reset.on_hover_text("Back to the default").clicked() {
+                            if reset.on_hover_text("Back to the default").clicked()
+                                || (active && matches!(op, Some(SAct::Reset)) && new != default)
+                            {
                                 self.cfg.set(d.key, default);
                                 changed = true;
                             } else if new != v {
@@ -1077,11 +1582,7 @@ impl App {
             });
         });
         if changed {
-            if let Err(e) = self.cfg.save() {
-                self.status(&e, true);
-            }
-            self.theme = Theme::from_config(&self.cfg);
-            self.apply_style(&ctx);
+            self.apply_cfg(&ctx);
         }
     }
 
@@ -1161,7 +1662,7 @@ impl App {
                         }
                         self.tab_in_view = Some(self.tabs[self.active].0);
                         if let Some(i) = close {
-                            self.close_tab(i);
+                            self.ask_close(i);
                         }
                     });
                 });
@@ -1216,6 +1717,15 @@ impl App {
                                 self.start(RunMode::Compile, &ctx);
                                 ui.close();
                             }
+                            ui.separator();
+                            if ui
+                                .button("Run tests (F6)")
+                                .on_hover_text("Run each test/case, and the tests of code squares")
+                                .clicked()
+                            {
+                                self.run_tests();
+                                ui.close();
+                            }
                         });
                         let c = arrow.response.rect.center();
                         let color = ui.style().interact(&arrow.response).text_color();
@@ -1226,6 +1736,7 @@ impl App {
                     }
                 });
                 ui.separator();
+                self.vim_status_ui(ui);
                 let compiling = self.compiling.is_some();
                 let theme = self.theme.clone();
                 let tab = self.tab();
@@ -1247,6 +1758,21 @@ impl App {
                         State::Failed => "failed".into(),
                     };
                     ui.label(text);
+                    if matches!(v.state, State::Running | State::Paused) {
+                        if v.waiting {
+                            ui.label("edit waits for the branches that run to finish");
+                            if ui.button("apply now").on_hover_text("stops the branches where they are and runs the entries again, with the state it has").clicked() {
+                                r.restart();
+                            }
+                        } else if let Some((m, err)) = &v.edit {
+                            if *err {
+                                ui.colored_label(theme.error, m);
+                            } else if v.edit_at.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+                                // an edit that went on is told for a few seconds
+                                ui.label(m);
+                            }
+                        }
+                    }
                 }
                 if n > 0 {
                     let all: Vec<String> = tab
@@ -1291,7 +1817,7 @@ impl App {
                             ui.close();
                         }
                         if ui.button("Close tab (Ctrl+W)").clicked() {
-                            self.close_tab(self.active);
+                            self.ask_close(self.active);
                             ui.close();
                         }
                         ui.separator();
@@ -1306,7 +1832,7 @@ impl App {
                         }
                         ui.separator();
                         if ui.button("Quit").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            self.ask_quit(&ctx);
                         }
                     });
                     ui.toggle_value(&mut self.show_output, "Output");
@@ -1361,22 +1887,42 @@ impl App {
         state.strip = Some(panel.response.rect);
     }
 
-    fn output_ui(&mut self, ui: &mut egui::Ui) {
+    /// The bottom panel: the output, or the tests' report. Says what the
+    /// report asked for.
+    fn output_ui(&mut self, ui: &mut egui::Ui) -> Vec<super::tests::ReportAction> {
         if !self.show_output {
-            return;
+            return Vec::new();
         }
         let theme = self.theme.clone();
+        let mut actions = Vec::new();
         egui::Panel::bottom("output").resizable(true).default_size(160.0).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("Output");
-                if ui.small_button("Clear").clicked() {
-                    self.tab().output.clear();
+                if ui.selectable_label(!self.show_tests, egui::RichText::new("Output").strong()).clicked() {
+                    self.show_tests = false;
                 }
-                if ui.small_button("Copy").clicked() {
-                    let text = self.tab().output.join("\n");
-                    ui.ctx().copy_text(text);
+                if ui
+                    .selectable_label(self.show_tests, egui::RichText::new("Tests").strong())
+                    .on_hover_text("The report of Run tests (F6)")
+                    .clicked()
+                {
+                    self.show_tests = true;
+                }
+                ui.separator();
+                if !self.show_tests {
+                    if ui.small_button("Clear").clicked() {
+                        self.tab().output.clear();
+                    }
+                    if ui.small_button("Copy").clicked() {
+                        let text = self.tab().output.join("\n");
+                        ui.ctx().copy_text(text);
+                    }
                 }
             });
+            if self.show_tests {
+                let state = &mut self.tabs[self.active].2;
+                actions = super::tests::report_ui(ui, &mut state.tests, &theme);
+                return;
+            }
             let lines = &self.tabs[self.active].1.output;
             let start = lines.len().saturating_sub(2000);
             egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
@@ -1389,6 +1935,7 @@ impl App {
                 }
             });
         });
+        actions
     }
 
     /// Starts working out the previews of the active tab, if its canvas
@@ -1518,6 +2065,7 @@ fn section(key: &str) -> &'static str {
         Some("save") => "Saving",
         Some("output") => "Output",
         Some("window") => "Window",
+        Some("editor") => "Editor",
         _ => "General",
     }
 }
@@ -1537,6 +2085,8 @@ fn pretty(key: &str) -> String {
 pub enum Start {
     Files(Vec<PathBuf>),
     Session(session::Session),
+    /// Read-only tabs: canvases as git has them, and diffs.
+    Views(Vec<super::View>),
 }
 
 fn config_stamp() -> (Option<std::time::SystemTime>, Option<std::time::SystemTime>) {
@@ -1583,13 +2133,33 @@ fn complete(text: &str, entries: &[String]) -> Option<String> {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.vim_hook(ctx, raw);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll();
+        self.dialog_poll();
+        if let Some(r) = self.dialog_request.take() {
+            self.dialog = Some(super::dialog::Dialog::open(&ctx, frame, r));
+        }
         {
             let reg = self.reg.clone();
             let (_, tab, state) = &mut self.tabs[self.active];
             canvas::edit_keys(&ctx, tab, &reg, state);
+        }
+        // the window's own close (the X, Alt+F4): ask first if there are changes
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok && self.tabs.iter().any(|(_, t, _)| t.dirty())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Confirm::Window);
+        }
+        self.vim_keys(&ctx);
+        self.finish_debug();
+        // a square to show (from the tests' report too)
+        if !self.vim_on() && !self.tab().settings {
+            self.vim_reveal(&ctx);
         }
         self.shortcuts(&ctx);
 
@@ -1625,7 +2195,12 @@ impl eframe::App for App {
                 self.reload_config(&ctx);
             }
             let s = self.module_stamp();
-            if s != self.modules_stamp {
+            // modules changed on disk, or a canvas from another folder opened
+            let mut dirs = self.tab_dirs();
+            dirs.sort();
+            let mut had = self.reg_dirs.clone();
+            had.sort();
+            if s != self.modules_stamp || dirs != had {
                 self.modules_stamp = s;
                 self.reload_modules();
             }
@@ -1658,6 +2233,7 @@ impl eframe::App for App {
                 if ext == "lua" {
                     self.open(&path);
                 } else if !self.tab().settings
+                    && !self.read_only()
                     && ["png", "jpg", "jpeg", "gif", "bmp", "qoi", "tga"].contains(&ext.as_str())
                 {
                     let cam = self.tab().canvas.camera.clone();
@@ -1678,15 +2254,38 @@ impl eframe::App for App {
 
         self.tabs_ui(ui);
         self.bar_ui(ui);
-        self.output_ui(ui);
+        for a in self.output_ui(ui) {
+            self.report_action(a, &ctx);
+        }
         self.editor_ui(ui);
 
-        let (values, current): (HashMap<(SquareId, String), Value>, BTreeSet<SquareId>) = match &self.tab().run {
+        type States = HashMap<SquareId, Vec<(String, Value)>>;
+        type Checks = HashMap<SquareId, lineit_core::interp::CheckResult>;
+        type Vars = Vec<(String, Value)>;
+        let (values, current, states, checks, vars): (
+            HashMap<(SquareId, String), Value>,
+            BTreeSet<SquareId>,
+            States,
+            Checks,
+            Vars,
+        ) = match &self.tabs[self.active].1.run {
             Some(r) => {
                 let v = r.view.lock().unwrap();
-                (v.values.clone(), v.current.iter().copied().collect())
+                // the last time the run got to each check
+                let checks = v.checks.iter().map(|c| (c.square, c.clone())).collect();
+                // a variable's value is that of the squares of it
+                let mut values = v.values.clone();
+                for sq in &self.tabs[self.active].1.canvas.squares {
+                    if matches!(sq.module.as_str(), "var/get" | "var/var")
+                        && let Some(name) = sq.params.get("name")
+                        && let Some((_, val)) = v.vars.iter().find(|(n, _)| n == name)
+                    {
+                        values.insert((sq.id, "value".to_string()), val.clone());
+                    }
+                }
+                (values, v.current.iter().copied().collect(), v.states.clone(), checks, v.vars.clone())
             }
-            None => (HashMap::new(), BTreeSet::new()),
+            None => (HashMap::new(), BTreeSet::new(), HashMap::new(), HashMap::new(), Vec::new()),
         };
         if self.cfg.bool("canvas.previews") {
             let pure = self.pure_previews(&ctx);
@@ -1710,19 +2309,39 @@ impl eframe::App for App {
                     actions: Vec::new(),
                     values,
                     current,
+                    states,
+                    checks,
+                    vars,
                     pending: self.search.as_ref().and_then(|s| s.pending.clone().map(|p| (p, s.at))),
                 };
                 canvas::show(ui, &mut cx);
                 actions = cx.actions;
             });
         }
+        // a read-only tab can look, copy and open its subgraphs, nothing else
+        let ro = self.tab().label.is_some();
         for a in actions {
+            if ro && !matches!(a, Action::ShowReport | Action::Copy | Action::OpenModule(_)) {
+                self.status("this tab is read-only", true);
+                continue;
+            }
             match a {
                 Action::Search { at, screen, pending } => {
-                    self.search =
-                        Some(Search { at, screen, query: String::new(), pending, selected: 0, opened: Instant::now() });
+                    self.search = Some(Search {
+                        at,
+                        screen,
+                        query: String::new(),
+                        pending,
+                        edge: None,
+                        selected: 0,
+                        opened: Instant::now(),
+                    });
                 }
                 Action::Delete => self.delete_selection(),
+                Action::ShowReport => {
+                    self.show_output = true;
+                    self.show_tests = true;
+                }
                 Action::Duplicate => {
                     if let Some(t) = self.selection_text() {
                         self.paste(&t, None);
@@ -1748,11 +2367,17 @@ impl eframe::App for App {
         }
         self.search_ui(&ctx);
         self.prompt_ui(&ctx);
+        self.confirm_ui(&ctx);
+        self.vim_help_ui(&ctx);
 
         let settling = ctx.input(|i| i.pointer.any_down()) || ctx.memory(|m| m.focused().is_some());
         let reg = self.reg.clone();
-        for (_, t, _) in &mut self.tabs {
+        for (_, t, ui) in &mut self.tabs {
             t.update(&reg, settling, false);
+            // an edit goes on to the program that runs (not to a test being debugged)
+            if !settling && ui.tests.debugging.is_none() {
+                t.offer_edit();
+            }
         }
         let title = format!("{} — lineit", self.tabs[self.active].1.title());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));

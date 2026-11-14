@@ -27,16 +27,22 @@ and redoes the inside, with three aims:
 | Packages                | `.lipkg` zip files, made with `lineit pack`                                 |
 | Types                   | Static: inferred over the wires, checked before running                     |
 | Execution model         | Ticks push and data is pulled, as before; fan-outs are parallel branches    |
+| Parallel                | Everything works with branches on threads; read-and-change is one step      |
 | Old canvases or modules | Not supported: a clean break                                                |
 | Distribution            | GitHub Actions on all 3 OSes; release archives, AppImage, Docker (noVNC)    |
-| File dialogs            | A path prompt inside the editor with Tab completion (no native dialog crate)|
+| File dialogs            | The system's dialog (`rfd`); a path prompt with Tab completion where there's none, or if turned off (`editor.native_dialogs`) |
+| Windows console         | Two programs on Windows: `lineit.exe` (console: the commands, exit codes) and `lineitw.exe` (no console window, only the editor) from one crate (lib `lineit_app`; `lineitw` is built everywhere, as a message outside Windows, so a plain `cargo build` on Windows has both) |
 
 Dependencies: `eframe` (the editor), `mlua` (Lua), `zip` (packages), `image`
 (only to read and write image files, as an optional feature of
-`lineit-rt`), `libloading` (Rust modules in the editor). Everything else is
-std: the argument parser, the file prompt, threads and the codegen. A
+`lineit-rt`), `tree-sitter` with the `gdshader` grammar and `libm` (for
+`image/shader`, the `shader` feature of `lineit-rt`), the `lua`, `python`, `rust`, `c` and `c-sharp`
+grammars of tree-sitter (the signatures of `code/function`), `serde_json` (code squares in
+Python and C#, the `process` feature of `lineit-rt`), `quick-xml` (the doc comments of C#), `fs4` (a file lock around C# builds), `libloading` (Rust modules in the editor), `similar` (the line diffs of
+`lineit diff`), `rfd` (the system's file dialogs; on Linux it asks the desktop portal through libdbus, loaded when used, so nothing is linked, and falls back to zenity; the editor checks that a portal with a file chooser, or zenity, is installed, and uses its own prompt if not). Everything else is
+std: the argument parser, the file prompt (where there's no dialog), threads and the codegen. A
 compiled program depends only on `lineit-rt`, plus `image` if it opens or
-saves images, `mlua` if it uses a Lua module, and the crates of the Rust
+saves images, `tree-sitter` and `libm` if it uses a shader, `mlua` if it uses a Lua module, and the crates of the Rust
 modules it uses.
 
 ## Workspace
@@ -48,6 +54,7 @@ crates/lineit-rt/          the runtime: values, strings, lists, images, branches
                            compiled programs.
 crates/lineit-core/        everything but the GUI:
     model.rs               the canvas (the AST): squares, links, fields, params
+    diff.rs                two canvases compared by square id (`lineit diff`, the diff view)
     file.rs                reads and writes canvases (sandboxed Lua tables)
     registry/              the modules: built-in, Lua and Rust, subgraphs, records
     types.rs               the inference over the wires
@@ -106,6 +113,15 @@ they're on, so each copy of a subgraph has its own.
 module. Each square of it is inlined at lowering, which makes it as fast as
 if it were drawn in place. A subgraph that contains itself is an error.
 
+**Functions.** `list/map`, `list/filter` and `list/reduce` take the path of a
+subgraph in their `fn` param (the editor offers the ones with the right
+pins): map T -> U, filter T -> bool, reduce (acc, T) -> acc, with `initial`.
+The list comes by wire and the result goes out by wire, and the types come
+from the function's ports. The body is inlined once, in a loop, with its own
+variables per square that uses it. Without a `tick` input it is pure; with
+one it runs on ticks for each item (branches, variables that keep their value
+from one item to the next), and its `call` output ticks it.
+
 **Clocks.** `flow/clock` fires every `interval` seconds. A program with no
 clock ends once its entries are done; one with a clock runs until it's
 stopped.
@@ -135,12 +151,40 @@ interpreter and the generated code call the same functions in `lineit-rt`
 for anything that isn't a basic operation.
 
 **Interpreter** (Run, Step). Each branch is a task with its own stack of
-frames over the IR. Tasks run in turns on one worker thread, so stepping is
+frames over the IR. Stepping, tasks take turns on one worker thread, so it's
 deterministic: Step lets every live task run up to its next `Enter`, and the
-squares they stop at get an outline. Run goes on until the program ends or
-Stop is pressed. The editor gets output, the current squares and the values
-of slots for tooltips and previews through a channel. Real parallelism is
-the compiled program's job.
+squares they stop at get an outline. Running, the branches of a fan-out run
+on threads of their own, as in a compiled program. Run goes on until the
+program ends or Stop is pressed. The editor gets output, the current squares
+and the values of slots for tooltips and previews through a channel.
+
+**Editing while running.** `Interp::swap` replaces the program with the
+edited one, only when no task is live (between handlers: between two ticks
+of a clock, say; Step too, at the press where the branches finish), so no
+branch ever sees half of each program, whatever its threads do: the one
+thread that drives the interpreter is the only one that touches the world.
+Running branches finish on the old program (they aren't migrated). The
+state carries over: variables by name and the outputs shown on a square by
+square and pin; a value whose type changed is converted as `value/convert`
+does, or starts again; removed squares' state is dropped; clocks keep their
+schedule (or the new interval if that comes first); modules that didn't
+change keep running with their state (a module that builds files, C# or
+Rust, ends before its replacement opens, and opens again if its files
+changed on disk). New entries run, the old ones don't. Everything that can
+fail is worked out before the old program is given up. A canvas with errors
+is not swapped: the old program goes on and the bar says so. A program that
+never goes idle (a loop of wires, a `while` in a fan-out) waits, and the bar
+offers "apply now": the branches stop at their next op, the program changes,
+and its entries run again with the state. The bar note fades after a few
+seconds.
+
+**Parallel, always.** Everything must stay correct with branches on threads,
+interpreted or compiled, and give the same results both ways. A statement
+that reads and changes a slot (`n = n + 1`, a code square's `Shared.total
++= 1`, a list item set from itself) is one step for the other branches: the
+statements that change such a slot hold its lock while they do
+(`Program::read_and_changed`), so no change is lost. `tests/parallel.lua`
+checks it.
 
 **Codegen** (Compile). Each handler becomes a function. A set of handlers
 that tick each other in a cycle becomes one function looping over a `match`,
@@ -163,14 +207,16 @@ Output: a crate in `~/.cache/lineit/build/<name>`, built with `cargo build
 - `logic`: and, or, not, xor, nand, nor, xnor
 - `value`: constant, convert
 - `var`: var, get, set
-- `list`: push, pop, get, set, length, clear, remove, foreach
+- `list`: push, pop, get, set, length, clear, remove, foreach, at, size, and
+  map, filter, reduce (the `fn` param is a subgraph: see Subgraphs)
 - `map`: set, get, has, delete, keys, length
 - `string`: concat, length, upper, lower, find, substring, split, join, format
 - `io`: print, display
 - `image`: open, save, new, size, pixel, grayscale, invert, flip, rotate,
-  resize, crop, blur, brightness, contrast, tint
+  resize, crop, blur, brightness, contrast, tint, shader (a gdshader file, on the CPU)
 - `graph`: input, output (the pins of a subgraph)
 - `record`: make and split, for every record type
+- `code`: function (a function in Lua, Python, Rust, C or C#, its pins from its signature)
 
 **Lua modules**, in a `.lua` file that returns a table:
 
@@ -213,12 +259,30 @@ Only Rust modules need building, by cargo, cached. No checksums of our own:
 the zip checks every file against its CRC, and a checksum inside the same
 file can't stop anyone who changes it.
 
+## Diffs
+
+`diff.rs` compares two canvases by square id: added, removed and changed
+squares (module, fields, params), wires added and removed, and the squares
+that only moved apart; the camera and positions aren't the program. Line
+diffs of multi-line values use the `similar` crate. `lineit diff` prints it
+(exit 0/1/2 as diff(1)) and, for `.graph.lua` files, where the subgraph is
+used (a scan of the folder that has the `modules` folder, four deep: no
+index). `lineit text` is the textconv for git. The editor's diff view is a
+read-only tab (`Tab::label`, `Tab::diff`) on `diff::merge`: the squares of the
+new canvas plus those only the old had; the places that change a canvas (the
+mouse, the shortcuts, the menus, paste, undo, save, run) check `label` and
+refuse, and a view isn't written to a session. Ids are stable: paste keeps a
+square's id when nothing on the canvas has it, and `Canvas::next` (saved as
+`next_id`) is one more than the highest id ever used, so an id is never
+given twice.
+
 ## Milestones
 
 Each milestone ends with a build, tests that pass, and a working tree to
 commit. All of them are done (November 2026), checked by the tests (every
 canvas in `tests/` and `examples/` interpreted and compiled, on Linux here;
-CI does the three OSes) and by driving the editor on a virtual screen.
+CI does the three OSes) and by driving the editor on a virtual screen
+(`scripts/screenshot.sh` opens a canvas there and saves a screenshot).
 
 **M0: workspace.** Cargo workspace, the three crates, CI on 3 OSes
 (`cargo test`, `cargo clippy`), the old C tree removed.
@@ -262,20 +326,3 @@ checksums, Rust modules (build, load, link when compiling).
 **M10: shipping.** README, docs (`docs/internals.typ` rewritten), the
 release workflow (archives for 3 OSes, AppImage, Docker with noVNC),
 `install.sh`.
-
-## Later
-
-- A faster interpreter: today it's about 60 ns a loop iteration and 230 ns
-  a square called (compiled programs are about a thousand times faster).
-  Registers and typed slots instead of `Value`s would help most.
-- Branches of compiled programs on a thread pool, not a thread per branch
-  of each fan-out
-- Opening a file in a running editor's new tab (`lineit -t`)
-- Vim mode
-- Real threads in the interpreter
-- Editing while running applied to the running program (today the program
-  goes on with the canvas it started with)
-- `list/map`, `filter`, `reduce` with a subgraph as the function
-- FFI to C libraries
-- A native file dialog (today: a path prompt with Tab completion)
-- On Windows, no console window when the editor is opened by a double click

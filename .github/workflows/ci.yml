@@ -74,6 +74,14 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES
 
+      # C# code squares run with `dotnet run FILE.cs`: .NET 10 or newer (the
+      # runners have Python, Node and a C compiler, but not always this).
+      # Not in the sanitizer jobs: their tests skip C# without it
+      - if: ${{ !matrix.sanitizer }}
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+
       - name: Install Rust
         shell: bash
         run: |
@@ -127,6 +135,13 @@ jobs:
           [ "$("$lineit" --version | tr -d '\r')" = "lineit $(scripts/version.sh)" ]
           "$lineit" run examples/hello.lua | tr -d '\r' | grep -x "Hello, world!"
           "$lineit" check examples/fizzbuzz.lua
+          # code squares from the command line: their tests, and branches
+          # changing the same variables at once
+          "$lineit" test tests/code.lua
+          # (the ones the runner has: the tests of canvases skip the rest too)
+          if python3 -c 'import sys' 2>/dev/null; then "$lineit" test tests/code_python.lua; fi
+          if dotnet --version 2>/dev/null | grep -q '^1[0-9]\.'; then "$lineit" test tests/code_csharp.lua; fi
+          "$lineit" run tests/parallel.lua | tr -d '\r' | grep -x "n = 200000, total = 2000"
           cd "$RUNNER_TEMP"
           "$lineit" new-package greet
           "$lineit" pack greet
@@ -265,6 +280,22 @@ jobs:
           tmp=$RUNNER_TEMP
           if command -v cygpath >/dev/null; then tmp=$(cygpath -u "$tmp"); fi
           lineit=$tmp/$name/lineit
+          # on Windows the program with no console window comes too: lineit.exe
+          # is a console program (subsystem 3) and lineitw.exe a GUI one (2).
+          # lineitw can't be run here: its errors and help are message boxes
+          if [ "${{ matrix.archive }}" = zip ]; then
+            py=$(command -v python3 || command -v python)
+            for exe in lineit:3 lineitw:2; do
+              "$py" -I - "${lineit%lineit}${exe%:*}.exe" "${exe#*:}" <<'EOF'
+          import struct, sys
+          data = open(sys.argv[1], "rb").read(4096)
+          pe = struct.unpack_from("<I", data, 0x3C)[0]
+          # the optional header comes after the 4-byte signature and the 20-byte file header; the subsystem is 68 bytes into it
+          subsystem = struct.unpack_from("<H", data, pe + 24 + 68)[0]
+          assert data[pe:pe + 4] == b"PE\0\0" and subsystem == int(sys.argv[2]), (sys.argv[1], subsystem)
+          EOF
+            done
+          fi
           [ "$("$lineit" --version | tr -d '\r')" = "lineit $(scripts/version.sh)" ]
           "$lineit" run "$tmp/$name/examples/hello.lua" | tr -d '\r' | grep -x "Hello, world!"
 

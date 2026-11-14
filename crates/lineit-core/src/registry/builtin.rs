@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use lineit_rt::{Type, Value};
 
-use super::{Class, Kind, Module, ParamDef, ParamKind, Params, SigCx, Signature, TExpr};
+use super::{Class, FnPorts, Kind, Module, ParamDef, ParamKind, Params, SigCx, Signature, TExpr};
 use crate::ir::*;
 use crate::lower::Lx;
 
@@ -56,7 +56,8 @@ impl Module for Builtin {
         }
     }
     fn start(&self, cx: &mut Lx) -> Result<Option<Block>, String> {
-        self.start.as_ref().map(|f| f(cx)).transpose()
+        // nothing to do (a test/case in a run that isn't its): no start
+        Ok(self.start.as_ref().map(|f| f(cx)).transpose()?.filter(|b| !b.is_empty()))
     }
     fn clock(&self, cx: &mut Lx) -> Result<Option<(Expr, Block)>, String> {
         self.clock.as_ref().map(|f| f(cx)).transpose()
@@ -183,11 +184,13 @@ pub fn all() -> Vec<Arc<dyn Module>> {
     value(&mut m);
     var(&mut m);
     list(&mut m);
+    list_fns(&mut m);
     map(&mut m);
     strings(&mut m);
     io(&mut m);
     images(&mut m);
     graph(&mut m);
+    tests(&mut m);
     m.push(
         b("note", "A note for whoever reads the canvas, like a post-it: it does nothing. Double click it to write")
             .param("text", ParamKind::Text, "")
@@ -669,6 +672,160 @@ fn list(m: &mut Vec<Arc<dyn Module>>) {
     );
 }
 
+fn list_fns(m: &mut Vec<Arc<dyn Module>>) {
+    fn fb(path: &str, doc: &str, args: &[&str]) -> B {
+        b(path, doc).param("fn", ParamKind::Function { args: args.iter().map(|a| a.to_string()).collect() }, "")
+    }
+    /// The pins of the function param, which has to take INPUTS values and give one.
+    fn ports(p: &Params, cx: &dyn SigCx, inputs: usize) -> Result<FnPorts, String> {
+        let path = p.str("fn");
+        let f = cx.function(&path)?;
+        if f.inputs.len() != inputs || f.outputs.len() != 1 {
+            let s = |n: usize| if n == 1 { "" } else { "s" };
+            return Err(format!(
+                "`{path}` has {} data input{} and {} output{}, and a function here takes {inputs} input{} and gives 1 output",
+                f.inputs.len(),
+                s(f.inputs.len()),
+                f.outputs.len(),
+                s(f.outputs.len()),
+                s(inputs)
+            ));
+        }
+        Ok(f)
+    }
+    fn list_of(t: &Type) -> Type {
+        Type::List(Box::new(t.clone()))
+    }
+    /// The pins every one of them has, from the function F: `tick` and the `list` come in; `call`
+    /// ticks the function, if it has a tick input; `done` is the end.
+    fn start(f: &FnPorts) -> Signature {
+        Signature::new().tick_in("tick").wire_in("list", t(list_of(&f.inputs[f.inputs.len() - 1].1)))
+    }
+    fn end(f: &FnPorts, s: Signature) -> Signature {
+        let s = if f.tick { s.tick_out("call") } else { s };
+        s.tick_out("done")
+    }
+    /// The loop over the items of SNAP: VALUE gets each, PRE runs, then the function is
+    /// called (if it ticks), then POST.
+    fn per_item(cx: &mut Lx, snap: SlotId, value: SlotId, pre: Vec<Stmt>, post: Vec<Stmt>) -> Stmt {
+        let i = cx.local(Type::Int);
+        let mut body = vec![Stmt::Set(value, Expr::ListGet(snap, Box::new(Expr::Local(i))))];
+        body.extend(pre);
+        if let Some(call) = cx.sig().output_index("call") {
+            body.push(cx.fire(call));
+        }
+        body.extend(post);
+        Stmt::For { local: i, from: Expr::int(0), to: Expr::ListLen(snap), body }
+    }
+    /// The slot that keeps the list as it was when the loop started.
+    fn snapshot(cx: &mut Lx, item: Type) -> SlotId {
+        let ty = list_of(&item);
+        let init = Value::default_of(&ty);
+        cx.private_slot("items", ty, init)
+    }
+    fn done(cx: &mut Lx) -> Stmt {
+        let o = cx.sig().output_index("done").unwrap_or(0);
+        cx.fire(o)
+    }
+
+    m.push(
+        fb(
+            "list/map",
+            "A list of what `function` (a subgraph: item in, value out) gives for each item of `list`",
+            &["value"],
+        )
+        .sig(|p, cx| {
+            let f = ports(p, cx, 1)?;
+            let s = start(&f).output("value", t(f.inputs[0].1.clone())).output("result", t(list_of(&f.outputs[0].1)));
+            Ok(end(&f, s))
+        })
+        .tick(|cx, _| {
+            let (value, result) = (cx.out_slot(0), cx.out_slot(1));
+            let item = cx.out_ty(0);
+            let snap = snapshot(cx, item);
+            let give = cx.fn_result(0)?;
+            let post = vec![Stmt::Do(Effect::ListPush(result), vec![give])];
+            Ok(vec![
+                Stmt::Set(snap, cx.input(1)?),
+                Stmt::Do(Effect::ListClear(result), vec![]),
+                per_item(cx, snap, value, vec![], post),
+                done(cx),
+            ])
+        })
+        .done(),
+    );
+    m.push(
+        fb(
+            "list/filter",
+            "The items of `list` for which `function` (a subgraph: item in, bool out) gives true",
+            &["value"],
+        )
+        .sig(|p, cx| {
+            let f = ports(p, cx, 1)?;
+            if f.outputs[0].1 != Type::Bool {
+                return Err(format!("`{}` gives {}, and a filter's function gives bool", p.str("fn"), f.outputs[0].1));
+            }
+            let s = start(&f).output("value", t(f.inputs[0].1.clone())).output("result", t(list_of(&f.inputs[0].1)));
+            Ok(end(&f, s))
+        })
+        .tick(|cx, _| {
+            let (value, result) = (cx.out_slot(0), cx.out_slot(1));
+            let item = cx.out_ty(0);
+            let snap = snapshot(cx, item);
+            let keep = cx.fn_result(0)?;
+            let post = vec![Stmt::If(keep, vec![Stmt::Do(Effect::ListPush(result), vec![Expr::Slot(value)])], vec![])];
+            Ok(vec![
+                Stmt::Set(snap, cx.input(1)?),
+                Stmt::Do(Effect::ListClear(result), vec![]),
+                per_item(cx, snap, value, vec![], post),
+                done(cx),
+            ])
+        })
+        .done(),
+    );
+    m.push(
+        fb(
+            "list/reduce",
+            "Folds `list` into one value: `function` (a subgraph: acc and item in, new acc out) is called for each item, starting from `initial`",
+            &["acc", "value"],
+        )
+        .sig(|p, cx| {
+            let f = ports(p, cx, 2)?;
+            let acc = f.inputs[0].1.clone();
+            if f.outputs[0].1 != acc {
+                return Err(format!(
+                    "`{}` gives {}, and its first input, the accumulator, is {acc}: they have to be the same type",
+                    p.str("fn"),
+                    f.outputs[0].1
+                ));
+            }
+            let s = Signature::new().tick_in("tick").wire_in("list", t(list_of(&f.inputs[1].1)));
+            let s = if acc.is_scalar() {
+                let d = &f.inputs[0].2;
+                s.input("initial", t(acc.clone()), if Value::parse(d, &acc).is_some() { d } else { "" })
+            } else {
+                s.wire_in("initial", t(acc.clone()))
+            };
+            Ok(end(&f, s.output("result", t(acc.clone())).output("acc", t(acc)).output("value", t(f.inputs[1].1.clone()))))
+        })
+        .tick(|cx, _| {
+            let (result, acc, value) = (cx.out_slot(0), cx.out_slot(1), cx.out_slot(2));
+            let item = cx.out_ty(2);
+            let snap = snapshot(cx, item);
+            let a = cx.local(cx.out_ty(0));
+            let give = cx.fn_result(0)?;
+            Ok(vec![
+                Stmt::Set(snap, cx.input(1)?),
+                Stmt::Let(a, cx.input(2)?),
+                per_item(cx, snap, value, vec![Stmt::Set(acc, Expr::Local(a))], vec![Stmt::Let(a, give)]),
+                Stmt::Set(result, Expr::Local(a)),
+                done(cx),
+            ])
+        })
+        .done(),
+    );
+}
+
 fn map(m: &mut Vec<Arc<dyn Module>>) {
     fn mb(path: &str, doc: &str) -> B {
         b(path, doc).param("map", var_param(), "table")
@@ -989,6 +1146,46 @@ fn images(m: &mut Vec<Arc<dyn Module>>) {
         );
     }
     m.push(
+        b(
+            "image/shader",
+            "Through a shader, a file in Godot's language (gdshader, shader_type canvas_item), run on the CPU. Its uniforms are inputs; TIME is what TIME reads",
+        )
+        .param("file", ParamKind::Text, "")
+        .sig(|p, cx| {
+            // no file: the image as it is
+            let file = p.str("file");
+            let file = file.trim();
+            let uniforms = if file.is_empty() { Vec::new() } else { lineit_rt::shader::uniforms(&cx.read(file)?)? };
+            let mut s = Signature::new().wire_in("TEXTURE", image()).input("TIME", float(), "0");
+            let mut seen = vec!["TEXTURE".to_string(), "TIME".to_string()];
+            for u in uniforms {
+                use lineit_rt::shader::Kind;
+                if seen.contains(&u.name) {
+                    return Err(format!("two inputs would be called {}", u.name));
+                }
+                seen.push(u.name.clone());
+                s = match u.kind {
+                    Kind::Float => s.input(&u.name, float(), &u.default),
+                    Kind::Int => s.input(&u.name, int(), &u.default),
+                    Kind::Bool => s.input(&u.name, boolean(), &u.default),
+                    Kind::Color(_) | Kind::Numbers(_) => s.input(&u.name, string(), &u.default),
+                    Kind::Image => s.wire_in(&u.name, image()),
+                };
+            }
+            Ok(s.output("image", image()))
+        })
+        .eval(|cx, _| {
+            let n = cx.sig().inputs.len();
+            let file = cx.params().str("file");
+            let mut args = vec![cx.input(0)?, path(Expr::str(file.trim())), cx.input(1)?];
+            for i in 2..n {
+                args.push(cx.input(i)?);
+            }
+            Ok(Expr::call(Func::ImgShader, args))
+        })
+        .done(),
+    );
+    m.push(
         b("image/flip", "Mirrored: left to right, or upside down")
             .param("direction", ParamKind::Choice(vec!["horizontal".into(), "vertical".into()]), "horizontal")
             .fixed(Signature::new().wire_in("image", image()).output("image", image()))
@@ -1007,6 +1204,69 @@ fn images(m: &mut Vec<Arc<dyn Module>>) {
                 Ok(Expr::call(Func::ImgRotate, vec![cx.input(0)?, Expr::int(quarters)]))
             })
             .done(),
+    );
+}
+
+fn tests(m: &mut Vec<Arc<dyn Module>>) {
+    m.push(
+        b(
+            "test/case",
+            "A test: Run tests starts the program here, once for each case. Its fields are the canvas's variables: what's typed in one is what that variable starts with (empty: what it starts with anyway); a list or record is wired in. A normal run doesn't start here",
+        )
+        .param("name", ParamKind::Text, "a test")
+        .sig(|_, cx| {
+            let mut s = Signature::new();
+            for (name, ty) in cx.vars() {
+                // empty: the variable as it is
+                s = if ty.is_scalar() { s.input(&name, t(ty), "") } else { s.wire_in(&name, t(ty)) };
+            }
+            Ok(s.tick_out("then"))
+        })
+        .start(|cx| {
+            if cx.test_case() != Some(cx.square()) {
+                return Ok(Vec::new());
+            }
+            let mut b = Vec::new();
+            for i in 0..cx.sig().inputs.len() {
+                // what it gives: what's wired, or typed
+                if cx.field_text(i).is_some_and(|t| t.trim().is_empty()) {
+                    continue;
+                }
+                let name = cx.sig().inputs[i].name.clone();
+                let s = cx.var(&name)?;
+                b.push(Stmt::Set(s, cx.input(i)?));
+            }
+            b.push(cx.fire(0));
+            Ok(b)
+        })
+        .done(),
+    );
+    m.push(
+        b(
+            "test/expect",
+            "Checks that `value` is `expected` when a tick gets here, and goes on: Run tests says which checks failed, and the square shows how it went",
+        )
+        .param("label", ParamKind::Text, "")
+        .sig(|_, _| {
+            Ok(Signature::new()
+                .vars(&[Class::Any])
+                .tick_in("tick")
+                .input("value", v(0), "")
+                .input("expected", v(0), "")
+                .tick_out("then"))
+        })
+        .tick(|cx, _| {
+            // a normal run passes by: it checks in tests
+            if cx.test_case().is_none() {
+                return Ok(vec![cx.fire(0)]);
+            }
+            let label = cx.params().str("label");
+            Ok(vec![
+                Stmt::Check { square: cx.square(), label, value: cx.input(1)?, expected: cx.input(2)? },
+                cx.fire(0),
+            ])
+        })
+        .done(),
     );
 }
 

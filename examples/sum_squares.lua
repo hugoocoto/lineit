@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "The sum of the squares of 0 to 9. var/var declares `sum`, an int that starts at 0; the loop sets it to sum + index × index, and when it's done the print shows it.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/entry", x = 0, y = 0 },
                 { id = 2, module = "var/var", x = 0, y = 106, params = { initial = "0", name = "sum", type = "int" } },

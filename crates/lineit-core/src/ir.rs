@@ -29,6 +29,9 @@ pub struct Program {
     pub exts: Vec<ExtDef>,
     pub ext_instances: Vec<ExtInstance>,
     pub records: Vec<Arc<RecordType>>,
+    /// The variables of the canvas (its own and the `::` ones), by name, and
+    /// their slots: to show them while it runs.
+    pub vars: Vec<(String, SlotId)>,
 }
 
 /// State: the output of a square that runs on ticks, or a variable.
@@ -56,6 +59,9 @@ pub struct Clock {
     /// Seconds between ticks, read each time.
     pub interval: Expr,
     pub handler: HandlerId,
+    /// The square of the canvas it is, or is inside of: what a clock is
+    /// told from another when the program is swapped for an edited one.
+    pub square: SquareId,
 }
 
 /// A square of the flattened canvas.
@@ -78,6 +84,26 @@ pub enum ExtKind {
     Lua {
         source: String,
     },
+    /// A code square's function in Lua: GLUE runs it (see
+    /// [`lineit_rt::lua::LuaCode`]); NAME is the function's, for errors.
+    LuaCode {
+        name: String,
+        glue: String,
+    },
+    /// A code square's function in a language run by its own interpreter
+    /// (see [`lineit_rt::process::Process`]): the first of COMMANDS that
+    /// runs, with ARGS (and the variables ENV set), runs HOST, which LOAD
+    /// tells what to run. LOCK is the folder of code that is built when it
+    /// starts, if it is.
+    Process {
+        name: String,
+        commands: Vec<String>,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+        lock: Option<String>,
+        host: String,
+        load: String,
+    },
     /// Type TYPE of the crate in CRATE_DIR (a package's `native/`).
     Native {
         crate_dir: std::path::PathBuf,
@@ -90,6 +116,8 @@ pub enum ExtKind {
 pub struct ExtInstance {
     pub module: usize,
     pub params: Vec<(String, Value)>,
+    /// The square of the canvas it's (or is inside of), to show its state.
+    pub square: SquareId,
 }
 
 pub type Block = Vec<Stmt>;
@@ -115,6 +143,14 @@ pub enum Stmt {
     Fire(Fire),
     /// Ends the program: every branch, and the clocks.
     Stop,
+    /// A `test/expect` of SQUARE: VALUE should be EXPECTED. The run keeps
+    /// how it went; it goes on either way.
+    Check {
+        square: SquareId,
+        label: String,
+        value: Expr,
+        expected: Expr,
+    },
     /// A Lua or Rust module's `tick` (or `start`, with no input).
     Ext {
         instance: usize,
@@ -344,6 +380,8 @@ pub enum Func {
     ImgBrightness,
     ImgContrast,
     ImgTint,
+    /// An image, the path of a shader, TIME, then the shader's uniforms.
+    ImgShader,
 }
 
 impl Expr {
@@ -458,7 +496,121 @@ impl Stmt {
     }
 }
 
+impl Expr {
+    /// The slots it reads, added to OUT.
+    pub fn reads(&self, out: &mut Vec<SlotId>) {
+        match self {
+            Expr::Slot(s) | Expr::ListLen(s) | Expr::MapKeys(s) | Expr::MapLen(s) => out.push(*s),
+            Expr::ListGet(s, e) | Expr::MapGet(s, e) | Expr::MapHas(s, e) => {
+                out.push(*s);
+                e.reads(out);
+            }
+            Expr::Un(_, a) | Expr::Field(a, ..) => a.reads(out),
+            Expr::Bin(_, a, b) => {
+                a.reads(out);
+                b.reads(out);
+            }
+            Expr::If(a, b, c) => {
+                a.reads(out);
+                b.reads(out);
+                c.reads(out);
+            }
+            Expr::Call(_, args) | Expr::Record(_, args) => args.iter().for_each(|a| a.reads(out)),
+            Expr::Ext { inputs, .. } => inputs.iter().for_each(|(_, e)| e.reads(out)),
+            Expr::Const(_) | Expr::Default(_) | Expr::Local(_) => {}
+        }
+    }
+}
+
+impl Effect {
+    /// The slots it writes.
+    pub fn writes(&self) -> Vec<SlotId> {
+        match self {
+            Effect::ListPush(s)
+            | Effect::ListSet(s)
+            | Effect::ListInsert(s)
+            | Effect::ListRemove(s)
+            | Effect::ListClear(s)
+            | Effect::MapSet(s)
+            | Effect::MapDelete(s)
+            | Effect::MapClear(s) => vec![*s],
+            Effect::ListPop { list, into } => vec![*list, *into],
+            Effect::ImageSave { ok } => vec![*ok],
+        }
+    }
+}
+
+impl Stmt {
+    /// The slots it writes itself (not those of the blocks in it).
+    pub fn writes(&self) -> Vec<SlotId> {
+        match self {
+            Stmt::Set(s, _) => vec![*s],
+            Stmt::Do(effect, _) => effect.writes(),
+            Stmt::Ext { outputs, .. } => outputs.iter().map(|(_, s)| *s).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The slots its own expressions read (not those of the blocks in it).
+    pub fn reads(&self) -> Vec<SlotId> {
+        let mut out = Vec::new();
+        match self {
+            Stmt::Set(_, e) | Stmt::Let(_, e) | Stmt::Print(e) => e.reads(&mut out),
+            Stmt::Do(_, args) => args.iter().for_each(|a| a.reads(&mut out)),
+            Stmt::Ext { inputs, .. } => inputs.iter().for_each(|(_, e)| e.reads(&mut out)),
+            Stmt::Check { value, expected, .. } => {
+                value.reads(&mut out);
+                expected.reads(&mut out);
+            }
+            Stmt::If(c, ..) | Stmt::While(c, _) => c.reads(&mut out),
+            Stmt::For { from, to, .. } => {
+                from.reads(&mut out);
+                to.reads(&mut out);
+            }
+            _ => {}
+        }
+        out
+    }
+}
+
 impl Program {
+    /// The slots a statement reads and changes (`n = n + 1`, a list's item
+    /// set from itself, a code square's `Shared.total += 1`): every
+    /// statement that changes one holds its lock while it does, so
+    /// branches on threads don't lose each other's changes. Per slot.
+    pub fn read_and_changed(&self) -> Vec<bool> {
+        fn walk(b: &Block, out: &mut Vec<bool>) {
+            for st in b {
+                let reads = st.reads();
+                for w in st.writes() {
+                    if reads.contains(&w) {
+                        out[w as usize] = true;
+                    }
+                }
+                match st {
+                    Stmt::If(_, a, b) => {
+                        walk(a, out);
+                        walk(b, out);
+                    }
+                    Stmt::While(_, b) | Stmt::For { body: b, .. } => walk(b, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = vec![false; self.slots.len()];
+        for h in &self.handlers {
+            walk(&h.body, &mut out);
+        }
+        out
+    }
+
+    /// Of SLOTS (that a statement writes), those it locks, in order.
+    pub fn locks_of(&self, slots: &[SlotId], locked: &[bool]) -> Vec<SlotId> {
+        let mut v: Vec<SlotId> = slots.iter().copied().filter(|s| locked[*s as usize]).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
     /// Whether any fire runs branches: then a compiled program shares its
     /// state between threads.
     pub fn has_branches(&self) -> bool {

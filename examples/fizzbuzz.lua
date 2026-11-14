@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "FizzBuzz: a loop from 1 to 15 sends each index through three modulo checks; three ifelse squares pick what to print. Pure squares (modulo, equal) compute when something reads them.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/entry", x = 0, y = 0 },
                 { id = 2, module = "flow/loop", x = 280, y = 0, fields = { from = "1", to = "16" } },

@@ -9,16 +9,19 @@
 //! one. Step runs them as tasks that take turns on one thread, so it can
 //! stop every one of them before its next square, all together.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use lineit_rt::Ext;
+use lineit_rt::ext::{Handles, Ticked};
 use lineit_rt::lua::LuaModule;
 use lineit_rt::{Record, Type, Value, image as img, ops, rand, text};
 
 use crate::ir::*;
+use crate::model::SquareId;
 
 enum Op {
     Enter(NodeId),
@@ -55,7 +58,23 @@ enum Op {
         outputs: Vec<(String, SlotId)>,
         fires: Vec<(String, Fire)>,
     },
+    Check {
+        square: SquareId,
+        label: String,
+        value: Expr,
+        expected: Expr,
+    },
     Return,
+}
+
+/// How a `test/expect` went, when the run got to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckResult {
+    pub square: SquareId,
+    pub label: String,
+    pub got: Value,
+    pub expected: Value,
+    pub ok: bool,
 }
 
 struct Code {
@@ -80,6 +99,12 @@ fn block(c: &mut Code, b: &Block) {
             Stmt::Do(f, a) => c.ops.push(Op::Do(f.clone(), a.clone())),
             Stmt::Fire(f) => c.ops.push(Op::Fire(f.clone())),
             Stmt::Stop => c.ops.push(Op::Stop),
+            Stmt::Check { square, label, value, expected } => c.ops.push(Op::Check {
+                square: *square,
+                label: label.clone(),
+                value: value.clone(),
+                expected: expected.clone(),
+            }),
             Stmt::Ext { instance, input, inputs, outputs, fires } => c.ops.push(Op::Ext {
                 instance: *instance,
                 input: input.clone(),
@@ -126,9 +151,10 @@ struct Frame {
     handler: HandlerId,
     pc: usize,
     locals: Vec<Value>,
-    /// Fires still to do, the next one last: a Lua module fires several
-    /// outputs, one after the other.
-    pending: Vec<Fire>,
+    /// Fires still to do, the next one last, with the slots that get their
+    /// values just before: a Lua module fires several outputs, one after
+    /// the other.
+    pending: Vec<(Vec<(SlotId, Value)>, Fire)>,
 }
 
 /// The meets of one fan-out, and which ones were reached (by branches on
@@ -202,30 +228,153 @@ pub struct World {
     ext_instances: Vec<(usize, usize)>,
     /// What it printed, for the caller to take.
     pub output: Mutex<Vec<String>>,
+    /// How the `test/expect`s it got to went, in order.
+    checks: Mutex<Vec<CheckResult>>,
     started: Mutex<Instant>,
     /// Relative paths are from here.
     pub base_dir: PathBuf,
     /// Set to end the program: every branch, on every thread, stops at its
     /// next op. Stop sets it from another thread; `flow/stop` from inside.
     pub stop: Arc<AtomicBool>,
+    /// Set to make every branch stop at its next op without ending the
+    /// program: the edit that restarts the branches ([`Interp::abandon`]).
+    pub interrupt: Arc<AtomicBool>,
+    /// Per slot: whether a statement reads and changes it, so those that
+    /// change it hold its lock ([`Program::read_and_changed`]).
+    locked: Vec<bool>,
+    any_locked: bool,
+    slot_locks: Vec<Mutex<()>>,
+    /// What ends the processes of extensions now, and what they write to
+    /// stderr (see [`lineit_rt::ext::Handles`]).
+    handles: Vec<Mutex<Handles>>,
+}
+
+/// What stands where a module that moved to another [`World`] was.
+struct Gone;
+
+impl Ext for Gone {
+    fn instance(&mut self, _: &[(&str, Value)]) -> Result<usize, String> {
+        Err("the module is in another program".into())
+    }
+    fn eval(&mut self, _: usize, _: &[(&str, Value)], _: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
+        Err("the module is in another program".into())
+    }
+    fn tick(&mut self, _: usize, _: Option<&str>, _: &[(&str, Value)], _: &[(&str, &Type)]) -> Result<Ticked, String> {
+        Err("the module is in another program".into())
+    }
 }
 
 impl World {
+    /// A world for PROG, with its slots at their initial values and the
+    /// modules EXTS (opened, with their HANDLES) and INSTANCES of them.
+    fn build(
+        prog: Arc<Program>,
+        exts: Vec<Box<dyn Ext>>,
+        handles: Vec<Handles>,
+        ext_instances: Vec<(usize, usize)>,
+        base_dir: PathBuf,
+        stop: Arc<AtomicBool>,
+        interrupt: Arc<AtomicBool>,
+    ) -> World {
+        let locked = prog.read_and_changed();
+        World {
+            handles: handles.into_iter().map(Mutex::new).collect(),
+            any_locked: locked.contains(&true),
+            locked,
+            slot_locks: prog.slots.iter().map(|_| Mutex::new(())).collect(),
+            slots: prog.slots.iter().map(|s| Padded(Mutex::new(s.init.clone()))).collect(),
+            prog,
+            exts: exts.into_iter().map(Mutex::new).collect(),
+            ext_instances,
+            output: Mutex::new(Vec::new()),
+            checks: Mutex::new(Vec::new()),
+            started: Mutex::new(Instant::now()),
+            base_dir,
+            stop,
+            interrupt,
+        }
+    }
+
+    /// Ends the processes of extensions (code in Python, C...): one stuck in
+    /// a call ends it, with an error. For Stop.
+    pub fn kill_externals(&self) {
+        for h in &self.handles {
+            if let Some(k) = &lock(h).kill {
+                k();
+            }
+        }
+    }
+
+    /// The variables of the canvas, by name, and their values now.
+    pub fn variables(&self) -> Vec<(String, Value)> {
+        self.prog.vars.iter().map(|(n, s)| (n.clone(), self.slot(*s as usize))).collect()
+    }
+
+    /// How the `test/expect`s the run got to went, so far.
+    pub fn checks(&self) -> Vec<CheckResult> {
+        lock(&self.checks).clone()
+    }
+
+    /// What the extensions printed, to the output.
+    fn printed(&self) {
+        let lines = lineit_rt::ext::take_printed();
+        if !lines.is_empty() {
+            lock(&self.output).extend(lines);
+        }
+    }
+
+    /// Holds the locks of the SLOTS (that an op changes) that need one, in
+    /// order, until what it returns is dropped: so the op is one step for
+    /// the other branches.
+    fn hold(&self, slots: &[SlotId]) -> Vec<std::sync::MutexGuard<'_, ()>> {
+        if !self.any_locked {
+            return Vec::new();
+        }
+        self.prog.locks_of(slots, &self.locked).into_iter().map(|s| lock(&self.slot_locks[s as usize])).collect()
+    }
+
     pub fn slot(&self, s: usize) -> Value {
         lock(&self.slots[s]).clone()
     }
 
     /// What it printed since the last time.
+    /// What it printed since this was last called, and what the processes
+    /// of its extensions wrote to stderr (if that's kept).
     pub fn take_output(&self) -> Vec<String> {
-        std::mem::take(&mut *lock(&self.output))
+        let mut out = std::mem::take(&mut *lock(&self.output));
+        for h in &self.handles {
+            if let Some(e) = &lock(h).stderr {
+                out.append(&mut lock(e));
+            }
+        }
+        out
     }
 
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
 
+    fn interrupted(&self) -> bool {
+        self.interrupt.load(Ordering::Relaxed)
+    }
+
     /// The value of each output that shows on a square of the canvas, by
     /// square and output.
+    /// What the code squares keep (their state), by square: ask it when
+    /// nothing runs (it waits for a square that's running).
+    pub fn code_states(&self) -> std::collections::HashMap<crate::model::SquareId, Vec<(String, Value)>> {
+        let mut m = std::collections::HashMap::new();
+        for (k, i) in self.prog.ext_instances.iter().enumerate() {
+            let (module, inst) = self.ext_instances[k];
+            if let Ok(st) = lock(&self.exts[module]).state(inst)
+                && !st.is_empty()
+            {
+                m.insert(i.square, st);
+            }
+        }
+        m
+    }
+
     pub fn shown(&self) -> std::collections::HashMap<(crate::model::SquareId, String), Value> {
         let mut m = std::collections::HashMap::new();
         for (i, s) in self.prog.slots.iter().enumerate() {
@@ -246,6 +395,119 @@ pub struct Interp {
     clock_next: Vec<f64>,
     /// How many ops ran, all in all.
     pub ops_run: u64,
+    /// The world that runs now, for another thread to look at (see
+    /// [`Interp::live`]).
+    live: Option<Arc<Mutex<Arc<World>>>>,
+}
+
+/// What [`Interp::swap`] did with the state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Swapped {
+    /// Values that carried over.
+    pub kept: usize,
+    /// Those whose type changed and were converted (as `value/convert` does), by name.
+    pub converted: Vec<String>,
+    /// Those whose type changed with no conversion, which start again, by name.
+    pub reset: Vec<String>,
+    /// Those of variables and squares that are gone.
+    pub dropped: usize,
+    /// Values that have nothing to tell them from another (inside a subgraph,
+    /// private to a square), which start again.
+    pub unkeyed: usize,
+    /// Entries of the edit that weren't there, which run now.
+    pub started: usize,
+}
+
+impl std::fmt::Display for Swapped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "kept {} value{}", self.kept, if self.kept == 1 { "" } else { "s" })?;
+        if !self.converted.is_empty() {
+            write!(f, ", converted (the type changed): {}", self.converted.join(", "))?;
+        }
+        if !self.reset.is_empty() {
+            write!(f, ", started again (the type changed): {}", self.reset.join(", "))?;
+        }
+        if self.dropped > 0 {
+            write!(f, ", dropped {}", self.dropped)?;
+        }
+        if self.unkeyed > 0 {
+            write!(f, ", {} inside subgraphs or private start again", self.unkeyed)?;
+        }
+        if self.started > 0 {
+            write!(f, ", ran {} new entr{}", self.started, if self.started == 1 { "y" } else { "ies" })?;
+        }
+        Ok(())
+    }
+}
+
+/// What tells a slot of one program from another in the next: where it
+/// shows on a square of the canvas, or the variable's name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum SlotKey {
+    Shown(SquareId, String),
+    Var(String),
+}
+
+type Keyed = (SlotKey, usize);
+
+fn slot_name(k: &Keyed) -> String {
+    match &k.0 {
+        SlotKey::Shown(sq, pin) => format!("{pin} of square {sq}"),
+        SlotKey::Var(n) => n.clone(),
+    }
+}
+
+/// The keys of each slot (it can be a variable and show on a square), each
+/// with how many before it have the same (variables of the same name in
+/// copies of a subgraph).
+fn slot_keys(p: &Program) -> Vec<Vec<Keyed>> {
+    let mut keys: Vec<Vec<SlotKey>> = p
+        .slots
+        .iter()
+        .map(|s| s.shows.as_ref().map(|(sq, pin)| SlotKey::Shown(*sq, pin.clone())).into_iter().collect())
+        .collect();
+    for (name, s) in &p.vars {
+        keys[*s as usize].push(SlotKey::Var(name.clone()));
+    }
+    let mut seen: HashMap<SlotKey, usize> = HashMap::new();
+    keys.into_iter()
+        .map(|ks| {
+            ks.into_iter()
+                .map(|k| {
+                    let n = seen.entry(k.clone()).or_default();
+                    *n += 1;
+                    (k, *n - 1)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Whether a module has to end before another is opened, as it can hold
+/// what the new one needs (the lock of a C# build, the library a Rust
+/// module loaded), and has to open again if the files changed.
+fn closes_first(e: &ExtDef) -> bool {
+    matches!(e.kind, ExtKind::Native { .. } | ExtKind::Process { lock: Some(_), .. })
+}
+
+/// The handlers of the entries NEW has that OLD hadn't (by square and
+/// module).
+fn new_entries(old: &Program, new: &Program) -> Vec<HandlerId> {
+    let key = |p: &Program, h: HandlerId| {
+        let n = &p.nodes[p.handlers[h as usize].node as usize];
+        (n.square, n.module.clone())
+    };
+    let mut had: Vec<_> = old.starts.targets.iter().map(|h| key(old, *h)).collect();
+    let mut fresh = Vec::new();
+    for h in &new.starts.targets {
+        match had.iter().position(|k| *k == key(new, *h)) {
+            Some(i) => {
+                had.swap_remove(i);
+            }
+            None => fresh.push(*h),
+        }
+    }
+    fresh
 }
 
 const MAX_FRAMES: usize = 1 << 20;
@@ -259,6 +521,8 @@ enum Next {
     /// It fans out: the slow path.
     FanOut(Fire),
     Stop,
+    /// The edit that restarts the branches wants them to stop.
+    Interrupt,
 }
 
 fn new_frame(code: &[Code], h: HandlerId) -> Frame {
@@ -289,11 +553,23 @@ fn call(task: &mut Task, code: &[Code], h: HandlerId, tail: bool) -> Result<(), 
 fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: bool) -> Result<Next, String> {
     while *left > 0 {
         *left -= 1;
-        if (*left).is_multiple_of(1024) && w.stopped() {
-            return Ok(Next::Stop);
+        if (*left).is_multiple_of(1024) {
+            if w.stopped() {
+                return Ok(Next::Stop);
+            }
+            if w.interrupted() {
+                return Ok(Next::Interrupt);
+            }
         }
         let Some(frame) = task.frames.last_mut() else { return Ok(Next::Done) };
-        if let Some(f) = frame.pending.pop() {
+        if let Some((writes, f)) = frame.pending.pop() {
+            {
+                let slots: Vec<SlotId> = writes.iter().map(|(s, _)| *s).collect();
+                let _held = w.hold(&slots);
+                for (s, v) in writes {
+                    *lock(&w.slots[s as usize]) = v;
+                }
+            }
             match f.targets.len() {
                 0 => {}
                 1 => call(task, code, f.targets[0], false)?,
@@ -315,6 +591,7 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 }
             }
             Op::Set(s, e) => {
+                let _held = w.hold(&[*s]);
                 let v = match e {
                     Expr::Local(l) => frame.locals[*l as usize].clone(),
                     _ => w.eval(e, &frame.locals)?,
@@ -330,6 +607,7 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 lock(&w.output).push(v.str().to_string());
             }
             Op::Do(effect, args) => {
+                let _held = w.hold(&effect.writes());
                 let args = args.iter().map(|a| w.eval(a, &frame.locals)).collect::<Result<Vec<_>, _>>()?;
                 w.effect(effect, args);
             }
@@ -363,7 +641,15 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 _ => return Ok(Next::FanOut(fire.clone())),
             },
             Op::Stop => return Ok(Next::Stop),
+            Op::Check { square, label, value, expected } => {
+                let got = w.eval(value, &frame.locals)?;
+                let expected = w.eval(expected, &frame.locals)?;
+                let ok = lineit_rt::value::same(&got, &expected);
+                lock(&w.checks).push(CheckResult { square: *square, label: label.clone(), got, expected, ok });
+            }
             Op::Ext { instance, input, inputs, outputs, fires } => {
+                let slots: Vec<SlotId> = outputs.iter().map(|(_, s)| *s).collect();
+                let _held = w.hold(&slots);
                 let args = inputs.iter().map(|(n, e)| Ok((n.as_str(), w.eval(e, &frame.locals)?))).collect::<Result<
                     Vec<_>,
                     String,
@@ -372,18 +658,21 @@ fn run_ops(task: &mut Task, w: &World, code: &[Code], left: &mut u64, stepping: 
                 let (m, inst) = w.ext_instances[*instance];
                 let tys: Vec<Type> = outputs.iter().map(|(_, s)| w.prog.slots[*s as usize].ty.clone()).collect();
                 let outs: Vec<(&str, &Type)> = outputs.iter().zip(&tys).map(|((n, _), t)| (n.as_str(), t)).collect();
-                let (got, fired) = lock(&w.exts[m]).tick(inst, input.as_deref(), &args, &outs)?;
-                for ((_, s), v) in outputs.iter().zip(got) {
+                let run = lock(&w.exts[m]).run(inst, input.as_deref(), &args, &outs);
+                w.printed();
+                let run = run?;
+                for ((_, s), v) in outputs.iter().zip(run.set) {
                     if let Some(v) = v {
                         *lock(&w.slots[*s as usize]) = v;
                     }
                 }
                 let mut list = Vec::new();
-                for name in fired {
+                for (name, values) in run.fire {
                     let f = fires.iter().find(|(n, _)| *n == name).ok_or_else(|| {
                         format!("{}: it fires `{name}`, which isn't one of its tick outputs", w.prog.exts[m].path)
                     })?;
-                    list.push(f.1.clone());
+                    let writes = values.into_iter().filter_map(|(o, v)| Some((outputs.get(o)?.1, v))).collect();
+                    list.push((writes, f.1.clone()));
                 }
                 // the first to fire is the last, and goes first
                 list.reverse();
@@ -408,7 +697,17 @@ fn run_branch(task: &mut Task, w: &World, code: &[Code]) -> Result<(), String> {
         match run_ops(task, w, code, &mut left, false)? {
             Next::Budget => {}
             Next::Done => return Ok(()),
-            Next::FanOut(f) => fan_out(task, &f, w, code)?,
+            Next::FanOut(f) => {
+                fan_out(task, &f, w, code)?;
+                if w.interrupted() {
+                    task.frames.clear();
+                    return Ok(());
+                }
+            }
+            Next::Interrupt => {
+                task.frames.clear();
+                return Ok(());
+            }
             Next::Stop => {
                 w.stop.store(true, Ordering::Relaxed);
                 task.frames.clear();
@@ -457,46 +756,328 @@ fn fan_out(task: &mut Task, fire: &Fire, w: &World, code: &[Code]) -> Result<(),
     Ok(())
 }
 
+/// The module of KIND (a Lua module, a code square's function, a Rust
+/// module...), ready to make squares of; PATH names it in errors.
+pub fn open_ext(path: &str, kind: &ExtKind) -> Result<Box<dyn Ext>, String> {
+    Ok(match kind {
+        ExtKind::Lua { source } => Box::new(LuaModule::load(path, source)?),
+        ExtKind::LuaCode { name, glue } => Box::new(lineit_rt::lua::LuaCode::load(name, glue)?),
+        ExtKind::Process { name, commands, args, env, lock, host, load } => {
+            let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            Box::new(lineit_rt::process::Process::start(name, &commands, &args, &env, lock.as_deref(), host, load)?)
+        }
+        ExtKind::Native { crate_dir, crate_name, ty } => {
+            Box::new(crate::native::Dylib::open(crate_dir, crate_name, ty).map_err(|err| format!("{path}: {err}"))?)
+        }
+    })
+}
+
 impl Interp {
     pub fn new(prog: Program, base_dir: PathBuf) -> Result<Interp, String> {
         let code = prog.handlers.iter().map(compile).collect();
         let mut exts: Vec<Box<dyn Ext>> = Vec::new();
         for e in &prog.exts {
-            exts.push(match &e.kind {
-                ExtKind::Lua { source } => Box::new(LuaModule::load(&e.path, source)?),
-                ExtKind::Native { crate_dir, crate_name, ty } => Box::new(
-                    crate::native::Dylib::open(crate_dir, crate_name, ty)
-                        .map_err(|err| format!("{}: {err}", e.path))?,
-                ),
-            });
+            exts.push(open_ext(&e.path, &e.kind)?);
         }
         let mut ext_instances = Vec::new();
         for i in &prog.ext_instances {
             let params: Vec<(&str, Value)> = i.params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
             ext_instances.push((i.module, exts[i.module].instance(&params)?));
         }
+        let handles = exts.iter_mut().map(|e| e.handles()).collect();
         let prog = Arc::new(prog);
         Ok(Interp {
             clock_next: vec![0.0; prog.clocks.len()],
-            w: Arc::new(World {
-                slots: prog.slots.iter().map(|s| Padded(Mutex::new(s.init.clone()))).collect(),
-                prog: prog.clone(),
-                exts: exts.into_iter().map(Mutex::new).collect(),
+            w: Arc::new(World::build(
+                prog.clone(),
+                exts,
+                handles,
                 ext_instances,
-                output: Mutex::new(Vec::new()),
-                started: Mutex::new(Instant::now()),
                 base_dir,
-                stop: Arc::new(AtomicBool::new(false)),
-            }),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+            )),
             prog,
             code: Arc::new(code),
             tasks: Vec::new(),
             ops_run: 0,
+            live: None,
         })
     }
 
     pub fn program(&self) -> &Program {
         &self.prog
+    }
+
+    /// Whether [`Interp::swap`] can run now: no branch is in the middle of
+    /// anything, and the program hasn't ended.
+    pub fn can_swap(&self) -> bool {
+        self.is_idle() && !self.w.stopped()
+    }
+
+    /// The world that runs, as it is after each [`Interp::swap`]: for the
+    /// thread that shows what the program does, and stops it. Ask for it
+    /// after [`Interp::set_stop`].
+    pub fn live(&mut self) -> Arc<Mutex<Arc<World>>> {
+        self.live.get_or_insert_with(|| Arc::new(Mutex::new(self.w.clone()))).clone()
+    }
+
+    /// Makes INTERRUPT the flag that makes the branches stop without ending
+    /// the program (see [`World::interrupt`]). Only before it starts.
+    pub fn set_interrupt(&mut self, interrupt: Arc<AtomicBool>) {
+        if let Some(w) = Arc::get_mut(&mut self.w) {
+            w.interrupt = interrupt;
+        }
+    }
+
+    /// Drops every branch, wherever it is: for an edit a program that never
+    /// goes idle can't be given otherwise. Only when none runs on a thread
+    /// (they've stopped, after [`World::interrupt`], or the program steps).
+    /// The state stays; [`Interp::restart`] runs the entries again.
+    pub fn abandon(&mut self) {
+        self.tasks.clear();
+        self.w.interrupt.store(false, Ordering::Relaxed);
+    }
+
+    /// Runs the entries of the program again, with the state it has.
+    pub fn restart(&mut self) -> Result<(), String> {
+        let starts = self.prog.starts.clone();
+        self.root(&starts)
+    }
+
+    /// Goes on with PROG (the canvas, edited) in place of the program that
+    /// runs, keeping its state: the variables by name, the outputs that show
+    /// on a square by square and pin (a value of another type is converted
+    /// as `value/convert` does, or starts again), the clocks' schedule by
+    /// square, and the modules and code squares that didn't change, with
+    /// their state. What's gone is dropped. Entries that are new run now;
+    /// the others don't run again. FILES: files the modules are made of
+    /// changed on disk (a module that builds one, such as C# or Rust,
+    /// opens again).
+    ///
+    /// It needs [`Interp::can_swap`]: this thread is the only one that
+    /// touches the world, so no branch sees half of each program. If it
+    /// fails the old program goes on as it was, except that a module that
+    /// had to end before another opened (see `closes_first`) opens again
+    /// without its state.
+    pub fn swap(&mut self, prog: Program, files: bool) -> Result<Swapped, String> {
+        if self.w.stopped() {
+            return Err("the program is stopping".into());
+        }
+        if !self.is_idle() {
+            return Err("a branch is in the middle of a handler".into());
+        }
+        let old = self.w.clone();
+        let oldp = self.prog.clone();
+        let reusable = |e: &ExtDef, o: &ExtDef| o.path == e.path && o.kind == e.kind && !(files && closes_first(e));
+        let mut taken = vec![false; oldp.exts.len()];
+        let mut origin: Vec<Option<usize>> = Vec::new();
+        for e in &prog.exts {
+            let same = (0..oldp.exts.len()).find(|&i| !taken[i] && reusable(e, &oldp.exts[i]));
+            if let Some(i) = same {
+                taken[i] = true;
+            }
+            origin.push(same);
+        }
+        // a module that holds what a new one needs ends first
+        let opening = |j: usize| origin[j].is_none();
+        let mut closed = Vec::new();
+        if (0..prog.exts.len()).any(|j| opening(j) && closes_first(&prog.exts[j])) {
+            for i in (0..oldp.exts.len()).filter(|&i| !taken[i] && closes_first(&oldp.exts[i])) {
+                *lock(&old.exts[i]) = Box::new(Gone);
+                closed.push(i);
+            }
+        }
+        // what a failure undoes: the modules that ended open again
+        let reopen = |why: String| -> String {
+            let mut failed = Vec::new();
+            for &i in &closed {
+                let again = open_ext(&oldp.exts[i].path, &oldp.exts[i].kind).and_then(|mut m| {
+                    for (j, oi) in oldp.ext_instances.iter().enumerate().filter(|(_, oi)| oi.module == i) {
+                        let params: Vec<(&str, Value)> =
+                            oi.params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+                        if m.instance(&params)? != old.ext_instances[j].1 {
+                            return Err("its squares changed places".to_string());
+                        }
+                    }
+                    *lock(&old.handles[i]) = m.handles();
+                    *lock(&old.exts[i]) = m;
+                    Ok(())
+                });
+                if let Err(e) = again {
+                    failed.push(format!("{}: {e}", oldp.exts[i].path));
+                }
+            }
+            match (closed.is_empty(), failed.is_empty()) {
+                (true, _) => why,
+                (false, true) => format!("{why} (the modules that ended opened again, without their state)"),
+                (false, false) => {
+                    format!("{why} (and these couldn't open again, the program can't go on: {})", failed.join("; "))
+                }
+            }
+        };
+        let opened = (|| -> Result<(Vec<Option<Box<dyn Ext>>>, Vec<(usize, usize)>), String> {
+            let mut fresh: Vec<Option<Box<dyn Ext>>> = Vec::new();
+            for (j, e) in prog.exts.iter().enumerate() {
+                fresh.push(if opening(j) { Some(open_ext(&e.path, &e.kind)?) } else { None });
+            }
+            // the squares of code: the same square with the same params keeps its state
+            let mut used = vec![false; oldp.ext_instances.len()];
+            let mut instances = Vec::new();
+            for ni in &prog.ext_instances {
+                let params: Vec<(&str, Value)> = ni.params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+                let kept = origin[ni.module].and_then(|om| {
+                    (0..oldp.ext_instances.len()).find(|&j| {
+                        let oi = &oldp.ext_instances[j];
+                        !used[j]
+                            && old.ext_instances[j].0 == om
+                            && oi.square == ni.square
+                            && oi.params.len() == ni.params.len()
+                            && oi
+                                .params
+                                .iter()
+                                .zip(&ni.params)
+                                .all(|(a, b)| a.0 == b.0 && lineit_rt::value::same(&a.1, &b.1))
+                    })
+                });
+                let inst = match kept {
+                    Some(j) => {
+                        used[j] = true;
+                        old.ext_instances[j].1
+                    }
+                    None => match origin[ni.module] {
+                        Some(om) => lock(&old.exts[om]).instance(&params)?,
+                        None => fresh[ni.module].as_mut().expect("a new module").instance(&params)?,
+                    },
+                };
+                instances.push((ni.module, inst));
+            }
+            Ok((fresh, instances))
+        })();
+        let (fresh, instances) = opened.map_err(reopen)?;
+        // the modules move to the new world; if what's left to work out
+        // fails they move back
+        let (mut exts, mut handles) = (Vec::new(), Vec::new());
+        for (j, f) in fresh.into_iter().enumerate() {
+            match (f, origin[j]) {
+                (Some(mut e), _) => {
+                    handles.push(e.handles());
+                    exts.push(e);
+                }
+                (None, Some(i)) => {
+                    exts.push(std::mem::replace(&mut *lock(&old.exts[i]), Box::new(Gone)));
+                    handles.push(std::mem::take(&mut *lock(&old.handles[i])));
+                }
+                (None, None) => unreachable!("a module is opened or kept"),
+            }
+        }
+        let prog = Arc::new(prog);
+        let w = World::build(
+            prog.clone(),
+            exts,
+            handles,
+            instances,
+            old.base_dir.clone(),
+            old.stop.clone(),
+            old.interrupt.clone(),
+        );
+        *lock(&w.started) = *lock(&old.started);
+        *lock(&w.checks) = lock(&old.checks).clone();
+        // the slots that carry over
+        let mut report = Swapped::default();
+        let mut olds: HashMap<Keyed, usize> = HashMap::new();
+        let old_keys = slot_keys(&oldp);
+        for (i, ks) in old_keys.iter().enumerate() {
+            for k in ks {
+                olds.insert(k.clone(), i);
+            }
+        }
+        let mut matched = vec![false; oldp.slots.len()];
+        for (i, ks) in slot_keys(&prog).iter().enumerate() {
+            if ks.is_empty() {
+                report.unkeyed += 1;
+                continue;
+            }
+            let Some((k, o)) = ks.iter().find_map(|k| olds.get(k).map(|o| (k, *o))).filter(|(_, o)| !matched[*o])
+            else {
+                continue;
+            };
+            matched[o] = true;
+            if oldp.slots[o].ty == prog.slots[i].ty {
+                *lock(&w.slots[i]) = old.slot(o);
+                report.kept += 1;
+            } else if let Ok(e) =
+                crate::registry::builtin::convert(Expr::Const(old.slot(o)), &oldp.slots[o].ty, &prog.slots[i].ty)
+                && let Ok(v) = w.eval(&e, &[])
+            {
+                *lock(&w.slots[i]) = v;
+                report.converted.push(slot_name(k));
+            } else {
+                report.reset.push(slot_name(k));
+            }
+        }
+        report.dropped = old_keys.iter().enumerate().filter(|(i, ks)| !ks.is_empty() && !matched[*i]).count();
+        // the clocks: one that's still there keeps its time, or the new
+        // interval if that comes first
+        let now = lock(&w.started).elapsed().as_secs_f64();
+        let mut before: HashMap<(SquareId, usize), f64> = HashMap::new();
+        let mut seen: HashMap<SquareId, usize> = HashMap::new();
+        for (c, t) in oldp.clocks.iter().zip(&self.clock_next) {
+            let k = seen.entry(c.square).or_default();
+            before.insert((c.square, *k), *t);
+            *k += 1;
+        }
+        let mut clock_next = Vec::new();
+        let mut seen: HashMap<SquareId, usize> = HashMap::new();
+        for c in &prog.clocks {
+            let k = seen.entry(c.square).or_default();
+            let b = before.get(&(c.square, *k)).copied();
+            *k += 1;
+            match w.eval(&c.interval, &[]) {
+                Ok(i) => {
+                    let at = now + i.float().max(0.001);
+                    clock_next.push(b.map_or(at, |b| b.min(at)));
+                }
+                Err(e) => {
+                    // the modules go back, and the old program goes on
+                    for (j, o) in origin.iter().enumerate() {
+                        if let Some(i) = o {
+                            *lock(&old.exts[*i]) = std::mem::replace(&mut *lock(&w.exts[j]), Box::new(Gone));
+                            *lock(&old.handles[*i]) = std::mem::take(&mut *lock(&w.handles[j]));
+                        }
+                    }
+                    return Err(reopen(format!("a clock's interval fails: {e}")));
+                }
+            }
+        }
+        // done: what's left of the modules that went away is shown, and they end
+        for i in (0..oldp.exts.len()).filter(|&i| !taken[i]) {
+            *lock(&old.exts[i]) = Box::new(Gone);
+            if let Some(e) = &lock(&old.handles[i]).stderr {
+                lock(&w.output).append(&mut lock(e));
+            }
+        }
+        let mut out = std::mem::take(&mut *lock(&old.output));
+        out.append(&mut lock(&w.output));
+        *lock(&w.output) = out;
+        report.started = 0;
+        let fresh_entries = new_entries(&oldp, &prog);
+        self.prog = prog.clone();
+        self.code = Arc::new(prog.handlers.iter().map(compile).collect());
+        self.tasks.clear();
+        self.w = Arc::new(w);
+        self.clock_next = clock_next;
+        if let Some(l) = &self.live {
+            *lock(l) = self.w.clone();
+        }
+        if !fresh_entries.is_empty() {
+            report.started = fresh_entries.len();
+            // can't fail: one frame each
+            let _ = self.root(&Fire { targets: fresh_entries, meets: Vec::new() });
+        }
+        Ok(report)
     }
 
     /// Makes STOP the flag that stops the program (see [`World::stop`]), to
@@ -708,6 +1289,14 @@ impl Interp {
                         self.stop_all();
                         return Ok(());
                     }
+                    if w.interrupted() {
+                        self.abandon();
+                        return Ok(());
+                    }
+                }
+                Next::Interrupt => {
+                    self.abandon();
+                    return Ok(());
                 }
                 Next::Stop => {
                     self.w.stop.store(true, Ordering::Relaxed);
@@ -848,7 +1437,9 @@ impl World {
                     .map(|(n, e)| Ok((n.as_str(), self.eval(e, locals)?)))
                     .collect::<Result<Vec<_>, String>>()?;
                 let (m, inst) = self.ext_instances[*instance];
-                lock(&self.exts[m]).eval(inst, &args, &[(output.as_str(), ty)])?.remove(0)
+                let v = lock(&self.exts[m]).eval(inst, &args, &[(output.as_str(), ty)]);
+                self.printed();
+                v?.remove(0)
             }
         })
     }
@@ -921,6 +1512,7 @@ impl World {
             Func::ImgBrightness => Value::Image(img::brightness(im(0), fl(1))),
             Func::ImgContrast => Value::Image(img::contrast(im(0), fl(1))),
             Func::ImgTint => Value::Image(img::tint(im(0), s(1), fl(2))),
+            Func::ImgShader => Value::Image(lineit_rt::shader::apply_file(im(0), s(1), fl(2), &a[3..])),
         }
     }
 }
@@ -1016,13 +1608,19 @@ pub fn run_to_end(
     mut print: impl FnMut(&str),
 ) -> Result<(), String> {
     let mut it = Interp::new(prog, base_dir)?;
-    it.start()?;
+    // what it printed is printed before what went wrong, if anything did
+    let r = it.start();
+    for line in it.w.take_output() {
+        print(&line);
+    }
+    r?;
     let started = Instant::now();
     loop {
-        let st = it.run(100_000)?;
+        let st = it.run(100_000);
         for line in it.w.take_output() {
             print(&line);
         }
+        let st = st?;
         if st == Status::Idle {
             let Some(wait) = it.next_clock() else { return Ok(()) };
             if let Some(limit) = seconds
@@ -1031,7 +1629,11 @@ pub fn run_to_end(
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_secs_f64(wait));
-            it.tick_clocks(false)?;
+            let r = it.tick_clocks(false);
+            for line in it.w.take_output() {
+                print(&line);
+            }
+            r?;
         }
     }
 }

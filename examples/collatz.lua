@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "The Collatz sequence of 27: while n isn't 1, n becomes n / 2 if it's even and 3n + 1 if it's odd. Prints every n and, at the end, how many steps it took. The two sides of the ifelse both tick the same var/set of `steps`: only one runs, so they don't wait for each other.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/entry", x = 0, y = 0 },
                 { id = 2, module = "var/var", x = 0, y = 106, params = { initial = "27", name = "n", type = "int" } },

@@ -3,6 +3,8 @@
 //!
 //! With `LINEIT_TEST_COMPILE=1`, each is also compiled (with cargo, so it
 //! takes a while) and the program must print the same.
+// tests start the programs as a user does
+#![allow(clippy::disallowed_methods)]
 
 use std::path::{Path, PathBuf};
 
@@ -12,11 +14,17 @@ fn root() -> PathBuf {
 
 fn canvases() -> Vec<PathBuf> {
     let mut v = Vec::new();
+    let dotnet = lineit_core::registry::code::sdk_ready();
     for dir in ["tests", "examples"] {
         let Ok(entries) = std::fs::read_dir(root().join(dir)) else { continue };
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().is_some_and(|x| x == "lua") && p.with_extension("out").exists() {
+            if p.extension().is_none_or(|x| x != "lua") || !p.with_extension("out").exists() {
+                continue;
+            }
+            if !dotnet && p.file_name().is_some_and(|n| n.to_string_lossy().contains("csharp")) {
+                eprintln!("skipped {}: no .NET 10 SDK", p.display());
+            } else {
                 v.push(p);
             }
         }
@@ -27,7 +35,12 @@ fn canvases() -> Vec<PathBuf> {
 
 fn lower(path: &Path) -> lineit_core::ir::Program {
     let src = std::fs::read_to_string(path).unwrap();
-    let canvas = lineit_core::file::read_canvas(&src, &path.display().to_string()).unwrap();
+    let mut canvas = lineit_core::file::read_canvas(&src, &path.display().to_string()).unwrap();
+    canvas.dir = path.parent().map(|p| p.to_path_buf());
+    // the languages from files the canvases use (always the same, so tests
+    // in parallel load the same)
+    let langs = root().join("examples/languages");
+    lineit_core::registry::code::file::load_dirs(&[langs.as_path()]);
     let mut reg = lineit_core::registry::Registry::builtin();
     reg.load_dir(&path.parent().unwrap().join("modules"), "");
     assert!(reg.errors.is_empty(), "{:?}", reg.errors);
@@ -72,7 +85,10 @@ fn compiled() {
         let exe = out.join(lineit_core::paths::exe(&name));
         let opts = lineit_core::codegen::Options::for_canvas(&path, exe.clone());
         let mut log = String::new();
-        if let Err(e) = lineit_core::codegen::compile(&lower(&path), &opts, &mut |l| {
+        let prog = lower(&path);
+        // a canvas with a clock runs until it's killed; the others, to their end
+        let limit = if prog.clocks.is_empty() { 60.0 } else { SECONDS + 0.05 };
+        if let Err(e) = lineit_core::codegen::compile(&prog, &opts, &mut |l| {
             log.push_str(l);
             log.push('\n');
         }) {
@@ -84,9 +100,8 @@ fn compiled() {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        // a canvas with a clock runs until it's killed
         let started = std::time::Instant::now();
-        while child.try_wait().unwrap().is_none() && started.elapsed().as_secs_f64() < SECONDS + 0.05 {
+        while child.try_wait().unwrap().is_none() && started.elapsed().as_secs_f64() < limit {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let _ = child.kill();

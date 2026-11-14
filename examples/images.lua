@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "Edits a photo, symi.png next to it (houses on Symi, by Jebulon, CC0): made 480 pixels wide, then two ways: gray with more contrast, and the houses in its middle, tinted warm and mirrored. Run saves both next to it, as symi-gray.png and symi-houses.png. The image squares are pure: each shows its image before you run anything. Drop an image file on the canvas to open another one.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "image/open", x = 0, y = 0, fields = { path = "symi.png" } },
                 { id = 2, module = "image/resize", x = 280, y = 0, fields = { height = "320", width = "480" } },

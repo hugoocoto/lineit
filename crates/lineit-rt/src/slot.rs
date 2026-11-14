@@ -3,16 +3,24 @@
 //!
 //! A program without fan-outs runs on one thread and keeps each as a
 //! [`Local`], a plain field. One with fan-outs shares its state between
-//! threads, so numbers and bools become atomics (relaxed: two branches that
-//! change one at once can lose a change, as the language says, but nothing
-//! tears) and everything else is behind a mutex. All of them have the same
-//! methods, so the generated code is the same either way.
+//! threads, so numbers and bools become atomics (relaxed) and everything
+//! else is behind a mutex. All of them have the same methods, so the
+//! generated code is the same either way. A statement that reads and
+//! changes a slot (`n = n + 1`) is one step for the other branches: the
+//! statements that change such a slot hold its [`lock`] while they do, so
+//! no change is lost.
 //!
 //! `with` and `with_mut` take what they need and release the lock before
 //! returning: the generated code computes the arguments first, so it never
 //! holds two locks at once.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+
+/// Holds M, the lock of a slot statements read and change, until dropped.
+#[inline]
+pub fn lock(m: &'static Mutex<()>) -> MutexGuard<'static, ()> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
 
 #[derive(Default)]

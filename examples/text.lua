@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "Strings: positions and lengths count characters (not bytes), and negative positions count from the end. split makes a list, which list/at and list/size read and join puts back together. value/constant and value/convert make values of the type you choose.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "string/concat", x = 0, y = 0, fields = { a = "line", b = "it" } },
                 { id = 2, module = "string/length", x = 0, y = 128, fields = { text = "añadir" } },

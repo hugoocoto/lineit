@@ -119,7 +119,7 @@ impl Module for ExtModuleDef {
     }
     fn kind(&self) -> Kind {
         match self.kind {
-            ExtKind::Lua { .. } => Kind::Lua,
+            ExtKind::Lua { .. } | ExtKind::LuaCode { .. } | ExtKind::Process { .. } => Kind::Lua,
             ExtKind::Native { .. } => Kind::Native,
         }
     }

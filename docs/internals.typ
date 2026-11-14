@@ -41,7 +41,7 @@ Three crates:
 - `lineit-rt`, the runtime: what the interpreter and compiled programs share.
   Values and how they print, strings, lists, images, branches, Lua modules,
   Rust modules. It must build on its own, with no dependency unless a feature
-  asks for one (`image`, `lua`), because lineit writes its source out next to
+  asks for one (`image`, `lua`, `shader`), because lineit writes its source out next to
   every program it compiles (`codegen::write_runtime`).
 - `lineit-core`, everything but the GUI.
 - `lineit`, the command line and the editor (egui).
@@ -67,6 +67,12 @@ module path, a position, its params and the text in its fields) and links
 numbered, so a canvas still opens after a module gains or reorders pins; a
 link to a pin that isn't there is left out when lowering, not an error.
 
+Ids are stable, so two versions of a canvas can be compared by them (see
+@sec-diff). `Canvas::next` is one more than the highest id any square has had:
+`Canvas::add` raises it and removing a square doesn't lower it, so
+`Canvas::next_id` never gives an id twice. The editor's paste keeps a square's
+id when no square on the canvas has it, and undo and redo keep `next` as it is.
+
 == Files
 
 A canvas file is Lua that returns a table:
@@ -83,6 +89,10 @@ return {
         links = { { 1, "then", 2, "tick" } },
 }
 ```
+
+A canvas that had squares deleted also has `next_id = N` (the id after the
+highest one used): older lineits ignore it, and a file without it means the
+highest id plus one, so the format number didn't change.
 
 `file::with_data` reads it: a Lua state with no libraries at all, an empty
 environment, a memory limit (`file::MEMORY`) and an instruction limit
@@ -141,11 +151,33 @@ inside.
 Then every real node gets its signature (after the variables: `var/var`
 squares, by scope), and each data input its `Source`: a wire, followed back
 through pass nodes to a real output; a field; or nothing. Each tick output
-gets its targets, followed forward. A subgraph that contains itself is an
+gets its targets, followed forward. A data input (of a real square, or a
+subgraph's, which is a pass node) with more than one wire is an error:
+`Canvas::connect` replaces the old wire, so only a file written by hand, or
+an old one, can have two. Tick inputs take any number. A subgraph that contains itself is an
 error on its square.
 
 What goes wrong is a `Diag` on a square of the canvas: the square itself, or
 the subgraph square it's inside of.
+
+*Functions.* `list/map`, `list/filter` and `list/reduce` have a param of kind
+`ParamKind::Function { args }`: the path of a subgraph. `Flattener::function`
+inlines it once, in a scope of its own (so its variables are per square that
+uses it), right where the square is. Its data `graph/input` ports get their
+`incoming` from the calling square's outputs named in `args` (`value`, or
+`acc` then `value`), and a `tick` port from its `call` output: from then on
+`source()` and `targets()` walk through them as through any subgraph. Its data
+`graph/output` ports go to `FNode::fn_outs` (the `Source`, the port's type and
+name), which `types::infer` checks (`the function's output y is int, and it
+gets str`). The signature comes from the subgraph's ports
+(`SigCx::function`, `Subgraph::fn_ports`), all of it concrete types: wrong
+port counts, a filter that doesn't give a bool or a reduce whose accumulator
+and output differ are errors on the calling square. A function with no tick
+input is *pure*: the loop reads `Lx::fn_result` after setting the `value`
+slot. One with a tick input runs on ticks: the loop `Fire`s `call`, which
+returns when everything it ticked has finished (branches and meets as
+anywhere), and then reads the outputs. A square with a tick pin inside a
+function with no tick input is an error, as nothing would run it.
 
 = Types <sec-types>
 
@@ -227,6 +259,42 @@ The editor runs it on a thread of its own (`editor/runner.rs`), and reads
 what it prints, which squares it's stopped before and the values of the
 slots from a `View` a few times a second.
 
+== Editing while running
+
+When the canvas changes under a live run, `Tab::offer_edit` compares it with
+the canvas the run goes by (`diff::diff`: moving squares isn't an edit; a
+file the canvas depends on that changed on disk is, `Tab::files_generation`).
+If it lowers, the runner gets the new `Program` (`Runner::offer`, a
+`Cmd::Swap` to wake it); if not, the view says the old program goes on. The
+canvas the run goes by only changes when the runner says it applied the edit
+(`View::applied`), so a failed or discarded edit is not taken for done.
+
+The runner thread calls `Interp::swap` as soon as `Interp::can_swap` (no
+live task, not stopped): after a `run`, while it waits for a clock, or after
+a Step. Branches on threads are scoped to `fan_out`, so they're all joined by
+then: nothing else touches the `World`, and a read-and-change can't be cut in
+two. A program that never goes idle gets "apply now" (`Runner::restart`): it
+sets `World::interrupt`, which every branch checks like Stop but without
+ending the program; `fan_out` joins them, `Interp::abandon` drops the tasks,
+and `swap` and `Interp::restart` (the entries again) follow.
+
+`swap` works everything out before it gives up the old program, and undoes
+what it can if something fails. Slots are told apart by `slot_keys`: where
+they show on a square (`SlotDef::shows`) and the variable's name
+(`Program::vars`), counted when a name repeats; a slot with neither starts
+again (and is counted in `Swapped`). The same type: the value moves; another:
+`registry::builtin::convert` (what `value/convert` lowers to) is evaluated on
+it, or it starts again. Modules (`ExtDef`) with the same path and kind move
+over with their `Handles`, so a Python process isn't restarted by an edit
+elsewhere, and an instance with the same square and params keeps its state.
+The modules `closes_first` (a C# build holds a lock, a Rust dylib is
+loaded by path) end before their replacements open, and if that fails they
+open again without their state. Clocks are told apart by `Clock::square`:
+they keep their next time, or now plus the new interval if that's sooner.
+Entries that weren't there (`new_entries`) run. `Interp::live` is the cell
+the thread that shows what the program does, and kills its processes on
+Stop, reads the world from; it follows each swap.
+
 = Compiling <sec-codegen>
 
 `codegen::generate` turns a `Program` into the `main.rs` of a crate that
@@ -288,6 +356,32 @@ its modules loaded as `NAME/...`. A folder with a `package.lua` in the
 packages folder is loaded as it is, for making one. The zip checks every
 file with its CRC as it's read.
 
+= Diffs <sec-diff>
+
+`diff::diff` compares two canvases by square id and returns a `Diff`: squares
+added and removed, squares in both whose module, fields or params changed
+(each with the entries that did), squares that only moved, and wires added and
+removed. Camera, `doc` and positions aren't the program. `diff::lines` is the
+line diff of a multi-line value, by the `similar` crate, with a CRLF and a
+missing last newline made visible; `diff::outline` is a canvas as text (no
+positions), which `lineit text` prints for git's textconv, and keeps those
+differences too, so `git diff` and `lineit diff` agree on what changed.
+
+`diff::merge` puts both on one canvas for the editor: the squares and wires of
+the new canvas, and the ones only the old had, with a `Mark` for each square
+(added, removed, changed, wired: a wire to or from it changed, moved). A tab
+made by `Tab::view` has `label` (it's read-only) and `diff` (the merge). The
+removed wires are drawn, but lowering leaves them out, and the diagnostics of
+removed squares, so they can't show false errors. `]c` and `[c` go through
+`nav::change` over the squares the merge calls changes, in the order of
+`nav::order`.
+
+`diff::uses` finds where a subgraph is: it reads the canvases under a folder
+(four levels, no index) for squares of that module; `lineit diff` calls it
+for `.graph.lua` files. `lineit diff A B` also takes `REV:path`, read with
+`git show` and placed in the working tree from `git rev-parse --show-toplevel`
+(or from here for `REV:./path`).
+
 = The editor <sec-editor>
 
 `editor/app.rs` is the window: tabs, the bar, the output, the module search,
@@ -299,3 +393,34 @@ being dragged or typed, and the canvas is lowered again when it changed.
 Previews of the images pure squares make are worked out on a thread from the
 expressions lowering hands out (`Lowered::previews`), without running
 anything.
+
+A square's pins can depend on a file: `image/shader` has the uniforms of its
+shader as inputs. Signatures read it through `SigCx::read`, which resolves the
+path against `Canvas::dir` (the folder of the canvas's file, set by whoever
+opens it, not saved) and notes the file's modification time in
+`Lowered::deps`; each frame `Tab::update` compares those times and lowers
+again when one changed.
+
+The shader (`lineit-rt/src/shader*`) is a small interpreter. `prep.rs` is the
+text pass: the preprocessor, and the two things the tree-sitter grammar can't
+read (`1e-3`, `float[3] a`). The grammar (the `tree-sitter-gdshader` crate)
+parses; `parse.rs` turns its tree into `ast.rs`, where every name is a slot
+and constants are folded; `eval.rs` runs `fragment()` for each pixel, over
+`val.rs`'s values (components kept as `f64`, rounded to `f32` or wrapped at
+32 bits after each operation). Math goes through `libm`, so the pixels are the
+same on every machine. A shader is parsed once per text and tried on one pixel,
+so what's wrong with it is told when its square is made, not for each pixel;
+rows are shared among threads. Note that this grammar ends a `for` at its `)`,
+so the statement after it is the body.
+
+Vim mode is three files. `editor/vim.rs` is a state machine with no window:
+keys (`Input`) in, actions (`Act`) out, and the parser of `:` commands; its
+modes are Normal, Visual, Pin (wiring from the keyboard) and the command
+line, and typing in a field is egui's text box, as without vim mode.
+`editor/nav.rs` works out where an action goes (the square nearest in a
+direction, along the wires, in order, matching a search; where the camera
+has to be to show one) from the rectangles `canvas.rs` drew the frame
+before, which it keeps in `CanvasState`. `editor/app/vimctl.rs` turns egui's
+events into `Input`s, before the shortcuts read them, and does what the
+actions say with the tabs, the search, the prompts and the settings. The
+mouse and the keyboard make wires by the same rule (`canvas::can_wire`).

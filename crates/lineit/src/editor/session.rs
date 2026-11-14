@@ -12,7 +12,6 @@
 //! works the same on every OS.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
 /// How long the old one waits for the new one.
@@ -69,13 +68,14 @@ impl Exe {
         let file = tmp.join(format!("lineit-session-{id}.lua"));
         let ready = tmp.join(format!("lineit-session-{id}.ready"));
         std::fs::write(&file, session).map_err(|e| format!("{}: {e}", file.display()))?;
-        let mut child = match Command::new(&self.path).arg("--restore").arg(&file).env("LINEIT_READY", &ready).spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = std::fs::remove_file(&file);
-                return Err(format!("couldn't start it: {e}"));
-            }
-        };
+        let mut child =
+            match lineit_rt::ext::command(&self.path).arg("--restore").arg(&file).env("LINEIT_READY", &ready).spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&file);
+                    return Err(format!("couldn't start it: {e}"));
+                }
+            };
         let started = Instant::now();
         loop {
             if ready.exists() {

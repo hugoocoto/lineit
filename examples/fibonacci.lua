@@ -2,7 +2,6 @@
 return {
         lineit = 1,
         doc = "The first 30 Fibonacci numbers, in a list. The entry pushes 0 and 1, then a loop pushes the sum of the last two (list/get counts from the end with negative indexes) and prints the new last one. Hover a pin while it runs to see what it carries.",
-        camera = { x = 0, y = 0, zoom = 1 },
         squares = {
                 { id = 1, module = "flow/entry", x = 0, y = 0 },
                 { id = 2, module = "var/var", x = 0, y = 106, params = { name = "fib", type = "list<int>" } },
