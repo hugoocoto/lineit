@@ -47,7 +47,10 @@ later
 - faster interpreter: ~60 ns a loop iteration, ~230 ns a square called
   (compiled is ~1000x faster); registers and typed slots instead of Values
 - compiled branches on a thread pool, not a thread per branch
-- editing while running applied to the running program
+- editing while running (done: `Interp::swap`): what's left is that several
+  new entries at once run as branches without meets; the instances of code
+  squares that went away stay allocated in a kept module (no way to free
+  one in `Ext`); slots inside subgraphs and private ones start again
 - list/map, filter, reduce with a subgraph as the function
 - FFI to C libraries
 - native file dialog

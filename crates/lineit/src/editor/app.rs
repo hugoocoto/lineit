@@ -707,7 +707,7 @@ impl App {
         }
         tab.status = None;
         let first = if mode == RunMode::Step { Cmd::Step } else { Cmd::Run };
-        tab.run = Some(Runner::start(prog, tab.dir(), first, ctx.clone()));
+        tab.run = Some(Runner::start(prog, tab.canvas.clone(), tab.generation, tab.dir(), first, ctx.clone()));
         // a run of the canvas, not of a test
         self.tabs[self.active].2.tests.debugging = None;
         self.show_output = true;
@@ -829,7 +829,7 @@ impl App {
         let name =
             tab.canvas.square(case).and_then(|s| s.params.get("name").cloned()).unwrap_or_else(|| "a test".into());
         tab.status = Some((format!("debugging the test `{name}`: F10 steps, F5 runs"), false));
-        tab.run = Some(Runner::start(prog, tab.dir(), Cmd::Step, ctx.clone()));
+        tab.run = Some(Runner::start(prog, tab.canvas.clone(), tab.generation, tab.dir(), Cmd::Step, ctx.clone()));
         self.tabs[self.active].2.tests.debugging = Some((case, name));
         self.mode = RunMode::Step;
         self.show_output = true;
@@ -1681,6 +1681,21 @@ impl App {
                         State::Failed => "failed".into(),
                     };
                     ui.label(text);
+                    if matches!(v.state, State::Running | State::Paused) {
+                        if v.waiting {
+                            ui.label("edit waits for the branches that run to finish");
+                            if ui.button("apply now").on_hover_text("stops the branches where they are and runs the entries again, with the state it has").clicked() {
+                                r.restart();
+                            }
+                        } else if let Some((m, err)) = &v.edit {
+                            if *err {
+                                ui.colored_label(theme.error, m);
+                            } else if v.edit_at.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+                                // an edit that went on is told for a few seconds
+                                ui.label(m);
+                            }
+                        }
+                    }
                 }
                 if n > 0 {
                     let all: Vec<String> = tab
@@ -2276,8 +2291,12 @@ impl eframe::App for App {
 
         let settling = ctx.input(|i| i.pointer.any_down()) || ctx.memory(|m| m.focused().is_some());
         let reg = self.reg.clone();
-        for (_, t, _) in &mut self.tabs {
+        for (_, t, ui) in &mut self.tabs {
             t.update(&reg, settling, false);
+            // an edit goes on to the program that runs (not to a test being debugged)
+            if !settling && ui.tests.debugging.is_none() {
+                t.offer_edit();
+            }
         }
         let title = format!("{} — lineit", self.tabs[self.active].1.title());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));

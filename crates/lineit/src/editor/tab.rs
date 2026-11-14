@@ -37,6 +37,8 @@ pub struct Tab {
     pub status: Option<(String, bool)>,
     /// Goes up each time the canvas is lowered again.
     pub generation: u64,
+    /// The generation a file the canvas depends on was last found changed.
+    pub files_generation: u64,
     /// When its file was last changed, as far as this tab knows: if it
     /// changes again, something else changed it.
     pub disk: Option<SystemTime>,
@@ -94,6 +96,7 @@ impl Tab {
             output: Vec::new(),
             status: None,
             generation: 0,
+            files_generation: 0,
             disk: None,
             settings: false,
             label: None,
@@ -320,6 +323,9 @@ impl Tab {
             self.lowered = self.lower_now(reg);
             self.lowered_for = Some(self.canvas.clone());
             self.generation += 1;
+            if stale {
+                self.files_generation = self.generation;
+            }
             // squares that are gone aren't selected
             let ids: BTreeSet<SquareId> = self.canvas.squares.iter().map(|s| s.id).collect();
             self.selected.retain(|s| ids.contains(s));
@@ -354,6 +360,45 @@ impl Tab {
         }
     }
 
+    /// An edit made while the program runs: if it lowers, the run goes on
+    /// with it (when no branch is in the middle of a handler); if not, the
+    /// run goes on as it was, and says so. Moving squares isn't an edit, but
+    /// a file a module is made of that changed on disk is.
+    pub fn offer_edit(&mut self) {
+        let Some(r) = self.run.as_mut().filter(|r| r.is_live()) else { return };
+        // what the run says it went on with is what it goes by
+        let applied = r.view.lock().unwrap().applied.take();
+        if let Some((canvas, generation)) = applied {
+            r.canvas = canvas;
+            r.generation = generation;
+        }
+        if r.offered == self.generation {
+            return;
+        }
+        let files = self.files_generation > r.generation;
+        if !files && lineit_core::diff::diff(&r.canvas, &self.canvas).is_empty() {
+            r.offered = self.generation;
+            // back to what runs: an edit that was refused is moot
+            let mut v = r.view.lock().unwrap();
+            if v.edit.as_ref().is_some_and(|(_, err)| *err) {
+                v.edit = None;
+            }
+            return;
+        }
+        match self.lowered.program.clone() {
+            Some(prog) => r.offer(prog, self.canvas.clone(), self.generation, files),
+            None => {
+                r.offered = self.generation;
+                let n = self.lowered.diags.len();
+                let msg = format!(
+                    "edit not applied: {n} problem{} (in red), the old program goes on",
+                    if n == 1 { "" } else { "s" }
+                );
+                r.view.lock().unwrap().edit = Some((msg, true));
+            }
+        }
+    }
+
     pub fn is_running(&self) -> bool {
         self.run.as_ref().is_some_and(|r| r.is_live())
     }
@@ -367,6 +412,7 @@ fn strip_camera(c: &Canvas) -> (&str, &[lineit_core::model::Square], &[Link]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::runner::{Cmd, Runner};
     use lineit_core::diff::Mark;
     use lineit_core::model::Square;
 
@@ -462,5 +508,89 @@ mod tests {
         let reg = Registry::builtin();
         let t = Tab::view(None, canvas(true), "HEAD:a.lua".into(), &reg);
         assert!(t.diff.is_none() && t.label.is_some());
+    }
+
+    /// A clock that adds INC to `total`.
+    fn counting(inc: &str) -> Canvas {
+        let src = format!(
+            r#"return {{ lineit = 1, squares = {{
+            {{ id = 1, module = "flow/clock", fields = {{ interval = "0.05" }} }},
+            {{ id = 2, module = "var/var", params = {{ name = "total", type = "int", initial = "0" }} }},
+            {{ id = 3, module = "math/add", fields = {{ b = "{inc}" }} }},
+            {{ id = 4, module = "var/set", params = {{ name = "total" }} }},
+            {{ id = 5, module = "var/get", params = {{ name = "total" }} }},
+            }}, links = {{ {{ 1, "tick", 4, "tick" }}, {{ 5, "value", 3, "a" }}, {{ 3, "result", 4, "value" }} }} }}"#
+        );
+        lineit_core::file::read_canvas(&src, "counting").unwrap()
+    }
+
+    fn running(c: Canvas, reg: &Arc<Registry>) -> Tab {
+        let mut t = Tab::new(c, None, reg);
+        let prog = t.lowered.program.clone().unwrap();
+        t.run = Some(Runner::start(
+            prog,
+            t.canvas.clone(),
+            t.generation,
+            std::env::temp_dir(),
+            Cmd::Run,
+            eframe::egui::Context::default(),
+        ));
+        t
+    }
+
+    fn wait(what: &str, mut f: impl FnMut() -> bool) {
+        for _ in 0..200 {
+            if f() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("{what}");
+    }
+
+    fn edit_of(t: &Tab) -> Option<(String, bool)> {
+        t.run.as_ref().unwrap().view.lock().unwrap().edit.clone()
+    }
+
+    #[test]
+    fn an_edit_goes_on_to_the_run_and_a_bad_one_doesnt() {
+        let reg = Arc::new(Registry::builtin());
+        let mut t = running(counting("1"), &reg);
+        wait("it counts", || t.run.as_ref().unwrap().view.lock().unwrap().vars.iter().any(|(_, v)| v.int() > 0));
+        // an edit that lowers: applied, and the run goes by that canvas
+        t.canvas = counting("10");
+        t.update(&reg, false, false);
+        t.offer_edit();
+        wait("applied", || edit_of(&t).is_some_and(|(m, err)| !err && m.starts_with("edit applied")));
+        t.offer_edit();
+        let r = t.run.as_ref().unwrap();
+        assert_eq!((r.generation, &r.canvas), (t.generation, &t.canvas));
+        // one with errors: the old program goes on, and the bar says so
+        let applied = t.canvas.clone();
+        t.canvas.squares.iter_mut().find(|s| s.id == 3).unwrap().fields.insert("b".into(), "\"x\"".into());
+        t.update(&reg, false, false);
+        assert!(t.lowered.program.is_none());
+        t.offer_edit();
+        let (m, err) = edit_of(&t).unwrap();
+        assert!(err && m.contains("old program"), "{m}");
+        assert_eq!(t.run.as_ref().unwrap().canvas, applied, "the run still goes by what it applied");
+        // back to what runs: the refusal is moot
+        t.canvas = applied;
+        t.update(&reg, false, false);
+        t.offer_edit();
+        assert_eq!(edit_of(&t), None);
+        t.run.as_ref().unwrap().send(Cmd::Stop);
+    }
+
+    #[test]
+    fn moving_squares_isnt_an_edit() {
+        let reg = Arc::new(Registry::builtin());
+        let mut t = running(counting("1"), &reg);
+        t.canvas.squares[0].x += 50.0;
+        t.update(&reg, false, false);
+        t.offer_edit();
+        assert!(edit_of(&t).is_none());
+        assert_eq!(t.run.as_ref().unwrap().offered, t.generation);
+        t.run.as_ref().unwrap().send(Cmd::Stop);
     }
 }

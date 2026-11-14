@@ -240,6 +240,42 @@ The editor runs it on a thread of its own (`editor/runner.rs`), and reads
 what it prints, which squares it's stopped before and the values of the
 slots from a `View` a few times a second.
 
+== Editing while running
+
+When the canvas changes under a live run, `Tab::offer_edit` compares it with
+the canvas the run goes by (`diff::diff`: moving squares isn't an edit; a
+file the canvas depends on that changed on disk is, `Tab::files_generation`).
+If it lowers, the runner gets the new `Program` (`Runner::offer`, a
+`Cmd::Swap` to wake it); if not, the view says the old program goes on. The
+canvas the run goes by only changes when the runner says it applied the edit
+(`View::applied`), so a failed or discarded edit is not taken for done.
+
+The runner thread calls `Interp::swap` as soon as `Interp::can_swap` (no
+live task, not stopped): after a `run`, while it waits for a clock, or after
+a Step. Branches on threads are scoped to `fan_out`, so they're all joined by
+then: nothing else touches the `World`, and a read-and-change can't be cut in
+two. A program that never goes idle gets "apply now" (`Runner::restart`): it
+sets `World::interrupt`, which every branch checks like Stop but without
+ending the program; `fan_out` joins them, `Interp::abandon` drops the tasks,
+and `swap` and `Interp::restart` (the entries again) follow.
+
+`swap` works everything out before it gives up the old program, and undoes
+what it can if something fails. Slots are told apart by `slot_keys`: where
+they show on a square (`SlotDef::shows`) and the variable's name
+(`Program::vars`), counted when a name repeats; a slot with neither starts
+again (and is counted in `Swapped`). The same type: the value moves; another:
+`registry::builtin::convert` (what `value/convert` lowers to) is evaluated on
+it, or it starts again. Modules (`ExtDef`) with the same path and kind move
+over with their `Handles`, so a Python process isn't restarted by an edit
+elsewhere, and an instance with the same square and params keeps its state.
+The modules `closes_first` (a C# build holds a lock, a Rust dylib is
+loaded by path) end before their replacements open, and if that fails they
+open again without their state. Clocks are told apart by `Clock::square`:
+they keep their next time, or now plus the new interval if that's sooner.
+Entries that weren't there (`new_entries`) run. `Interp::live` is the cell
+the thread that shows what the program does, and kills its processes on
+Stop, reads the world from; it follows each swap.
+
 = Compiling <sec-codegen>
 
 `codegen::generate` turns a `Program` into the `main.rs` of a crate that
