@@ -20,7 +20,7 @@ use lineit_rt::{RecordType, Type, Value};
 
 use crate::ir::*;
 use crate::model::{Canvas, Link, Square, SquareId};
-use crate::registry::{Module, Params, PinTy, Registry, SigCx, Signature};
+use crate::registry::{FnPorts, Module, ParamKind, Params, PinTy, Registry, SigCx, Signature};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Diag {
@@ -118,6 +118,9 @@ pub struct FNode {
     pub targets: Vec<Vec<(NodeId, usize)>>,
     pub in_types: Vec<Option<Type>>,
     pub out_types: Vec<Option<Type>>,
+    /// For a square that calls a function: where each of the function's
+    /// data outputs gets its value from, the type of the output and its name.
+    pub fn_outs: Vec<(Source, Type, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -146,6 +149,10 @@ struct GNode {
     scope: usize,
     params: BTreeMap<String, String>,
     fields: BTreeMap<String, String>,
+    /// The function it's inside of, and whether that has a tick input.
+    in_fn: Option<(String, bool)>,
+    /// For a square that calls a function: its `graph/output` ports.
+    fn_outs: Vec<usize>,
     /// (input, source node, source output, the wire's place in the main
     /// canvas's links, if it's one of them)
     incoming: Vec<(String, usize, String, Option<usize>)>,
@@ -163,6 +170,7 @@ struct Flattener<'a> {
     top_subs: Vec<(SquareId, String, usize)>,
     scopes: usize,
     diags: Vec<Diag>,
+    in_fn: Option<(String, bool)>,
 }
 
 struct Ports {
@@ -182,6 +190,7 @@ impl Flattener<'_> {
                 self.diags.push(Diag { square: Some(at), message: format!("there's no module `{}`", sq.module) });
                 continue;
             };
+            let in_fn = self.in_fn.clone();
             let gnode = |kind| GNode {
                 kind,
                 port_ty: None,
@@ -191,6 +200,8 @@ impl Flattener<'_> {
                 scope,
                 params: sq.params.clone(),
                 fields: sq.fields.clone(),
+                in_fn: in_fn.clone(),
+                fn_outs: Vec::new(),
                 incoming: Vec::new(),
             };
             if sq.module == "graph/input" || sq.module == "graph/output" {
@@ -231,8 +242,16 @@ impl Flattener<'_> {
                 }
                 map.insert(sq.id, Mapping::Sub { inputs: inner.inputs, outputs: inner.outputs });
             } else {
-                map.insert(sq.id, Mapping::Real(self.g.len()));
+                let owner = self.g.len();
+                map.insert(sq.id, Mapping::Real(owner));
                 self.g.push(gnode(GKind::Real(m.clone())));
+                // a square that calls a function: the subgraph is inlined here, once
+                if let Some((def, ParamKind::Function { args })) =
+                    m.params().iter().find(|d| matches!(d.kind, ParamKind::Function { .. })).map(|d| (d, &d.kind))
+                {
+                    let path = sq.params.get(&def.name).unwrap_or(&def.default);
+                    self.function(path, owner, args, at, stack);
+                }
             }
         }
         for (li, l) in canvas.links.iter().enumerate() {
@@ -252,6 +271,43 @@ impl Flattener<'_> {
             }
         }
         ports
+    }
+}
+
+impl Flattener<'_> {
+    /// Inlines the subgraph PATH as the function of the square OWNER (a node
+    /// of the flat canvas), which ARGS say where the inputs come from. If
+    /// it's not there or it's wrong, OWNER's signature says so.
+    fn function(&mut self, path: &str, owner: usize, args: &[String], at: SquareId, stack: &mut Vec<String>) {
+        let reg = self.reg;
+        let Some(sub) = reg.get(path).and_then(|m| m.subgraph()) else { return };
+        if stack.iter().any(|s| s == path) {
+            self.diags.push(Diag {
+                square: Some(at),
+                message: format!("`{path}` has itself inside: {} -> {path}", stack.join(" -> ")),
+            });
+            return;
+        }
+        self.scopes += 1;
+        stack.push(path.into());
+        let tick = sub.ports("graph/input").iter().any(|p| p.1 == "tick");
+        let saved = self.in_fn.replace((path.into(), tick));
+        let inner = self.expand(&sub.canvas, self.scopes, Some(at), stack);
+        self.in_fn = saved;
+        stack.pop();
+        let mut args = args.iter();
+        for (name, ty, _) in sub.ports("graph/input") {
+            let out = if ty == "tick" { Some("call") } else { args.next().map(String::as_str) };
+            if let (Some(g), Some(out)) = (inner.inputs.get(&name), out) {
+                self.g[*g].incoming.push(("value".into(), owner, out.into(), None));
+            }
+        }
+        self.g[owner].fn_outs = sub
+            .ports("graph/output")
+            .into_iter()
+            .filter(|p| p.1 != "tick")
+            .filter_map(|(name, ..)| inner.outputs.get(&name).copied())
+            .collect();
     }
 }
 
@@ -294,6 +350,13 @@ impl SigCx for VarCx<'_> {
         self.deps.borrow_mut().push((full.clone(), stamp));
         std::fs::read_to_string(&full).map_err(|e| format!("{}: {e}", full.display()))
     }
+    fn function(&self, path: &str) -> Result<FnPorts, String> {
+        if path.trim().is_empty() {
+            return Err("it needs a function: the path of a subgraph".into());
+        }
+        let m = self.reg.get(path).ok_or_else(|| format!("there's no function `{path}`"))?;
+        m.subgraph().ok_or_else(|| format!("`{path}` isn't a subgraph"))?.fn_ports(self)
+    }
 }
 
 /// The flattened canvas, with every square's signature and sources.
@@ -311,7 +374,7 @@ pub struct Flat {
 }
 
 pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
-    let mut f = Flattener { reg, g: Vec::new(), top_subs: Vec::new(), scopes: 0, diags: Vec::new() };
+    let mut f = Flattener { reg, g: Vec::new(), top_subs: Vec::new(), scopes: 0, diags: Vec::new(), in_fn: None };
     f.expand(canvas, 0, None, &mut Vec::new());
     let Flattener { g, mut diags, top_subs, .. } = f;
     let deps = std::cell::RefCell::new(Vec::new());
@@ -364,12 +427,28 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
                     scope: n.scope,
                     in_types: vec![None; sig.inputs.len()],
                     out_types: vec![None; sig.outputs.len()],
+                    fn_outs: Vec::new(),
                     inputs: Vec::new(),
                     targets: Vec::new(),
                     sig,
                 });
             }
             Err(e) => diags.push(Diag { square: Some(n.square), message: e }),
+        }
+    }
+
+    // a function that has no tick input is read, not run: nothing in it can run on ticks
+    for (i, n) in g.iter().enumerate() {
+        if let (Some((path, false)), Some(f)) = (&n.in_fn, flat_of[i])
+            && nodes[f as usize].sig.has_tick_input()
+        {
+            diags.push(Diag {
+                square: Some(n.square),
+                message: format!(
+                    "`{}` runs on ticks, inside the function `{path}`: give the function a graph/input of type tick",
+                    nodes[f as usize].module.path()
+                ),
+            });
         }
     }
 
@@ -452,8 +531,16 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
             }
             tgts.push(t);
         }
+        let fn_outs = n
+            .fn_outs
+            .iter()
+            .filter_map(|p| {
+                Some((source(&g, &flat_of, &nodes, *p, "value", 0), g[*p].port_ty.clone()?, g[*p].port.clone()))
+            })
+            .collect();
         nodes[f as usize].inputs = inputs;
         nodes[f as usize].targets = tgts;
+        nodes[f as usize].fn_outs = fn_outs;
     }
 
     // tick wires into data inputs and the other way round
@@ -612,7 +699,18 @@ impl<'a> Lx<'_, 'a> {
     /// The value of data input I: what's wired to it, or its field.
     pub fn input(&mut self, i: usize) -> Result<Expr, String> {
         let ty = self.in_ty(i);
-        match self.n().inputs[i].clone() {
+        self.source(self.n().inputs[i].clone(), ty)
+    }
+
+    /// What function output K gives (read after the function has run), as
+    /// the type of that output.
+    pub fn fn_result(&mut self, k: usize) -> Result<Expr, String> {
+        let (src, ty, _) = self.n().fn_outs.get(k).cloned().ok_or("the function has no such output")?;
+        self.source(src, ty)
+    }
+
+    fn source(&mut self, src: Source, ty: Type) -> Result<Expr, String> {
+        match src {
             Source::Wire(src, o) => {
                 let e = self.lw.pull(src, o)?;
                 let from = self.lw.flat.nodes[src as usize].out_types[o].clone().unwrap_or(Type::Int);

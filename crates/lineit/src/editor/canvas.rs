@@ -297,6 +297,7 @@ fn fields(tab: &Tab, reg: &Registry, id: SquareId) -> Vec<(FieldKey, FieldKind, 
             let kind = match &def.kind {
                 ParamKind::Bool => FieldKind::Bool,
                 ParamKind::Choice(c) => FieldKind::Choice(c.clone()),
+                ParamKind::Function { args } => FieldKind::Choice(reg.functions(args.len())),
                 _ => FieldKind::Typed,
             };
             let title = format!("{}  >  {} (param)", sq.module, def.name);
@@ -1368,6 +1369,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     }
                     let choices: Option<Vec<String>> = match &def.kind {
                         ParamKind::Choice(c) => Some(c.clone()),
+                        ParamKind::Function { args } => Some(cx.reg.functions(args.len())),
                         ParamKind::Bool => None,
                         _ => None,
                     };
@@ -1375,7 +1377,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                         let mut chosen = current.clone();
                         ui.put(frect, |ui: &mut egui::Ui| {
                             egui::ComboBox::from_id_salt(("param", cx.tab_id, id, k))
-                                .selected_text(egui::RichText::new(&chosen).font(mono(12.0)))
+                                .selected_text(
+                                    egui::RichText::new(if chosen.is_empty() { "(pick one)" } else { &chosen })
+                                        .font(mono(12.0)),
+                                )
                                 .width(frect.width())
                                 .show_ui(ui, |ui| {
                                     for c in &choices {

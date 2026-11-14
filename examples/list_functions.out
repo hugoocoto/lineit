@@ -1,0 +1,10 @@
+42
+  call with 1
+  call with 2
+  call with 3
+  call with 4
+  call with 5
+  call with 6
+  call with 7
+  call with 8
+[1, 4, 9, 16, 25, 36, 49, 64]

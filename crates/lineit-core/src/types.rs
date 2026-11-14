@@ -213,6 +213,18 @@ pub fn infer(nodes: &mut [FNode], diags: &mut Vec<Diag>) {
         }
     }
 
+    // what a function gives has to be what its output says
+    for (d, n) in nodes.iter().enumerate() {
+        for (src, to, name) in &n.fn_outs {
+            if let Source::Wire(s, o) = src
+                && let Some(from) = &nodes[*s as usize].out_types[*o]
+                && !fits(from, to)
+            {
+                errors.push((d, format!("the function's output `{name}` is {to}, and it gets {from}")));
+            }
+        }
+    }
+
     errors.sort_by_key(|(d, _)| *d);
     errors.dedup();
     for (d, e) in errors {

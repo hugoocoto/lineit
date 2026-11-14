@@ -49,7 +49,6 @@ later
   new entries at once run as branches without meets; the instances of code
   squares that went away stay allocated in a kept module (no way to free
   one in `Ext`); slots inside subgraphs and private ones start again
-- list/map, filter, reduce with a subgraph as the function
 - FFI to C libraries
 - check on real systems what was written without them: the native dialogs on
   Windows, macOS and a Linux desktop (whether one can be shown is read from the

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use lineit_rt::Value;
 
-use super::{Kind, Module, ParamDef, Params, SigCx, Signature, TExpr};
+use super::{FnPorts, Kind, Module, ParamDef, Params, SigCx, Signature, TExpr};
 use crate::model::Canvas;
 
 pub struct Subgraph {
@@ -36,6 +36,27 @@ impl Subgraph {
                 (get(s, "name", default_name), get(s, "type", "int"), get(s, "default", "0"))
             })
             .collect()
+    }
+
+    /// Its pins as a function: its data ports, and whether it has a tick
+    /// input (tick outputs don't matter: a call ends when what it ticks has).
+    pub fn fn_ports(&self, cx: &dyn SigCx) -> Result<FnPorts, String> {
+        let mut f = FnPorts { tick: false, inputs: Vec::new(), outputs: Vec::new() };
+        for (name, ty, default) in self.ports("graph/input") {
+            if ty == "tick" {
+                if std::mem::replace(&mut f.tick, true) {
+                    return Err(format!("`{}` has more than one tick input, and a function takes one", self.path));
+                }
+            } else {
+                f.inputs.push((name, cx.parse_type(&ty)?, default));
+            }
+        }
+        for (name, ty, _) in self.ports("graph/output") {
+            if ty != "tick" {
+                f.outputs.push((name, cx.parse_type(&ty)?));
+            }
+        }
+        Ok(f)
     }
 }
 

@@ -113,6 +113,15 @@ they're on, so each copy of a subgraph has its own.
 module. Each square of it is inlined at lowering, which makes it as fast as
 if it were drawn in place. A subgraph that contains itself is an error.
 
+**Functions.** `list/map`, `list/filter` and `list/reduce` take the path of a
+subgraph in their `fn` param (the editor offers the ones with the right
+pins): map T -> U, filter T -> bool, reduce (acc, T) -> acc, with `initial`.
+The list comes by wire and the result goes out by wire, and the types come
+from the function's ports. The body is inlined once, in a loop, with its own
+variables per square that uses it. Without a `tick` input it is pure; with
+one it runs on ticks for each item (branches, variables that keep their value
+from one item to the next), and its `call` output ticks it.
+
 **Clocks.** `flow/clock` fires every `interval` seconds. A program with no
 clock ends once its entries are done; one with a clock runs until it's
 stopped.
@@ -198,7 +207,8 @@ Output: a crate in `~/.cache/lineit/build/<name>`, built with `cargo build
 - `logic`: and, or, not, xor, nand, nor, xnor
 - `value`: constant, convert
 - `var`: var, get, set
-- `list`: push, pop, get, set, length, clear, remove, foreach
+- `list`: push, pop, get, set, length, clear, remove, foreach, at, size, and
+  map, filter, reduce (the `fn` param is a subgraph: see Subgraphs)
 - `map`: set, get, has, delete, keys, length
 - `string`: concat, length, upper, lower, find, substring, split, join, format
 - `io`: print, display
