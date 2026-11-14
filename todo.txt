@@ -1,7 +1,13 @@
-diff view
-the text jumps in notes and code modules
-(fix: laid out at a power of two and scaled; check it zooming with the mouse,
-and while typing in them: the text box is still laid out at the zoom)
+the text jumps in notes and code modules: fixed when looking (laid out at a
+power of two and scaled; check it zooming with the mouse); still to do: while
+typing in a note or code square, its text box is laid out at the zoom, so the
+text moves when editing starts or ends and while zooming
+
+C# code squares, what's left:
+- a build error reads "couldn't run its language (dotnet: it ended without
+  answering: ...)": say it's a build error, with the compiler's messages
+- dotnet's own build cache (~/.local/share/dotnet/runfile) isn't pruned
+- "An issue was encountered verifying workloads" on a fresh account
 
 Implement all the fixes in lineit to check if it's easier to the reviewer to
 review it in lineit than in real code.
@@ -33,14 +39,14 @@ Layout: ~/code/ju26-review/<issue>/csharp (set A, seeded, uncommitted:
 review with `git diff HEAD~1`) and <issue>/lineit (set B); keys in
 ~/code/ju26-review/.keys/ (don't open before reviewing). 2297: only the
 generator change is drawn in lineit.
-Plan: once C# squares are merged, one agent per branch (2283, 2234, 2129,
-2297), each on its own copy of the repo.
+Done: set A seeded in all 4 C# copies (keys in .keys/<issue>-A.md).
+To do: the lineit versions with set B, one agent per branch; then my reviews.
+Building MessagePack needs the .NET SDK 8.0.4xx (global.json: 8.0.402).
 
 later
 - faster interpreter: ~60 ns a loop iteration, ~230 ns a square called
   (compiled is ~1000x faster); registers and typed slots instead of Values
 - compiled branches on a thread pool, not a thread per branch
-- lineit -t: open a file in a running editor's new tab
 - editing while running applied to the running program
 - list/map, filter, reduce with a subgraph as the function
 - FFI to C libraries
