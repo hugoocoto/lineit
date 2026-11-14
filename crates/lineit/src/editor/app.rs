@@ -768,7 +768,14 @@ impl App {
             State::Done => match v.checks.iter().find(|c| !c.ok) {
                 Some(c) => {
                     let what = if c.label.is_empty() { "a check".to_string() } else { c.label.clone() };
-                    (format!("the test `{name}` failed: {what}: expected {}, got {}", c.expected.text(), c.got.text()), true)
+                    (
+                        format!(
+                            "the test `{name}` failed: {what}: expected {}, got {}",
+                            c.expected.text(),
+                            c.got.text()
+                        ),
+                        true,
+                    )
                 }
                 None => {
                     let n = v.checks.len();
@@ -819,7 +826,8 @@ impl App {
         if clear {
             tab.output.clear();
         }
-        let name = tab.canvas.square(case).and_then(|s| s.params.get("name").cloned()).unwrap_or_else(|| "a test".into());
+        let name =
+            tab.canvas.square(case).and_then(|s| s.params.get("name").cloned()).unwrap_or_else(|| "a test".into());
         tab.status = Some((format!("debugging the test `{name}`: F10 steps, F5 runs"), false));
         tab.run = Some(Runner::start(prog, tab.dir(), Cmd::Step, ctx.clone()));
         self.tabs[self.active].2.tests.debugging = Some((case, name));
@@ -1633,7 +1641,11 @@ impl App {
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("Run tests (F6)").on_hover_text("Run each test/case, and the tests of code squares").clicked() {
+                            if ui
+                                .button("Run tests (F6)")
+                                .on_hover_text("Run each test/case, and the tests of code squares")
+                                .clicked()
+                            {
                                 self.run_tests();
                                 ui.close();
                             }
@@ -1796,7 +1808,11 @@ impl App {
                 if ui.selectable_label(!self.show_tests, egui::RichText::new("Output").strong()).clicked() {
                     self.show_tests = false;
                 }
-                if ui.selectable_label(self.show_tests, egui::RichText::new("Tests").strong()).on_hover_text("The report of Run tests (F6)").clicked() {
+                if ui
+                    .selectable_label(self.show_tests, egui::RichText::new("Tests").strong())
+                    .on_hover_text("The report of Run tests (F6)")
+                    .clicked()
+                {
                     self.show_tests = true;
                 }
                 ui.separator();
@@ -2150,26 +2166,31 @@ impl eframe::App for App {
         type States = HashMap<SquareId, Vec<(String, Value)>>;
         type Checks = HashMap<SquareId, lineit_core::interp::CheckResult>;
         type Vars = Vec<(String, Value)>;
-        let (values, current, states, checks, vars): (HashMap<(SquareId, String), Value>, BTreeSet<SquareId>, States, Checks, Vars) =
-            match &self.tabs[self.active].1.run {
-                Some(r) => {
-                    let v = r.view.lock().unwrap();
-                    // the last time the run got to each check
-                    let checks = v.checks.iter().map(|c| (c.square, c.clone())).collect();
-                    // a variable's value is that of the squares of it
-                    let mut values = v.values.clone();
-                    for sq in &self.tabs[self.active].1.canvas.squares {
-                        if matches!(sq.module.as_str(), "var/get" | "var/var")
-                            && let Some(name) = sq.params.get("name")
-                            && let Some((_, val)) = v.vars.iter().find(|(n, _)| n == name)
-                        {
-                            values.insert((sq.id, "value".to_string()), val.clone());
-                        }
+        let (values, current, states, checks, vars): (
+            HashMap<(SquareId, String), Value>,
+            BTreeSet<SquareId>,
+            States,
+            Checks,
+            Vars,
+        ) = match &self.tabs[self.active].1.run {
+            Some(r) => {
+                let v = r.view.lock().unwrap();
+                // the last time the run got to each check
+                let checks = v.checks.iter().map(|c| (c.square, c.clone())).collect();
+                // a variable's value is that of the squares of it
+                let mut values = v.values.clone();
+                for sq in &self.tabs[self.active].1.canvas.squares {
+                    if matches!(sq.module.as_str(), "var/get" | "var/var")
+                        && let Some(name) = sq.params.get("name")
+                        && let Some((_, val)) = v.vars.iter().find(|(n, _)| n == name)
+                    {
+                        values.insert((sq.id, "value".to_string()), val.clone());
                     }
-                    (values, v.current.iter().copied().collect(), v.states.clone(), checks, v.vars.clone())
                 }
-                None => (HashMap::new(), BTreeSet::new(), HashMap::new(), HashMap::new(), Vec::new()),
-            };
+                (values, v.current.iter().copied().collect(), v.states.clone(), checks, v.vars.clone())
+            }
+            None => (HashMap::new(), BTreeSet::new(), HashMap::new(), HashMap::new(), Vec::new()),
+        };
         if self.cfg.bool("canvas.previews") {
             let pure = self.pure_previews(&ctx);
             self.previews(&ctx, &pure);

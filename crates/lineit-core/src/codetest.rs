@@ -148,7 +148,12 @@ fn outputs(f: &Function) -> Vec<(String, Type)> {
 
 /// Runs ROWS on a square of F (run by KIND), one after the other. Each
 /// input with no value in a row has DEFAULTS' (its field's text).
-pub fn run(f: &Function, kind: &ExtKind, rows: &[Row], defaults: &BTreeMap<String, String>) -> Result<Vec<RowResult>, String> {
+pub fn run(
+    f: &Function,
+    kind: &ExtKind,
+    rows: &[Row],
+    defaults: &BTreeMap<String, String>,
+) -> Result<Vec<RowResult>, String> {
     let mut ext = crate::interp::open_ext(&f.name, kind)?;
     let sq = ext.instance(&[])?;
     let outs = outputs(f);
@@ -168,9 +173,7 @@ pub fn run(f: &Function, kind: &ExtKind, rows: &[Row], defaults: &BTreeMap<Strin
             }
         }
         for k in row.expect.keys() {
-            let known = k == FIRES
-                || outs.iter().any(|(n, _)| n == k)
-                || f.state.iter().any(|s| s == k);
+            let known = k == FIRES || outs.iter().any(|(n, _)| n == k) || f.state.iter().any(|s| s == k);
             if !known {
                 problem(format!("expected `{k}`: it has no output, state or global it sets of that name"));
             }
@@ -312,13 +315,23 @@ pub fn run_canvas(canvas: &crate::model::Canvas, l: &crate::lower::Lowered) -> V
             Ok(r) if r.is_empty() => continue,
             Ok(r) => r,
             Err(e) => {
-                out.push(SquareTests { square: sq.id, name: String::new(), rows: 0, results: Err(format!("its tests: {e}")) });
+                out.push(SquareTests {
+                    square: sq.id,
+                    name: String::new(),
+                    rows: 0,
+                    results: Err(format!("its tests: {e}")),
+                });
                 continue;
             }
         };
         let Some(info) = l.squares.get(&sq.id) else { continue };
         let Some(f) = info.sig.code.clone() else {
-            out.push(SquareTests { square: sq.id, name: String::new(), rows: rows.len(), results: Err("its code has a problem".into()) });
+            out.push(SquareTests {
+                square: sq.id,
+                name: String::new(),
+                rows: rows.len(),
+                results: Err("its code has a problem".into()),
+            });
             continue;
         };
         // an input with no value in a row has its field's
@@ -375,7 +388,11 @@ pub fn run_cases(canvas: &crate::model::Canvas, reg: &crate::registry::Registry)
 
 /// [`run_cases`], each case stopped after SECONDS: also one stuck in a code
 /// square's call, which never gets back to the interpreter by itself.
-pub fn run_cases_within(canvas: &crate::model::Canvas, reg: &crate::registry::Registry, seconds: f64) -> Vec<CaseResult> {
+pub fn run_cases_within(
+    canvas: &crate::model::Canvas,
+    reg: &crate::registry::Registry,
+    seconds: f64,
+) -> Vec<CaseResult> {
     let dir = canvas.dir.clone().unwrap_or_default();
     cases(canvas)
         .into_iter()
@@ -435,7 +452,10 @@ pub fn run_cases_within(canvas: &crate::model::Canvas, reg: &crate::registry::Re
             let _ = watchdog.join();
             // stopped at the limit: that's what went wrong, whatever the run said
             let run = if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
-                Err(format!("it ran for more than {seconds} second{}: stuck in a loop?", if seconds == 1.0 { "" } else { "s" }))
+                Err(format!(
+                    "it ran for more than {seconds} second{}: stuck in a loop?",
+                    if seconds == 1.0 { "" } else { "s" }
+                ))
             } else {
                 run
             };
@@ -492,7 +512,12 @@ mod tests {
         let m = crate::registry::code::CodeModule::new();
         let code = "count = 0\n---@param n integer\n---@param even fun(half: integer)\n---@param odd fun(calls: integer)\nfunction collatz(n, even, odd)\n    Shared.total = Shared.total + n\n    if n == 99 then error(\"not 99\") end\n    if n % 2 == 0 then return even(n // 2) end\n    count = count + 1\n    print(\"odd\", n)\n    return odd(count)\nend\n";
         let values = BTreeMap::from([("code".to_string(), code.to_string())]);
-        let sig = crate::registry::Module::signature(&m, &crate::registry::Params { defs: crate::registry::Module::params(&m), values: &values }, &Cx).unwrap();
+        let sig = crate::registry::Module::signature(
+            &m,
+            &crate::registry::Params { defs: crate::registry::Module::params(&m), values: &values },
+            &Cx,
+        )
+        .unwrap();
         let f = sig.code.unwrap();
         let rows = read_rows(r#"{
             { given = { n = "4" }, expect = { fires = "odd", half = "3" } },

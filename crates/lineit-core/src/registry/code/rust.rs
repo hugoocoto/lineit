@@ -65,8 +65,14 @@ enum Pass {
     /// A closure: `impl Fn`, `&mut dyn FnMut` or `&dyn Fn`.
     /// Its values come as ARGS (their Rust types), or as one struct with
     /// these FIELDS.
-    Exit { how: &'static str, args: Vec<String>, fields: Option<Vec<String>> },
-    Shared { set: bool },
+    Exit {
+        how: &'static str,
+        args: Vec<String>,
+        fields: Option<Vec<String>>,
+    },
+    Shared {
+        set: bool,
+    },
 }
 
 impl Language for Rust {
@@ -160,7 +166,11 @@ fn type_args(n: Node) -> Vec<Node> {
 /// A Rust type as lineit's, if it's one lineit can give and take.
 fn rust_type(n: Node, src: &str, cx: &dyn SigCx) -> Result<Type, String> {
     let text = &src[n.byte_range()];
-    let bad = || format!("`{text}` isn't a type a code square takes (i64, f64, bool, String, Vec<T>, BTreeMap<String, T>, a record)");
+    let bad = || {
+        format!(
+            "`{text}` isn't a type a code square takes (i64, f64, bool, String, Vec<T>, BTreeMap<String, T>, a record)"
+        )
+    };
     Ok(match n.kind() {
         "primitive_type" => match text {
             "i64" => Type::Int,
@@ -297,7 +307,10 @@ fn read_with(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
                 };
                 if let Some(s) = one_struct {
                     for (fname, ft) in &s.fields {
-                        values.push((Some(fname.clone()), rust_type(*ft, source, cx).map_err(|e| format!("`{pname}`: {e}"))?));
+                        values.push((
+                            Some(fname.clone()),
+                            rust_type(*ft, source, cx).map_err(|e| format!("`{pname}`: {e}"))?,
+                        ));
                     }
                     fields = Some(s.fields.iter().map(|(n, _)| n.clone()).collect());
                     arg_types.push(s.name.clone());
@@ -359,7 +372,9 @@ fn read_with(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
             if n.kind() != "field_expression" {
                 continue;
             }
-            let (Some(v), Some(fld)) = (n.child_by_field_name("value"), n.child_by_field_name("field")) else { continue };
+            let (Some(v), Some(fld)) = (n.child_by_field_name("value"), n.child_by_field_name("field")) else {
+                continue;
+            };
             if text(v) != sname {
                 continue;
             }
@@ -420,11 +435,8 @@ fn glue(f: &Function, read: &Read) -> Result<String, String> {
     o.push_str("        let get = |k: &str| i.get(k).cloned().ok_or_else(|| format!(\"no value for `{k}`\"));\n");
     o.push_str("        let fire = std::cell::RefCell::new(Vec::<(String, lineit_rt::native::Values)>::new());\n");
     if !f.shared.is_empty() || read.passes.iter().any(|p| matches!(p, Pass::Shared { .. })) {
-        let fields: Vec<String> = f
-            .shared
-            .iter()
-            .map(|(g, _)| format!("{g}: Typed::from_value(get({})?)", quoted(&shared_pin(g))))
-            .collect();
+        let fields: Vec<String> =
+            f.shared.iter().map(|(g, _)| format!("{g}: Typed::from_value(get({})?)", quoted(&shared_pin(g)))).collect();
         o.push_str(&format!("        let mut shared = Shared {{ {} }};\n", fields.join(", ")));
     }
     let mut args = Vec::new();
@@ -435,7 +447,11 @@ fn glue(f: &Function, read: &Read) -> Result<String, String> {
             (Some(p), Pass::Value) => args.push(format!("Typed::from_value(get({})?)", quoted(&p.name))),
             (Some(p), Pass::Ref) => {
                 let Role::Input(Some(t)) = &p.role else { unreachable!() };
-                o.push_str(&format!("        let a{k}: {} = Typed::from_value(get({})?);\n", rust_of(t), quoted(&p.name)));
+                o.push_str(&format!(
+                    "        let a{k}: {} = Typed::from_value(get({})?);\n",
+                    rust_of(t),
+                    quoted(&p.name)
+                ));
                 args.push(format!("&a{k}"));
                 k += 1;
             }
@@ -445,11 +461,19 @@ fn glue(f: &Function, read: &Read) -> Result<String, String> {
                 let (params, set): (String, Vec<String>) = match fields {
                     Some(fields) => (
                         format!("v: {}", arg_types[0]),
-                        fields.iter().zip(values).map(|(fl, (pin, _))| format!("({}.to_string(), v.{fl}.to_value())", quoted(pin))).collect(),
+                        fields
+                            .iter()
+                            .zip(values)
+                            .map(|(fl, (pin, _))| format!("({}.to_string(), v.{fl}.to_value())", quoted(pin)))
+                            .collect(),
                     ),
                     None => (
                         arg_types.iter().enumerate().map(|(j, t)| format!("v{j}: {t}")).collect::<Vec<_>>().join(", "),
-                        values.iter().enumerate().map(|(j, (pin, _))| format!("({}.to_string(), v{j}.to_value())", quoted(pin))).collect(),
+                        values
+                            .iter()
+                            .enumerate()
+                            .map(|(j, (pin, _))| format!("({}.to_string(), v{j}.to_value())", quoted(pin)))
+                            .collect(),
                     ),
                 };
                 o.push_str(&format!(
@@ -468,10 +492,15 @@ fn glue(f: &Function, read: &Read) -> Result<String, String> {
     o.push_str("        let mut set = lineit_rt::native::Values::new();\n");
     match &read.returns {
         Returns::Nothing => o.push_str("        let _ = r;\n"),
-        Returns::One => o.push_str(&format!("        set.insert({}.to_string(), r.to_value());\n", quoted(&f.returns[0].0))),
+        Returns::One => {
+            o.push_str(&format!("        set.insert({}.to_string(), r.to_value());\n", quoted(&f.returns[0].0)))
+        }
         Returns::Tuple(n) => {
             for j in 0..*n {
-                o.push_str(&format!("        set.insert({}.to_string(), r.{j}.to_value());\n", quoted(&f.returns[j].0)));
+                o.push_str(&format!(
+                    "        set.insert({}.to_string(), r.{j}.to_value());\n",
+                    quoted(&f.returns[j].0)
+                ));
             }
         }
         Returns::Fields(fields) => {
@@ -490,7 +519,8 @@ fn glue(f: &Function, read: &Read) -> Result<String, String> {
     o.push_str("        Ok((set, fired))\n    }\n");
     if let Some((_, fields)) = &read.state {
         o.push_str("\n    fn state(&mut self) -> lineit_rt::native::Values {\n        use lineit_rt::value::Typed;\n        lineit_rt::native::Values::from([");
-        let v: Vec<String> = fields.iter().map(|fl| format!("({}.to_string(), self.state.{fl}.to_value())", quoted(fl))).collect();
+        let v: Vec<String> =
+            fields.iter().map(|fl| format!("({}.to_string(), self.state.{fl}.to_value())", quoted(fl))).collect();
         o.push_str(&v.join(", "));
         o.push_str("])\n    }\n");
         o.push_str("\n    fn set_state(&mut self, s: &lineit_rt::native::Values) -> Result<(), String> {\n        use lineit_rt::value::Typed;\n");
@@ -542,7 +572,9 @@ fn record_structs(f: &Function, read: &Read) -> String {
         let from: Vec<String> = r
             .fields
             .iter()
-            .map(|(n, _)| format!("{n}: field({}).map(lineit_rt::value::Typed::from_value).unwrap_or_default()", quoted(n)))
+            .map(|(n, _)| {
+                format!("{n}: field({}).map(lineit_rt::value::Typed::from_value).unwrap_or_default()", quoted(n))
+            })
             .collect();
         o.push_str(&format!(
             "impl lineit_rt::value::Typed for {name} {{
@@ -586,7 +618,10 @@ impl Function {
     /// isn't an input) as None.
     fn params_and_shared<'a>(&'a self, read: &'a Read) -> Vec<(Option<&'a Param>, &'a Pass)> {
         let mut ps = self.params.iter();
-        read.passes.iter().map(|pass| (if matches!(pass, Pass::Shared { .. }) { None } else { ps.next() }, pass)).collect()
+        read.passes
+            .iter()
+            .map(|pass| (if matches!(pass, Pass::Shared { .. }) { None } else { ps.next() }, pass))
+            .collect()
     }
 }
 

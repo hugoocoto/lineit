@@ -42,15 +42,7 @@ pub const TAG_RECORD: u32 = 6;
 
 impl Default for Lv {
     fn default() -> Self {
-        Lv {
-            tag: TAG_INT,
-            i: 0,
-            f: 0.0,
-            s: std::ptr::null(),
-            items: std::ptr::null(),
-            keys: std::ptr::null(),
-            len: 0,
-        }
+        Lv { tag: TAG_INT, i: 0, f: 0.0, s: std::ptr::null(), items: std::ptr::null(), keys: std::ptr::null(), len: 0 }
     }
 }
 
@@ -229,7 +221,13 @@ impl CSquare {
     /// had before anything ran (the first square of a library reads them;
     /// a library stays loaded from one run to the next, with what the last
     /// one left in them).
-    pub fn new(spec: &'static Spec, call: CallFn, get: GetFn, set: SetFn, start: &'static OnceLock<Vec<Value>>) -> CSquare {
+    pub fn new(
+        spec: &'static Spec,
+        call: CallFn,
+        get: GetFn,
+        set: SetFn,
+        start: &'static OnceLock<Vec<Value>>,
+    ) -> CSquare {
         let mut s = CSquare { spec, call, get, set, state: Vec::new() };
         s.state = start.get_or_init(|| s.read_state()).clone();
         s

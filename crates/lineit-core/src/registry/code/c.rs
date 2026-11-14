@@ -231,7 +231,8 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
                 let mut c = n.walk();
                 for d in n.children_by_field_name("declarator", &mut c) {
                     let Some(name) = declared(d, source) else { continue };
-                    let inner = if d.kind() == "init_declarator" { d.child_by_field_name("declarator") } else { Some(d) };
+                    let inner =
+                        if d.kind() == "init_declarator" { d.child_by_field_name("declarator") } else { Some(d) };
                     let t = decl_type(ty, inner, source, cx)?;
                     if !matches!(t, Type::Int | Type::Float | Type::Bool) {
                         return Err(format!(
@@ -248,13 +249,20 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
         [f] => *f,
         [] => return Err("there's no function that isn't `static`: the square runs that one".into()),
         many => {
-            let names: Vec<&str> =
-                many.iter().filter_map(|f| f.child_by_field_name("declarator")).filter_map(|d| declared(d, source)).collect();
-            return Err(format!("it runs one function, and {} aren't `static`: make the helpers `static`", names.join(", ")));
+            let names: Vec<&str> = many
+                .iter()
+                .filter_map(|f| f.child_by_field_name("declarator"))
+                .filter_map(|d| declared(d, source))
+                .collect();
+            return Err(format!(
+                "it runs one function, and {} aren't `static`: make the helpers `static`",
+                names.join(", ")
+            ));
         }
     };
     let decl = f.child_by_field_name("declarator").ok_or("the function has no name")?;
-    let fdecl = descendants(decl).into_iter().find(|d| d.kind() == "function_declarator").ok_or("the function has no name")?;
+    let fdecl =
+        descendants(decl).into_iter().find(|d| d.kind() == "function_declarator").ok_or("the function has no name")?;
     let name = declared(fdecl, source).ok_or("the function has no name")?.to_string();
 
     // its doc: the comment right before it
@@ -263,8 +271,13 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
         .filter(|p| p.kind() == "comment" && p.end_position().row + 1 >= f.start_position().row)
         .map(|p| {
             let t = text(p);
-            let t = t.trim_start_matches("/**").trim_start_matches("/*").trim_start_matches("//").trim_end_matches("*/");
-            t.lines().map(|l| l.trim().trim_start_matches('*').trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
+            let t =
+                t.trim_start_matches("/**").trim_start_matches("/*").trim_start_matches("//").trim_end_matches("*/");
+            t.lines()
+                .map(|l| l.trim().trim_start_matches('*').trim())
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
         })
         .unwrap_or_default();
 
@@ -291,7 +304,8 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
                 let mut in_struct = None;
                 if let Some(eps) = d.child_by_field_name("parameters") {
                     let mut c = eps.walk();
-                    let eps: Vec<Node> = eps.named_children(&mut c).filter(|e| e.kind() == "parameter_declaration").collect();
+                    let eps: Vec<Node> =
+                        eps.named_children(&mut c).filter(|e| e.kind() == "parameter_declaration").collect();
                     let one = match eps.as_slice() {
                         [e] => e.child_by_field_name("type").and_then(|t| typedefs.iter().find(|(n, _)| n == text(t))),
                         _ => None,
@@ -317,7 +331,11 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
                 }
                 read.exits.push((ctypes, in_struct));
                 read.passes.push(Pass::Exit);
-                params.push(Param { name: pname.clone(), role: Role::Exit(exit_values(&pname, values)), default: None });
+                params.push(Param {
+                    name: pname.clone(),
+                    role: Role::Exit(exit_values(&pname, values)),
+                    default: None,
+                });
                 continue;
             }
             if text(ty) == "Shared" {
@@ -355,7 +373,9 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
             if n.kind() != "field_expression" {
                 continue;
             }
-            let (Some(a), Some(fld)) = (n.child_by_field_name("argument"), n.child_by_field_name("field")) else { continue };
+            let (Some(a), Some(fld)) = (n.child_by_field_name("argument"), n.child_by_field_name("field")) else {
+                continue;
+            };
             if text(a) != sname {
                 continue;
             }
@@ -452,7 +472,9 @@ static int lineit_puts(const char *s);
     );
     for t in &types {
         match t {
-            Type::List(e) => o.push_str(&format!("typedef struct {{ {} *items; size_t len; }} {};\n", c_type(e), c_name(t))),
+            Type::List(e) => {
+                o.push_str(&format!("typedef struct {{ {} *items; size_t len; }} {};\n", c_type(e), c_name(t)))
+            }
             Type::Map(e) => o.push_str(&format!(
                 "typedef struct {{ const char **keys; {} *values; size_t len; }} {};\n",
                 c_type(e),
@@ -465,8 +487,12 @@ static int lineit_puts(const char *s);
             _ => {}
         }
     }
-    let fields: Vec<String> = f.shared.iter().zip(&f.shared_types).map(|((g, _), t)| format!("{} {g};", c_type(t))).collect();
-    o.push_str(&format!("typedef struct {{ {} }} Shared;\n\n#endif\n", if fields.is_empty() { "char none;".to_string() } else { fields.join(" ") }));
+    let fields: Vec<String> =
+        f.shared.iter().zip(&f.shared_types).map(|((g, _), t)| format!("{} {g};", c_type(t))).collect();
+    o.push_str(&format!(
+        "typedef struct {{ {} }} Shared;\n\n#endif\n",
+        if fields.is_empty() { "char none;".to_string() } else { fields.join(" ") }
+    ));
     o
 }
 
@@ -493,11 +519,12 @@ fn conversions(f: &Function, read: &Read) -> String {
                 "return v->tag == 1 ? v->f : (double)v->i;".into(),
                 "lineit_value v = {0}; v.tag = 1; v.f = x; return v;".into(),
             ),
-            Type::Bool => ("return v->i != 0;".into(), "lineit_value v = {0}; v.tag = 2; v.i = x ? 1 : 0; return v;".into()),
-            Type::Str => (
-                "return v->s ? v->s : \"\";".into(),
-                "lineit_value v = {0}; v.tag = 3; v.s = x; return v;".into(),
-            ),
+            Type::Bool => {
+                ("return v->i != 0;".into(), "lineit_value v = {0}; v.tag = 2; v.i = x ? 1 : 0; return v;".into())
+            }
+            Type::Str => {
+                ("return v->s ? v->s : \"\";".into(), "lineit_value v = {0}; v.tag = 3; v.s = x; return v;".into())
+            }
             Type::List(e) => {
                 let en = c_name(e);
                 (
@@ -521,10 +548,18 @@ fn conversions(f: &Function, read: &Read) -> String {
                 )
             }
             Type::Record(r) => {
-                let from: Vec<String> =
-                    r.fields.iter().enumerate().map(|(k, (fname, ft))| format!("x.{fname} = lineit_from_{}(&v->items[{k}]);", c_name(ft))).collect();
-                let to: Vec<String> =
-                    r.fields.iter().enumerate().map(|(k, (fname, ft))| format!("items[{k}] = lineit_to_{}(x.{fname});", c_name(ft))).collect();
+                let from: Vec<String> = r
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (fname, ft))| format!("x.{fname} = lineit_from_{}(&v->items[{k}]);", c_name(ft)))
+                    .collect();
+                let to: Vec<String> = r
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (fname, ft))| format!("items[{k}] = lineit_to_{}(x.{fname});", c_name(ft)))
+                    .collect();
                 let keys: Vec<String> = r.fields.iter().map(|(fname, _)| quoted(fname)).collect();
                 (
                     format!("{ct} x; {}; return x;", from.join(" ")),
@@ -539,7 +574,9 @@ fn conversions(f: &Function, read: &Read) -> String {
             }
             Type::Image => continue,
         };
-        o.push_str(&format!("static {ct} lineit_from_{n}(const lineit_value *v);\nstatic lineit_value lineit_to_{n}({ct} x);\n"));
+        o.push_str(&format!(
+            "static {ct} lineit_from_{n}(const lineit_value *v);\nstatic lineit_value lineit_to_{n}({ct} x);\n"
+        ));
         o.push_str(&format!("static {ct} lineit_from_{n}(const lineit_value *v) {{ {from} }}\n"));
         o.push_str(&format!("static lineit_value lineit_to_{n}({ct} x) {{ {to} }}\n"));
     }
@@ -621,7 +658,11 @@ static int lineit_puts(const char *s) {{
         let (params, items): (String, Vec<String>) = match in_struct {
             Some(s) => (
                 format!("{s} v"),
-                values.iter().zip(read_fields(&f.source, s)).map(|((_, t), fl)| format!("lineit_to_{}(v.{fl})", c_name(t))).collect(),
+                values
+                    .iter()
+                    .zip(read_fields(&f.source, s))
+                    .map(|((_, t), fl)| format!("lineit_to_{}(v.{fl})", c_name(t)))
+                    .collect(),
             ),
             None => (
                 if ctypes.is_empty() {
@@ -839,7 +880,10 @@ mod tests {
         }
         fn record(&self, name: &str) -> Option<Arc<RecordType>> {
             (name == "point").then(|| {
-                Arc::new(RecordType { name: "point".into(), fields: vec![("x".into(), Type::Float), ("y".into(), Type::Float)] })
+                Arc::new(RecordType {
+                    name: "point".into(),
+                    fields: vec![("x".into(), Type::Float), ("y".into(), Type::Float)],
+                })
             })
         }
         fn read(&self, path: &str) -> Result<String, String> {

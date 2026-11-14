@@ -47,7 +47,8 @@ fn main() -> ExitCode {
     // like diff(1): 0 the same, 1 different, 2 trouble
     if args.first().map(String::as_str) == Some("diff") {
         let view = args.iter().any(|a| a == "--view");
-        let r = match (only_flags(&args[1..], &["--view"], "diff A B [--view]"), positional(&args[1..], &[]).as_slice()) {
+        let r = match (only_flags(&args[1..], &["--view"], "diff A B [--view]"), positional(&args[1..], &[]).as_slice())
+        {
             (Err(e), _) => Err(e),
             (_, [a, b]) if view => diffcmd::view(a, b).map(|()| false),
             (_, [a, b]) => diffcmd::run(a, b),
@@ -212,7 +213,12 @@ fn run(args: &[String]) -> Result<(), String> {
                 }
             }
             for t in &all {
-                let what = format!("{} (square {}{})", path.display(), t.square, if t.name.is_empty() { String::new() } else { format!(", {}", t.name) });
+                let what = format!(
+                    "{} (square {}{})",
+                    path.display(),
+                    t.square,
+                    if t.name.is_empty() { String::new() } else { format!(", {}", t.name) }
+                );
                 match &t.results {
                     Err(e) => {
                         failed += t.rows.max(1);

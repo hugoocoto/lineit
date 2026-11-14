@@ -581,9 +581,9 @@ pub fn open_ext(path: &str, kind: &ExtKind) -> Result<Box<dyn Ext>, String> {
             let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             Box::new(lineit_rt::process::Process::start(name, &commands, &args, &env, lock.as_deref(), host, load)?)
         }
-        ExtKind::Native { crate_dir, crate_name, ty } => Box::new(
-            crate::native::Dylib::open(crate_dir, crate_name, ty).map_err(|err| format!("{path}: {err}"))?,
-        ),
+        ExtKind::Native { crate_dir, crate_name, ty } => {
+            Box::new(crate::native::Dylib::open(crate_dir, crate_name, ty).map_err(|err| format!("{path}: {err}"))?)
+        }
     })
 }
 

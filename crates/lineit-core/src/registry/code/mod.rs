@@ -269,13 +269,15 @@ impl SigCx for FunctionRecords<'_> {
     }
     fn record(&self, name: &str) -> Option<Arc<lineit_rt::RecordType>> {
         let mut found = None;
-        let mut look = |t: &Type| visit(t, &mut |t| {
-            if let Type::Record(r) = t
-                && r.name == name
-            {
-                found = Some(r.clone());
-            }
-        });
+        let mut look = |t: &Type| {
+            visit(t, &mut |t| {
+                if let Type::Record(r) = t
+                    && r.name == name
+                {
+                    found = Some(r.clone());
+                }
+            })
+        };
         for p in &self.0.params {
             match &p.role {
                 Role::Input(Some(t)) => look(t),
@@ -691,13 +693,18 @@ mod tests {
             None
         }
         fn read(&self, path: &str) -> Result<String, String> {
-            self.0.iter().find(|(n, _)| *n == path).map(|(_, s)| s.to_string()).ok_or_else(|| format!("{path}: not there"))
+            self.0
+                .iter()
+                .find(|(n, _)| *n == path)
+                .map(|(_, s)| s.to_string())
+                .ok_or_else(|| format!("{path}: not there"))
         }
     }
 
     fn sig(language: &str, file: &str, files: Vec<(&'static str, &'static str)>) -> Result<Signature, String> {
         let m = CodeModule::new();
-        let values = BTreeMap::from([("language".to_string(), language.to_string()), ("file".to_string(), file.to_string())]);
+        let values =
+            BTreeMap::from([("language".to_string(), language.to_string()), ("file".to_string(), file.to_string())]);
         m.signature(&Params { defs: m.params(), values: &values }, &Files(files))
     }
 

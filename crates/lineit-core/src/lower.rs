@@ -60,7 +60,9 @@ pub fn arrange(canvas: &mut Canvas, reg: &Registry) {
             });
             l.squares.get(&sq.id).map(|i| square_height(i, params) + extra)
         },
-        &|sq| code(sq).map(|c| (c.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * 7.3 + 24.0).min(640.0)),
+        &|sq| {
+            code(sq).map(|c| (c.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * 7.3 + 24.0).min(640.0))
+        },
     );
 }
 
@@ -903,8 +905,12 @@ fn lower_for(canvas: &Canvas, reg: &Registry, test_case: Option<SquareId>) -> Lo
         lw.drain();
     }
     // the variables to show: the canvas's and the global ones
-    let mut vars: Vec<(String, SlotId)> =
-        lw.var_slots.iter().filter(|((scope, _), _)| *scope == 0 || *scope == GLOBAL_SCOPE).map(|((_, n), s)| (n.clone(), *s)).collect();
+    let mut vars: Vec<(String, SlotId)> = lw
+        .var_slots
+        .iter()
+        .filter(|((scope, _), _)| *scope == 0 || *scope == GLOBAL_SCOPE)
+        .map(|((_, n), s)| (n.clone(), *s))
+        .collect();
     vars.sort();
     lw.prog.vars = vars;
     // pure squares that make images, for previews
@@ -937,7 +943,14 @@ fn lower_for(canvas: &Canvas, reg: &Registry, test_case: Option<SquareId>) -> Lo
     let mut diags = std::mem::take(&mut lw.diags);
     diags.dedup();
     if !diags.is_empty() {
-        return Lowered { program: None, diags, double: flat.double.clone(), squares, previews: Vec::new(), deps: flat.deps.clone() };
+        return Lowered {
+            program: None,
+            diags,
+            double: flat.double.clone(),
+            squares,
+            previews: Vec::new(),
+            deps: flat.deps.clone(),
+        };
     }
     prog.find_meets();
     Lowered { program: Some(prog), diags, double: flat.double.clone(), squares, previews, deps: flat.deps.clone() }

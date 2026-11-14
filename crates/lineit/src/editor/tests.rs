@@ -230,14 +230,13 @@ pub fn window(ctx: &egui::Context, tab: &mut Tab, ui_state: &mut TestsUi, theme:
         Ok(r) => r,
         Err(e) => {
             let mut open = true;
-            egui::Window::new("Tests")
-                .id(egui::Id::unique(("tests", sq)))
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            egui::Window::new("Tests").id(egui::Id::unique(("tests", sq))).open(&mut open).collapsible(false).show(
+                ctx,
+                |ui| {
                     ui.colored_label(theme.error, format!("Its tests can't be read: {e}"));
                     ui.label("Fix them in the canvas's file (the square's `tests`).");
-                });
+                },
+            );
             if !open {
                 ui_state.open = None;
             }
@@ -403,7 +402,9 @@ pub fn report_ui(ui: &mut egui::Ui, ui_state: &mut TestsUi, theme: &Theme) -> Ve
                     ui.colored_label(theme.dim, "(the canvas changed since: F6 runs them again)");
                 }
                 if ok + bad == 0 {
-                    ui.label("No tests yet: add a test/case square (and test/expect squares), or tests to a code square.");
+                    ui.label(
+                        "No tests yet: add a test/case square (and test/expect squares), or tests to a code square.",
+                    );
                 } else if bad == 0 {
                     ui.colored_label(green, format!("all {ok} passed"));
                 } else {
@@ -428,13 +429,18 @@ pub fn report_ui(ui: &mut egui::Ui, ui_state: &mut TestsUi, theme: &Theme) -> Ve
             let ok = c.ok();
             let body = |ui: &mut egui::Ui, actions: &mut Vec<ReportAction>| {
                 let g = given(c.square);
-                ui.weak(if g.is_empty() { "it gives nothing: the variables as they start".to_string() } else { format!("given {g}") });
+                ui.weak(if g.is_empty() {
+                    "it gives nothing: the variables as they start".to_string()
+                } else {
+                    format!("given {g}")
+                });
                 for k in &c.checks {
                     let what = if k.label.is_empty() { "a check".to_string() } else { k.label.clone() };
                     let text = if k.ok {
                         egui::RichText::new(format!("{what}: {} as expected", k.got.text())).color(theme.dim)
                     } else {
-                        egui::RichText::new(format!("{what}: expected {}, got {}", k.expected.text(), k.got.text())).color(theme.error)
+                        egui::RichText::new(format!("{what}: expected {}, got {}", k.expected.text(), k.got.text()))
+                            .color(theme.error)
                     };
                     link(ui, text, k.square, actions);
                 }
@@ -445,11 +451,14 @@ pub fn report_ui(ui: &mut egui::Ui, ui_state: &mut TestsUi, theme: &Theme) -> Ve
                     ui.colored_label(theme.error, e);
                 }
                 if !c.output.is_empty() {
-                    ui.collapsing(format!("it printed {} line{}", c.output.len(), if c.output.len() == 1 { "" } else { "s" }), |ui| {
-                        for l in &c.output {
-                            ui.monospace(l);
-                        }
-                    });
+                    ui.collapsing(
+                        format!("it printed {} line{}", c.output.len(), if c.output.len() == 1 { "" } else { "s" }),
+                        |ui| {
+                            for l in &c.output {
+                                ui.monospace(l);
+                            }
+                        },
+                    );
                 }
             };
             let head = |ui: &mut egui::Ui, actions: &mut Vec<ReportAction>| {
@@ -461,7 +470,11 @@ pub fn report_ui(ui: &mut egui::Ui, ui_state: &mut TestsUi, theme: &Theme) -> Ve
                 link(ui, egui::RichText::new(&c.name).strong(), c.square, actions);
                 let n = c.checks.len();
                 ui.weak(format!("{n} check{}", if n == 1 { "" } else { "s" }));
-                if ui.button("Debug").on_hover_text("Run this test by steps (F10), from what it gives: its checks show on the canvas").clicked() {
+                if ui
+                    .button("Debug")
+                    .on_hover_text("Run this test by steps (F10), from what it gives: its checks show on the canvas")
+                    .clicked()
+                {
                     actions.push(ReportAction::Debug(c.square));
                 }
             };

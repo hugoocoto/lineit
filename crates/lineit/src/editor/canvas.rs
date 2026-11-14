@@ -97,7 +97,11 @@ pub enum Pending {
 
 /// What the canvas wants the editor to do.
 pub enum Action {
-    Search { at: Pos2, screen: Pos2, pending: Option<Pending> },
+    Search {
+        at: Pos2,
+        screen: Pos2,
+        pending: Option<Pending>,
+    },
     OpenModule(String),
     MakeSubgraph,
     Copy,
@@ -676,7 +680,14 @@ fn code_galley(painter: &egui::Painter, text: &str, z: f32, color: Color32) -> s
 
 /// A code square's code in LANG, colored (and, from a file, the line that
 /// says which first, dim).
-fn code_colored(painter: &egui::Painter, text: &str, lang: &str, from_file: bool, z: f32, theme: &Theme) -> std::sync::Arc<egui::Galley> {
+fn code_colored(
+    painter: &egui::Painter,
+    text: &str,
+    lang: &str,
+    from_file: bool,
+    z: f32,
+    theme: &Theme,
+) -> std::sync::Arc<egui::Galley> {
     use lineit_core::registry::code::{Paint, highlight};
     let font = zoomed_mono(12.0 * z);
     let text = text.trim_end().replace('\t', "    ");
@@ -970,7 +981,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         let function = if sq.module == CODE { info.as_ref().and_then(|i| i.sig.code.clone()) } else { None };
         let title = match (&module, &function) {
             (_, Some(f)) => {
-                let lang = sq.params.get("language").cloned().unwrap_or_else(lineit_core::registry::code::default_language);
+                let lang =
+                    sq.params.get("language").cloned().unwrap_or_else(lineit_core::registry::code::default_language);
                 format!("{} ({lang})", f.name)
             }
             (Some(_), None) => sq.module.clone(),
@@ -1046,7 +1058,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 let b = ui
                     .add_enabled(from_run, egui::Button::new("Fill from the run"))
                     .on_hover_text("Its fields get the values the variables have now in the run (paused, or ended)")
-                    .on_disabled_hover_text("Run or step the canvas first: its fields get the values the variables have then");
+                    .on_disabled_hover_text(
+                        "Run or step the canvas first: its fields get the values the variables have then",
+                    );
                 if b.clicked() {
                     for (name, _) in &typed {
                         if let Some((_, v)) = cx.vars.iter().find(|(n, _)| n == name) {
@@ -1055,11 +1069,22 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     }
                     ui.close();
                 }
-                if ui.button("Fill from how they start").on_hover_text("Its fields get what the variables start with (their var/var)").clicked() {
+                if ui
+                    .button("Fill from how they start")
+                    .on_hover_text("Its fields get what the variables start with (their var/var)")
+                    .clicked()
+                {
                     for (name, ty) in &typed {
-                        let decl = cx.tab.canvas.squares.iter().find(|s| s.module == "var/var" && s.params.get("name") == Some(name));
-                        let initial = decl.and_then(|d| d.params.get("initial")).filter(|t| !t.trim().is_empty()).cloned();
-                        let text = initial.unwrap_or_else(|| lineit_core::registry::builtin::default_text(ty).to_string());
+                        let decl = cx
+                            .tab
+                            .canvas
+                            .squares
+                            .iter()
+                            .find(|s| s.module == "var/var" && s.params.get("name") == Some(name));
+                        let initial =
+                            decl.and_then(|d| d.params.get("initial")).filter(|t| !t.trim().is_empty()).cloned();
+                        let text =
+                            initial.unwrap_or_else(|| lineit_core::registry::builtin::default_text(ty).to_string());
                         field_changes.push((id, name.clone(), text, false));
                     }
                     ui.close();
@@ -1271,7 +1296,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                     Badge::None => ("add tests".to_string(), theme.dim),
                     Badge::Running => ("tests running...".to_string(), theme.dim),
                     Badge::NotRun(n) => (format!("{n} test{}, not run", if n == 1 { "" } else { "s" }), theme.dim),
-                    Badge::Ran(p, n) if p == n => (format!("tests: {p} of {n} passed"), Color32::from_rgb(110, 190, 110)),
+                    Badge::Ran(p, n) if p == n => {
+                        (format!("tests: {p} of {n} passed"), Color32::from_rgb(110, 190, 110))
+                    }
                     Badge::Ran(p, n) => (format!("tests: {} of {n} failed", n - p), theme.error),
                     Badge::Failed(_) => ("tests can't run".to_string(), theme.error),
                 };
@@ -1358,9 +1385,15 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             && let Some(ok) = cx.state.tests.case_result(id)
             && !problems.contains_key(&id)
         {
-            let (text, color) = if ok { ("passed", Color32::from_rgb(110, 190, 110)) } else { ("failed: see the report", theme.error) };
-            let r = painter.text(srect.left_bottom() + vec2(2.0 * z, 4.0 * z), Align2::LEFT_TOP, text, font(12.0), color);
-            if ui.interact(r, Id::unique(("case result", cx.tab_id, id)), Sense::click()).on_hover_text("Open the tests' report").clicked() {
+            let (text, color) =
+                if ok { ("passed", Color32::from_rgb(110, 190, 110)) } else { ("failed: see the report", theme.error) };
+            let r =
+                painter.text(srect.left_bottom() + vec2(2.0 * z, 4.0 * z), Align2::LEFT_TOP, text, font(12.0), color);
+            if ui
+                .interact(r, Id::unique(("case result", cx.tab_id, id)), Sense::click())
+                .on_hover_text("Open the tests' report")
+                .clicked()
+            {
                 cx.actions.push(Action::ShowReport);
             }
         }
@@ -1476,7 +1509,12 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 }
             };
             painter.rect_filled(r, 0.0, color.gamma_multiply(0.14));
-            painter.rect_stroke(r, 0.0, Stroke::new(if *mark == Mark::Wired { 2.0 } else { 3.0 }, color), StrokeKind::Outside);
+            painter.rect_stroke(
+                r,
+                0.0,
+                Stroke::new(if *mark == Mark::Wired { 2.0 } else { 3.0 }, color),
+                StrokeKind::Outside,
+            );
             let at = r.left_top() - vec2(0.0, 4.0 * z);
             painter.text(at, Align2::LEFT_BOTTOM, tag, font(12.0), color);
         }

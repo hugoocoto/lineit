@@ -402,7 +402,8 @@ mod tests {
     #[test]
     fn removed_wires_are_not_errors_in_a_diff() {
         let reg = Registry::builtin();
-        let constant = |id, ty: &str| Square::new(id, "value/constant", 0.0, 0.0).with_param("type", ty).with_field("value", "1");
+        let constant =
+            |id, ty: &str| Square::new(id, "value/constant", 0.0, 0.0).with_param("type", ty).with_field("value", "1");
         let mut old = Canvas::default();
         old.add(constant(1, "str"));
         old.add(constant(2, "int"));

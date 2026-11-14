@@ -128,7 +128,8 @@ pub fn load_dirs(dirs: &[&Path]) -> Vec<String> {
     let mut errors = Vec::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else { continue };
-        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "lua")).collect();
+        let mut paths: Vec<_> =
+            entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "lua")).collect();
         paths.sort();
         for p in paths {
             let text = match std::fs::read_to_string(&p) {
@@ -159,7 +160,9 @@ pub fn read_file(text: &str, name: &str) -> Result<FileLanguage, String> {
         };
         let name = s("name")?;
         let grammar = t.get::<String>("grammar").ok().map(|g| {
-            let symbol = t.get::<String>("grammar_function").unwrap_or_else(|_| format!("tree_sitter_{}", name.replace('-', "_")));
+            let symbol = t
+                .get::<String>("grammar_function")
+                .unwrap_or_else(|_| format!("tree_sitter_{}", name.replace('-', "_")));
             let queries: Vec<String> = match t.get::<mlua::Value>("highlights") {
                 Ok(mlua::Value::String(q)) => vec![q.to_string_lossy()],
                 Ok(mlua::Value::Table(l)) => l.sequence_values::<String>().flatten().collect(),
@@ -178,7 +181,10 @@ pub fn read_file(text: &str, name: &str) -> Result<FileLanguage, String> {
             extensions: list("extensions").unwrap_or_default(),
             commands: list("commands")?,
             args: list("args").unwrap_or_default(),
-            env: t.get::<mlua::Table>("env").map(|e| e.pairs::<String, String>().flatten().collect()).unwrap_or_default(),
+            env: t
+                .get::<mlua::Table>("env")
+                .map(|e| e.pairs::<String, String>().flatten().collect())
+                .unwrap_or_default(),
             host: s("host")?,
             template: t.get::<String>("template").unwrap_or_default(),
             name,
@@ -246,11 +252,15 @@ impl FileLanguage {
                     let _ = std::io::Read::read_to_string(&mut e, &mut err);
                 }
                 let err = err.lines().last().unwrap_or("").trim().to_string();
-                tried.push(format!("{cmd}: it didn't answer{}", if err.is_empty() { String::new() } else { format!(" ({err})") }));
+                tried.push(format!(
+                    "{cmd}: it didn't answer{}",
+                    if err.is_empty() { String::new() } else { format!(" ({err})") }
+                ));
                 let _ = status;
                 continue;
             }
-            let got: Json = serde_json::from_str(&line).map_err(|e| format!("{}: a bad answer ({e}): {line}", self.name))?;
+            let got: Json =
+                serde_json::from_str(&line).map_err(|e| format!("{}: a bad answer ({e}): {line}", self.name))?;
             if let Some(e) = got.get("error") {
                 return Err(e.as_str().map(String::from).unwrap_or_else(|| e.to_string()));
             }
@@ -353,7 +363,9 @@ impl Language for FileLanguage {
             .iter()
             .map(|p| match &p.role {
                 Role::Input(_) => json!({ "name": p.name, "exit": null }),
-                Role::Exit(values) => json!({ "name": p.name, "exit": values.iter().map(|(pin, _)| pin).collect::<Vec<_>>() }),
+                Role::Exit(values) => {
+                    json!({ "name": p.name, "exit": values.iter().map(|(pin, _)| pin).collect::<Vec<_>>() })
+                }
             })
             .collect();
         let ext = self.extensions.first().cloned().unwrap_or_else(|| "txt".into());

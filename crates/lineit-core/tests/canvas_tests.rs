@@ -14,7 +14,10 @@ fn cases_pass_and_fail() {
     let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/testing.lua")).unwrap();
     let reg = lineit_core::registry::Registry::builtin();
     let r = lineit_core::codetest::run_cases(&canvas(&src), &reg);
-    assert_eq!(r.iter().map(|c| (c.name.as_str(), c.ok(), c.checks.len())).collect::<Vec<_>>(), [("up to 3", true, 1), ("up to 10", true, 1)]);
+    assert_eq!(
+        r.iter().map(|c| (c.name.as_str(), c.ok(), c.checks.len())).collect::<Vec<_>>(),
+        [("up to 3", true, 1), ("up to 10", true, 1)]
+    );
 
     // a case that wants what it doesn't get
     let wrong = src.replace(r#"["::want"] = "55""#, r#"["::want"] = "50""#);
@@ -22,11 +25,18 @@ fn cases_pass_and_fail() {
     let r = lineit_core::codetest::run_cases(&canvas(&wrong), &reg);
     let bad = &r[1];
     assert!(!bad.ok());
-    assert_eq!((bad.checks[0].label.as_str(), bad.checks[0].expected.text(), bad.checks[0].got.text()), ("the total", "50".into(), "55".into()));
+    assert_eq!(
+        (bad.checks[0].label.as_str(), bad.checks[0].expected.text(), bad.checks[0].got.text()),
+        ("the total", "50".into(), "55".into())
+    );
     assert_eq!(bad.output, ["55"]);
 
     // a case whose run fails says why
-    let broken = src.replace(r#"{ id = 15, module = "io/print""#, r#"{ id = 15, module = "code/function", params = { code = "function boom()\n  error('no')\nend\n" }"#)
+    let broken = src
+        .replace(
+            r#"{ id = 15, module = "io/print""#,
+            r#"{ id = 15, module = "code/function", params = { code = "function boom()\n  error('no')\nend\n" }"#,
+        )
         .replace(r#"{ 13, "then", 15, "tick" }, { 10, "value", 15, "value" },"#, r#"{ 13, "then", 15, "tick" },"#);
     assert_ne!(broken, src, "the print became a code square");
     let r = lineit_core::codetest::run_cases(&canvas(&broken), &reg);

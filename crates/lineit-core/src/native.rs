@@ -317,7 +317,8 @@ impl Stream {
         if let Some(path) = address.strip_prefix("unix:") {
             return Ok(Stream::Unix(std::os::unix::net::UnixStream::connect(path)?));
         }
-        let port: u16 = address.strip_prefix("tcp:").and_then(|p| p.parse().ok()).ok_or(std::io::ErrorKind::InvalidInput)?;
+        let port: u16 =
+            address.strip_prefix("tcp:").and_then(|p| p.parse().ok()).ok_or(std::io::ErrorKind::InvalidInput)?;
         let s = std::net::TcpStream::connect(("127.0.0.1", port))?;
         let _ = s.set_nodelay(true);
         Ok(Stream::Tcp(s))
@@ -415,7 +416,8 @@ impl Drop for Listener {
 impl Helper {
     fn start(exe: &Path, lib: &Path, crate_name: &str) -> Result<Helper, String> {
         use std::hash::{BuildHasher, Hasher};
-        let (listener, address) = Listener::listen().map_err(|e| format!("couldn't listen for the code's process ({e})"))?;
+        let (listener, address) =
+            Listener::listen().map_err(|e| format!("couldn't listen for the code's process ({e})"))?;
         let token = std::collections::hash_map::RandomState::new().build_hasher().finish();
         let captured = lineit_rt::ext::captures_stderr();
         let out = || if captured { std::process::Stdio::piped() } else { std::process::Stdio::inherit() };
@@ -541,7 +543,10 @@ pub fn serve(lib: &Path, crate_name: &str, address: &str, token: u64) -> Result<
                 let params = take_bytes(&mut input).map_err(|e| e.to_string())?;
                 let s = unsafe { (lib.new)(ty.as_ptr(), ty.len(), params.as_ptr(), params.len()) };
                 if s.is_null() {
-                    let why = format!("the library has no module `{}` (or it panicked making one)", String::from_utf8_lossy(&ty));
+                    let why = format!(
+                        "the library has no module `{}` (or it panicked making one)",
+                        String::from_utf8_lossy(&ty)
+                    );
                     answer(&mut out, 0, why.as_bytes())
                 } else {
                     squares.push(s);

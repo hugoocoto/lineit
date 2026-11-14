@@ -242,7 +242,8 @@ mod tests {
         let old = read_canvas("return { lineit = 1, squares = { { id = 7, module = 'a' } } }", "t").unwrap();
         assert_eq!(old.next_id(), 8);
         // a next_id lower than the squares' is no use: they win
-        let low = read_canvas("return { lineit = 1, next_id = 2, squares = { { id = 7, module = 'a' } } }", "t").unwrap();
+        let low =
+            read_canvas("return { lineit = 1, next_id = 2, squares = { { id = 7, module = 'a' } } }", "t").unwrap();
         assert_eq!(low.next_id(), 8);
     }
 

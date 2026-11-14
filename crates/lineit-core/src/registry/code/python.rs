@@ -234,9 +234,9 @@ fn py_type(n: Node, src: &str, cx: &dyn SigCx) -> Result<PyType, String> {
             "bool" => PyType::T(Type::Bool),
             "str" => PyType::T(Type::Str),
             "Out" => PyType::Exit(Vec::new()),
-            name => PyType::T(Type::Record(
-                cx.record(name).ok_or_else(|| format!("`{name}` isn't a type lineit knows"))?,
-            )),
+            name => {
+                PyType::T(Type::Record(cx.record(name).ok_or_else(|| format!("`{name}` isn't a type lineit knows"))?))
+            }
         },
         "generic_type" => {
             let head = n.named_child(0).map(text).unwrap_or_default();
@@ -283,7 +283,9 @@ fn default_text(n: Node, src: &str) -> Option<String> {
         "false" => "false".into(),
         "string" => {
             let mut c = n.walk();
-            n.named_children(&mut c).find(|c| c.kind() == "string_content").map_or(String::new(), |c| src[c.byte_range()].to_string())
+            n.named_children(&mut c)
+                .find(|c| c.kind() == "string_content")
+                .map_or(String::new(), |c| src[c.byte_range()].to_string())
         }
         "unary_operator" => t.replace(' ', ""),
         _ => return None,
@@ -361,7 +363,9 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
         for p in ps.named_children(&mut c) {
             let (pname, ty, default) = match p.kind() {
                 "identifier" => (p, None, None),
-                "typed_parameter" => (p.named_child(0).ok_or("a parameter with no name")?, p.child_by_field_name("type"), None),
+                "typed_parameter" => {
+                    (p.named_child(0).ok_or("a parameter with no name")?, p.child_by_field_name("type"), None)
+                }
                 "default_parameter" | "typed_default_parameter" => (
                     p.child_by_field_name("name").ok_or("a parameter with no name")?,
                     p.child_by_field_name("type"),
@@ -405,8 +409,9 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
                     }
                 }
                 return_values(v)
-            } else if let Some(class) =
-                classes.iter().find(|c| inner.kind() == "identifier" && c.child_by_field_name("name").map(text) == Some(text(inner)))
+            } else if let Some(class) = classes
+                .iter()
+                .find(|c| inner.kind() == "identifier" && c.child_by_field_name("name").map(text) == Some(text(inner)))
             {
                 // a NamedTuple: its fields
                 let mut v = Vec::new();
@@ -434,7 +439,9 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
     let has_exits = params.iter().any(|p| matches!(p.role, Role::Exit(_)));
     if f.child_by_field_name("return_type").is_none()
         && !has_exits
-        && let Some(r) = body.and_then(|b| super::return_with_value(b, "return_statement", &["function_definition", "lambda", "class_definition"]))
+        && let Some(r) = body.and_then(|b| {
+            super::return_with_value(b, "return_statement", &["function_definition", "lambda", "class_definition"])
+        })
     {
         return Err(format!(
             "line {}: `{name}` returns a value with no type: say it, like `def {name}(...) -> int:`",
@@ -473,7 +480,8 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
                     && text(o) == "Shared"
                 {
                     let set = n.parent().is_some_and(|p| {
-                        matches!(p.kind(), "assignment" | "augmented_assignment") && p.child_by_field_name("left") == Some(*n)
+                        matches!(p.kind(), "assignment" | "augmented_assignment")
+                            && p.child_by_field_name("left") == Some(*n)
                     });
                     let g = text(a).to_string();
                     match shared.iter_mut().find(|(s, _)| *s == g) {
@@ -486,7 +494,17 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
         }
     }
 
-    Ok(Function { name, doc, params, returns, state, shared, shared_types: Vec::new(), source: source.to_string(), file: None })
+    Ok(Function {
+        name,
+        doc,
+        params,
+        returns,
+        state,
+        shared,
+        shared_types: Vec::new(),
+        source: source.to_string(),
+        file: None,
+    })
 }
 
 #[cfg(test)]
@@ -559,7 +577,9 @@ def collatz(n: int, even: Out["half": int], odd: Out["calls": int, "n": int]):
         assert!(err("def f(*a): pass").contains("no *args"));
         assert!(err("def f(:").contains("line 1"));
         assert!(err("def f(x):\n    return x * 2\n").contains("line 2: `f` returns a value with no type"));
-        assert!(read("def f(xs):\n    def key(x):\n        return -x\n    xs.sort(key=key)\n    return\n", &Cx).is_ok());
+        assert!(
+            read("def f(xs):\n    def key(x):\n        return -x\n    xs.sort(key=key)\n    return\n", &Cx).is_ok()
+        );
     }
 
     fn start(f: &Function) -> Option<lineit_rt::process::Process> {
@@ -585,7 +605,10 @@ def collatz(n: int, even: Out["half": int], odd: Out["calls": int, "n": int]):
         };
         assert_eq!(
             call(&mut m, a, 4),
-            Run { set: vec![None, None, None, Some(Value::Int(104))], fire: vec![("even".into(), vec![(0, Value::Int(2))])] }
+            Run {
+                set: vec![None, None, None, Some(Value::Int(104))],
+                fire: vec![("even".into(), vec![(0, Value::Int(2))])]
+            }
         );
         call(&mut m, a, 3);
         assert_eq!(call(&mut m, a, 5).fire, [("odd".into(), vec![(1, Value::Int(2)), (2, Value::Int(5))])]);

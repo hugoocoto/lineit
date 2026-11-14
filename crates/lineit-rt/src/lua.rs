@@ -248,7 +248,11 @@ impl crate::ext::Ext for LuaCode {
 
     fn eval(&mut self, sq: usize, inputs: &[(&str, Value)], outputs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
         let (set, _) = self.call(sq, inputs)?;
-        Ok(by_name(&set, outputs)?.into_iter().zip(outputs).map(|(v, (_, t))| v.unwrap_or_else(|| Value::default_of(t))).collect())
+        Ok(by_name(&set, outputs)?
+            .into_iter()
+            .zip(outputs)
+            .map(|(v, (_, t))| v.unwrap_or_else(|| Value::default_of(t)))
+            .collect())
     }
 
     fn tick(
@@ -324,7 +328,9 @@ pub fn from_lua_any(v: mlua::Value) -> Option<Value> {
         mlua::Value::String(s) => Value::Str(s.to_string_lossy().into()),
         mlua::Value::Table(t) => {
             if t.raw_len() > 0 {
-                Value::List(Arc::new(t.sequence_values::<mlua::Value>().filter_map(|x| from_lua_any(x.ok()?)).collect()))
+                Value::List(Arc::new(
+                    t.sequence_values::<mlua::Value>().filter_map(|x| from_lua_any(x.ok()?)).collect(),
+                ))
             } else {
                 let mut m = BTreeMap::new();
                 for (k, x) in t.pairs::<String, mlua::Value>().flatten() {
@@ -362,7 +368,10 @@ fn new_lua() -> Result<(Lua, Arc<AtomicBool>), String> {
 /// The hook that stops what a Lua runs once FLAG is set: then it checks
 /// at EVERY instruction, so code that catches the error (`pcall` in a
 /// loop) fails again at the next one outside of it.
-fn stop_hook(flag: Arc<AtomicBool>, every: bool) -> impl Fn(&Lua, &mlua::debug::Debug) -> mlua::Result<mlua::VmState> + Send + 'static {
+fn stop_hook(
+    flag: Arc<AtomicBool>,
+    every: bool,
+) -> impl Fn(&Lua, &mlua::debug::Debug) -> mlua::Result<mlua::VmState> + Send + 'static {
     move |lua, _| {
         if !flag.load(Ordering::Relaxed) {
             return Ok(mlua::VmState::Continue);

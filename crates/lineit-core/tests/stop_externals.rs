@@ -48,5 +48,8 @@ fn a_stuck_lua_square_stops() {
 #[test]
 fn a_stuck_lua_square_stops_inside_pcall() {
     // a loop that catches errors: Stop can't be caught for long
-    stuck("lua", "function spin()\n    while true do\n        pcall(function() for i = 1, 100 do end end)\n    end\nend\n");
+    stuck(
+        "lua",
+        "function spin()\n    while true do\n        pcall(function() for i = 1, 100 do end end)\n    end\nend\n",
+    );
 }

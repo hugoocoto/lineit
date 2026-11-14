@@ -300,9 +300,15 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         Value::Bool(b) => json!(b),
         Value::Str(s) => json!(&**s),
         Value::List(l) => Json::Array(l.iter().map(to_json).collect::<Result<_, _>>()?),
-        Value::Map(m) => Json::Object(m.iter().map(|(k, v)| Ok((k.clone(), to_json(v)?))).collect::<Result<_, String>>()?),
+        Value::Map(m) => {
+            Json::Object(m.iter().map(|(k, v)| Ok((k.clone(), to_json(v)?))).collect::<Result<_, String>>()?)
+        }
         Value::Record(r) => Json::Object(
-            r.ty.fields.iter().zip(&r.fields).map(|((n, _), v)| Ok((n.clone(), to_json(v)?))).collect::<Result<_, String>>()?,
+            r.ty.fields
+                .iter()
+                .zip(&r.fields)
+                .map(|((n, _), v)| Ok((n.clone(), to_json(v)?)))
+                .collect::<Result<_, String>>()?,
         ),
         Value::Image(_) => return Err("images can't go to another process".into()),
     })
@@ -311,12 +317,16 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
 pub fn from_json(v: &Json, ty: &Type) -> Result<Value, String> {
     let bad = || format!("expected {ty}, got {v}");
     Ok(match (ty, v) {
-        (Type::Int, Json::Number(n)) => Value::Int(n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).ok_or_else(bad)?),
+        (Type::Int, Json::Number(n)) => {
+            Value::Int(n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).ok_or_else(bad)?)
+        }
         (Type::Float, Json::Number(n)) => Value::Float(n.as_f64().ok_or_else(bad)?),
         (Type::Bool, Json::Bool(b)) => Value::Bool(*b),
         (Type::Str, Json::String(s)) => Value::Str(s.as_str().into()),
         (Type::Str, Json::Number(n)) => Value::Str(n.to_string().into()),
-        (Type::List(t), Json::Array(a)) => Value::List(Arc::new(a.iter().map(|x| from_json(x, t)).collect::<Result<_, _>>()?)),
+        (Type::List(t), Json::Array(a)) => {
+            Value::List(Arc::new(a.iter().map(|x| from_json(x, t)).collect::<Result<_, _>>()?))
+        }
         (Type::Map(t), Json::Object(m)) => Value::Map(Arc::new(
             m.iter().map(|(k, x)| Ok((k.clone(), from_json(x, t)?))).collect::<Result<BTreeMap<_, _>, String>>()?,
         )),
@@ -344,7 +354,9 @@ pub fn from_json_any(v: &Json) -> Option<Value> {
         Json::Bool(b) => Value::Bool(*b),
         Json::String(s) => Value::Str(s.as_str().into()),
         Json::Array(a) => Value::List(Arc::new(a.iter().filter_map(from_json_any).collect())),
-        Json::Object(m) => Value::Map(Arc::new(m.iter().filter_map(|(k, x)| Some((k.clone(), from_json_any(x)?))).collect())),
+        Json::Object(m) => {
+            Value::Map(Arc::new(m.iter().filter_map(|(k, x)| Some((k.clone(), from_json_any(x)?))).collect()))
+        }
         Json::Null => return None,
     })
 }

@@ -101,7 +101,8 @@ fn split_top(s: &str, is_sep: impl Fn(char) -> bool) -> Vec<&str> {
 /// A LuaLS type (or one of lineit's) as a lineit type.
 fn lua_type(s: &str, cx: &dyn SigCx) -> Result<Type, String> {
     let s = s.trim();
-    let inner = |prefix: &str| s.strip_prefix(prefix).and_then(|r| r.strip_prefix('<')).and_then(|r| r.strip_suffix('>'));
+    let inner =
+        |prefix: &str| s.strip_prefix(prefix).and_then(|r| r.strip_prefix('<')).and_then(|r| r.strip_suffix('>'));
     Ok(match s {
         "integer" | "int" => Type::Int,
         "number" | "float" => Type::Float,
@@ -281,7 +282,8 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
             "function_declaration" | "for_numeric_clause" | "for_generic_clause" | "parameters" => {
                 for d in descendants(*n) {
                     if d.kind() == "identifier"
-                        && d.parent().is_some_and(|p| p == *n || p.kind() == "variable_list" || p.kind() == "parameters")
+                        && d.parent()
+                            .is_some_and(|p| p == *n || p.kind() == "variable_list" || p.kind() == "parameters")
                     {
                         declared.push(text(d));
                     }
@@ -332,7 +334,9 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
     let has_exits = types.iter().any(|(_, t)| t.starts_with("fun("));
     if returns.is_empty()
         && !has_exits
-        && let Some(r) = body.and_then(|b| super::return_with_value(b, "return_statement", &["function_declaration", "function_definition"]))
+        && let Some(r) = body.and_then(|b| {
+            super::return_with_value(b, "return_statement", &["function_declaration", "function_definition"])
+        })
     {
         return Err(format!(
             "line {}: `{name}` returns a value with no type: say it above the function, like `---@return integer result`",
@@ -378,8 +382,11 @@ pub fn glue(f: &Function) -> String {
         match &p.role {
             Role::Input(_) => args.push(format!("i[{}]", quoted(&p.name))),
             Role::Exit(values) => {
-                let set: Vec<String> =
-                    values.iter().enumerate().map(|(k, (pin, _))| format!("[{}] = v[{}]", quoted(pin), k + 1)).collect();
+                let set: Vec<String> = values
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (pin, _))| format!("[{}] = v[{}]", quoted(pin), k + 1))
+                    .collect();
                 args.push(format!(
                     "function(...) local v = table.pack(...); fire[#fire + 1] = {{ {}, {{ {} }} }} end",
                     quoted(&p.name),
