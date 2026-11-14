@@ -488,6 +488,12 @@ mod tests {
         wait("the edit applied", || {
             r.view.lock().unwrap().edit.as_ref().is_some_and(|(m, _)| m.starts_with("edit applied"))
         });
+        // the values are polled: one poll may still show the old world's
+        // count, so take it after the values changed twice
+        for _ in 0..2 {
+            let seen = n(&r);
+            wait("the values move on", || n(&r) != seen);
+        }
         let at = n(&r).unwrap();
         wait("it counts by 1000", || n(&r).is_some_and(|n| n > at + 1000));
         assert_eq!((n(&r).unwrap() - at) % 1000, 0);
