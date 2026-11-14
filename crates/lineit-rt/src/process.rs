@@ -483,7 +483,13 @@ mod tests {
         fs4::FileExt::lock(&build).unwrap();
         assert!(busy(&dir));
         drop(build);
-        assert!(!busy(&dir));
+        // a process another test starts can hold a copy of the lock for a
+        // moment (forked, not yet exec'd): it lets go soon
+        let free = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            !busy(&dir)
+        });
+        assert!(free);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
