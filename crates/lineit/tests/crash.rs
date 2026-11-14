@@ -1,5 +1,7 @@
 //! Rust and C code runs in a process of its own: a crash in it ends the
 //! run with an error, not lineit, and what was printed before stays.
+// tests start the programs as a user does
+#![allow(clippy::disallowed_methods)]
 
 #[test]
 fn a_crash_is_an_error() {

@@ -50,5 +50,9 @@ later
 - editing while running applied to the running program
 - list/map, filter, reduce with a subgraph as the function
 - FFI to C libraries
-- native file dialog
-- Windows: no console window on double click
+- check on real systems what was written without them: the native dialogs on
+  Windows, macOS and a Linux desktop (whether one can be shown is read from the
+  installed portal files and the environment, not asked of D-Bus: a portal that's
+  installed but broken shows nothing, and the prompt isn't used then); on Windows, lineitw.exe (no console):
+  double click, "Open with", code squares (no console windows flashing),
+  handing a file to a running lineit's editor and the other way round

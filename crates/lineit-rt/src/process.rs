@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value as Json, json};
@@ -77,14 +77,15 @@ impl Process {
         }
         let mut tried = Vec::new();
         for cmd in commands {
-            let spawned = Command::new(cmd)
+            let mut command = crate::ext::command(cmd);
+            command
                 .args(args)
                 .arg(host)
                 .envs(env.iter().copied())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(crate::ext::stderr_stdio())
-                .spawn();
+                .stderr(crate::ext::stderr_stdio());
+            let spawned = command.spawn();
             match spawned {
                 Ok(mut child) => {
                     let to = child.stdin.take().ok_or("no stdin")?;

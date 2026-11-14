@@ -35,14 +35,14 @@ pub fn read(arg: &str) -> Result<(Canvas, PathBuf), String> {
 
 /// The top folder of the git repository here.
 fn repo_root() -> Option<PathBuf> {
-    let out = std::process::Command::new("git").args(["rev-parse", "--show-toplevel"]).output().ok()?;
+    let out = lineit_rt::ext::command("git").args(["rev-parse", "--show-toplevel"]).output().ok()?;
     let text = String::from_utf8(out.stdout).ok()?;
     out.status.success().then(|| PathBuf::from(text.trim_end_matches(['\n', '\r'])))
 }
 
 /// What `git show SPEC` prints.
 pub fn git_show(spec: &str) -> Result<String, String> {
-    let out = std::process::Command::new("git")
+    let out = lineit_rt::ext::command("git")
         .args(["show", spec])
         .output()
         .map_err(|e| format!("{spec}: no such file, and git didn't run: {e}"))?;

@@ -100,6 +100,12 @@ pub struct App {
     tab_in_view: Option<u64>,
     search: Option<Search>,
     prompt: Option<Prompt>,
+    /// A system file dialog open (see dialog.rs).
+    dialog: Option<super::dialog::Dialog>,
+    /// A dialog to open on the next frame (it needs the window, see `ui`).
+    dialog_request: Option<super::dialog::Request>,
+    /// There's no dialog to show (see dialog.rs): the path prompt is used.
+    no_dialogs: bool,
     compiling: Option<Compiling>,
     last_autosave: Instant,
     /// When the module folders last changed, to reload them.
@@ -211,6 +217,9 @@ impl App {
             tab_in_view: None,
             search: None,
             prompt: None,
+            dialog: None,
+            dialog_request: None,
+            no_dialogs: !super::dialog::available(),
             compiling: None,
             last_autosave: Instant::now(),
             modules_stamp: None,
@@ -495,11 +504,79 @@ impl App {
         }
     }
 
-    fn ask(&mut self, kind: PromptKind, _ctx: &egui::Context) {
+    fn ask(&mut self, kind: PromptKind, ctx: &egui::Context) {
         // a read-only tab is saved nowhere, and has no squares to put in a subgraph
         if kind != PromptKind::Open && self.read_only() {
             return;
         }
+        // the system's dialog for a file, if there's one and it's wanted
+        if kind != PromptKind::SubgraphName && self.cfg.bool("editor.native_dialogs") && !self.no_dialogs {
+            if self.dialog.is_some() || self.dialog_request.is_some() {
+                self.status("a file dialog is already open", true);
+                return;
+            }
+            let name = self
+                .tab()
+                .path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map_or("canvas.lua".into(), |n| n.to_string_lossy().into_owned());
+            self.dialog_request = Some(super::dialog::Request {
+                tab: self.tabs[self.active].0,
+                save: kind == PromptKind::SaveAs,
+                dir: self.tab().dir(),
+                name,
+            });
+            // it's opened by `ui`, which has the window to put it over
+            ctx.request_repaint();
+            return;
+        }
+        self.ask_prompt(kind);
+    }
+
+    /// The answer of the system's dialog, when it's there.
+    fn dialog_poll(&mut self) {
+        use super::dialog::Answer;
+        let Some(d) = &self.dialog else { return };
+        let (save, tab) = (d.save, d.tab);
+        let kind = if save { PromptKind::SaveAs } else { PromptKind::Open };
+        let answer = d.poll();
+        if matches!(answer, Answer::Waiting) {
+            return;
+        }
+        self.dialog = None;
+        let at = self.tabs.iter().position(|(id, ..)| *id == tab);
+        match answer {
+            Answer::Waiting | Answer::Cancelled => {}
+            // the dialog's thread died: the prompt takes its place, for the tab that asked
+            Answer::Failed => {
+                self.no_dialogs = true;
+                if let Some(i) = at {
+                    self.active = i;
+                }
+                self.ask_prompt(kind);
+            }
+            Answer::Chosen(path) if !save => {
+                if path.is_dir() {
+                    self.status("that's a folder: which file?", true);
+                } else {
+                    self.open(&path);
+                }
+            }
+            Answer::Chosen(path) => match at {
+                None => self.status(&format!("not saved to {}: its tab was closed meanwhile", path.display()), true),
+                Some(i) => {
+                    let path = if path.extension().is_none() { path.with_extension("lua") } else { path };
+                    match self.tabs[i].1.save_to(&path) {
+                        Ok(()) => self.status(&format!("saved {}", path.display()), false),
+                        Err(e) => self.status(&e, true),
+                    }
+                }
+            },
+        }
+    }
+
+    fn ask_prompt(&mut self, kind: PromptKind) {
         let dir = self.tab().dir();
         let (title, text) = match kind {
             PromptKind::Open => ("Open", format!("{}/", dir.display())),
@@ -2045,9 +2122,13 @@ impl eframe::App for App {
         self.vim_hook(ctx, raw);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll();
+        self.dialog_poll();
+        if let Some(r) = self.dialog_request.take() {
+            self.dialog = Some(super::dialog::Dialog::open(&ctx, frame, r));
+        }
         {
             let reg = self.reg.clone();
             let (_, tab, state) = &mut self.tabs[self.active];

@@ -2,6 +2,7 @@
 
 mod app;
 mod canvas;
+mod dialog;
 mod nav;
 mod runner;
 mod session;

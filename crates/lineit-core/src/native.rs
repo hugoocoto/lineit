@@ -41,7 +41,7 @@ pub fn build(crate_dir: &Path, crate_name: &str, log: &mut dyn FnMut(&str)) -> R
     let target = crate::paths::cache_dir().join("native");
     let cargo = std::env::var_os("CARGO").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cargo"));
     let run = |offline: bool| {
-        let mut cmd = Command::new(&cargo);
+        let mut cmd = lineit_rt::ext::command(&cargo);
         cmd.arg("build").arg("--release").arg("--lib").arg("--color=never");
         cmd.arg("--manifest-path").arg(crate_dir.join("Cargo.toml"));
         if offline {
@@ -421,7 +421,8 @@ impl Helper {
         let token = std::collections::hash_map::RandomState::new().build_hasher().finish();
         let captured = lineit_rt::ext::captures_stderr();
         let out = || if captured { std::process::Stdio::piped() } else { std::process::Stdio::inherit() };
-        let mut child = Command::new(exe)
+        let mut command = lineit_rt::ext::command(exe);
+        command
             .arg("native-host")
             .arg(lib)
             .arg(crate_name)
@@ -429,9 +430,8 @@ impl Helper {
             .arg(token.to_string())
             .stdin(std::process::Stdio::null())
             .stdout(out())
-            .stderr(out())
-            .spawn()
-            .map_err(|e| format!("couldn't start {} ({e})", exe.display()))?;
+            .stderr(out());
+        let mut child = command.spawn().map_err(|e| format!("couldn't start {} ({e})", exe.display()))?;
         // what it writes, both ways, is the library's: kept for the output
         let stderr = lineit_rt::ext::stderr_of(&mut child);
         if let (Some(lines), Some(o)) = (&stderr, child.stdout.take()) {
