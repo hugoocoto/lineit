@@ -19,8 +19,11 @@ branch ju26-issue-2297 with agentic implementation of issue #2297 (https://githu
 For it: the original C# stays as code squares, the new code is drawn as
 squares. Needs C# code squares (tree-sitter-c-sharp for the signature, run
 with dotnet).
-How to judge "easier to review": time to review, bugs found, confidence,
-against GitHub's diff of the same branches. Decide before trying it.
+How to judge "easier to review" (chosen): time to review, bugs found (known
+or seeded in each branch), confidence (a short questionnaire after each
+review), against GitHub's diff of the same branches. Details still to decide.
+Plan: once C# squares are merged, one agent per branch (2283, 2234, 2129,
+2297), each on its own copy of the repo.
 
 later
 - faster interpreter: ~60 ns a loop iteration, ~230 ns a square called
