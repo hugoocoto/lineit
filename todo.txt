@@ -1,7 +1,7 @@
-the text jumps in notes and code modules: fixed when looking (laid out at a
-power of two and scaled; check it zooming with the mouse); still to do: while
-typing in a note or code square, its text box is laid out at the zoom, so the
-text moves when editing starts or ends and while zooming
+the text jumps in notes and code modules: fixed when looking and when typing
+(laid out at a power of two and scaled, the text box too); check it with the
+mouse and the keyboard: typing, cursor, selection, clicks, zooming while
+typing, long and wrapped notes, tabs and long lines in code
 
 C# code squares, what's left:
 - a build error reads "couldn't run its language (dotnet: it ended without
