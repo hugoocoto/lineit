@@ -26,6 +26,8 @@
 //! run each time a value of theirs is read.
 
 mod c;
+mod csharp;
+pub use csharp::sdk_ready;
 pub mod file;
 mod lua;
 mod python;
@@ -62,8 +64,13 @@ pub trait Language: Send + Sync {
 
 /// The languages lineit knows.
 pub fn languages() -> Vec<Box<dyn Language>> {
-    let mut v: Vec<Box<dyn Language>> =
-        vec![Box::new(lua::Lua), Box::new(python::Python), Box::new(rust::Rust), Box::new(c::C)];
+    let mut v: Vec<Box<dyn Language>> = vec![
+        Box::new(lua::Lua),
+        Box::new(python::Python),
+        Box::new(rust::Rust),
+        Box::new(c::C),
+        Box::new(csharp::CSharp),
+    ];
     // those from files, unless one is built in
     for l in file::file_languages() {
         if !v.iter().any(|b| b.name() == l.name()) {
@@ -538,17 +545,37 @@ const CRATES_KEPT: usize = 100;
 /// The crate of a code square in DIR was just used: it's the last one to
 /// go when there are more than [`CRATES_KEPT`], and the oldest go now.
 pub fn crate_used(dir: &std::path::Path) {
-    let manifest = dir.join("Cargo.toml");
-    if let Ok(f) = std::fs::File::options().append(true).open(&manifest) {
+    if let Ok(f) = std::fs::File::options().append(true).open(dir.join("Cargo.toml")) {
         let _ = f.set_modified(std::time::SystemTime::now());
     }
+    evict(dir);
+}
+
+/// The folder of a C# square in DIR was just used, like [`crate_used`]. The
+/// `used` file says when. A folder whose process runs isn't deleted (nor
+/// are those of compiled programs that are running: one that isn't, and
+/// finds its folder gone, doesn't run).
+pub fn square_used(dir: &std::path::Path) {
+    if let Ok(f) = std::fs::File::options().create(true).append(true).open(dir.join("used")) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    evict(dir);
+}
+
+/// Deletes the oldest crates and squares' folders beside DIR (not DIR) that
+/// are over [`CRATES_KEPT`] with it, those that aren't in use.
+fn evict(dir: &std::path::Path) {
     let Some(all) = dir.parent() else { return };
     let Ok(entries) = std::fs::read_dir(all) else { return };
     let mut crates: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
         .flatten()
         .filter(|e| e.path() != dir)
         .filter_map(|e| {
-            let used = std::fs::metadata(e.path().join("Cargo.toml")).and_then(|m| m.modified()).ok()?;
+            // a crate's manifest, or the `used` file of a C# square's folder
+            let used = std::fs::metadata(e.path().join("Cargo.toml"))
+                .or_else(|_| std::fs::metadata(e.path().join("used")))
+                .and_then(|m| m.modified())
+                .ok()?;
             Some((used, e.path()))
         })
         .collect();
@@ -556,8 +583,14 @@ pub fn crate_used(dir: &std::path::Path) {
         return;
     }
     crates.sort();
-    for (_, old) in &crates[..crates.len() + 1 - CRATES_KEPT] {
-        let _ = std::fs::remove_dir_all(old);
+    let mut over = crates.len() + 1 - CRATES_KEPT;
+    for (_, old) in &crates {
+        if over == 0 {
+            break;
+        }
+        if !lineit_rt::process::busy(old) && std::fs::remove_dir_all(old).is_ok() {
+            over -= 1;
+        }
     }
 }
 

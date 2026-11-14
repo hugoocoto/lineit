@@ -1,4 +1,4 @@
-//! Code squares in languages that run in their own interpreter (Python...):
+//! Code squares in languages that run in their own interpreter (Python, C#...):
 //! one process for each text of code, which lineit talks to in JSON, a
 //! message a line.
 //!
@@ -35,17 +35,52 @@ pub struct Process {
     stderr: Option<Arc<Mutex<Vec<String>>>>,
     to: ChildStdin,
     from: BufReader<ChildStdout>,
+    /// The code's folder's run lock, held while it runs ([`busy`]).
+    _run: Option<std::fs::File>,
+}
+
+/// The files of a code folder (see [`Process::start`]) that lock it: one
+/// while a process of it starts, one while it runs.
+const BUILD_LOCK: &str = "build.lock";
+const RUN_LOCK: &str = "run.lock";
+
+fn lock_file(dir: &str, name: &str) -> Option<std::fs::File> {
+    std::fs::File::options().create(true).append(true).open(std::path::Path::new(dir).join(name)).ok()
+}
+
+/// Whether a process runs the code in DIR (a folder a code square's process
+/// was started with): what stops it from being deleted.
+pub fn busy(dir: &std::path::Path) -> bool {
+    let Ok(f) = std::fs::File::open(dir.join(RUN_LOCK)) else { return false };
+    fs4::FileExt::try_lock(&f).is_err()
 }
 
 impl Process {
     /// Starts the first of COMMANDS that runs (`python3`, `python`...),
-    /// with ARGS and HOST after them, and gives it LOAD.
-    pub fn start(name: &str, commands: &[&str], args: &[&str], host: &str, load: &str) -> Result<Process, String> {
+    /// with ARGS and HOST after them, ENV set, and gives it LOAD.
+    ///
+    /// LOCK is the folder of code that is built when it starts (`dotnet
+    /// run`): starts of it, by any process, go one at a time, and it can
+    /// tell it's in use while this one runs ([`busy`]).
+    pub fn start(
+        name: &str,
+        commands: &[&str],
+        args: &[&str],
+        env: &[(&str, &str)],
+        lock: Option<&str>,
+        host: &str,
+        load: &str,
+    ) -> Result<Process, String> {
+        let build = lock.and_then(|d| lock_file(d, BUILD_LOCK));
+        if let Some(f) = &build {
+            let _ = fs4::FileExt::lock(f);
+        }
         let mut tried = Vec::new();
         for cmd in commands {
             let spawned = Command::new(cmd)
                 .args(args)
                 .arg(host)
+                .envs(env.iter().copied())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(crate::ext::stderr_stdio())
@@ -55,15 +90,25 @@ impl Process {
                     let to = child.stdin.take().ok_or("no stdin")?;
                     let from = BufReader::new(child.stdout.take().ok_or("no stdout")?);
                     let stderr = crate::ext::stderr_of(&mut child);
-                    let mut p = Process { name: name.into(), child: Arc::new(Mutex::new(child)), stderr, to, from };
+                    let mut p =
+                        Process { name: name.into(), child: Arc::new(Mutex::new(child)), stderr, to, from, _run: None };
                     // one that ends without answering isn't the language
                     // (Windows has a `python3` that only offers to install it)
-                    match p.send_line(load).and_then(|_| p.answer_line()) {
-                        Ok(Some(line)) => {
-                            p.parse(&line)?;
-                            return Ok(p);
+                    match p.send_line(load).and_then(|_| p.first_answer()) {
+                        Ok((Some(answer), said)) => {
+                            let got = p.parse_map(answer);
+                            // it's running: its folder is in use now
+                            p._run = lock.and_then(|d| lock_file(d, RUN_LOCK)).inspect(|f| {
+                                let _ = fs4::FileExt::lock_shared(f);
+                            });
+                            return got
+                                .map(|_| p)
+                                .map_err(|e| if said.is_empty() { e } else { format!("{e}\n{}", said.join("\n")) });
                         }
-                        Ok(None) => tried.push(format!("{cmd}: it ended without answering")),
+                        Ok((None, said)) => tried.push(match said.last() {
+                            None => format!("{cmd}: it ended without answering"),
+                            Some(_) => format!("{cmd}: it ended without answering:\n{}", said.join("\n")),
+                        }),
                         Err(e) => tried.push(format!("{cmd}: {e}")),
                     }
                 }
@@ -71,6 +116,25 @@ impl Process {
             }
         }
         Err(format!("{name}: couldn't run its language ({})", tried.join("; ")))
+    }
+
+    /// Its first answer (a JSON object on a line), and the lines it said
+    /// before it; or, if it ends without one, all it said (the last
+    /// lines): what the tool that runs the code says first (a banner, build
+    /// errors).
+    fn first_answer(&mut self) -> Result<(Option<Map<String, Json>>, Vec<String>), String> {
+        let mut said = Vec::new();
+        while let Some(line) = self.answer_line()? {
+            if let Ok(Json::Object(m)) = serde_json::from_str::<Json>(&line) {
+                return Ok((Some(m), said));
+            }
+            if !line.trim().is_empty() {
+                said.push(line.trim_end().to_string());
+            }
+        }
+        // the last lines are the ones that tell
+        said.drain(..said.len().saturating_sub(10));
+        Ok((None, said))
     }
 
     fn send_line(&mut self, line: &str) -> Result<(), String> {
@@ -99,6 +163,11 @@ impl Process {
     fn parse(&self, line: &str) -> Result<Map<String, Json>, String> {
         let got: Json = serde_json::from_str(line).map_err(|e| format!("{}: a bad answer ({e}): {line}", self.name))?;
         let Json::Object(m) = got else { return Err(format!("{}: a bad answer: {line}", self.name)) };
+        self.parse_map(m)
+    }
+
+    /// M, an answer: what it printed goes out, an error is the Err.
+    fn parse_map(&self, m: Map<String, Json>) -> Result<Map<String, Json>, String> {
         for p in m.get("printed").and_then(Json::as_array).into_iter().flatten() {
             crate::ext::print(p.as_str().unwrap_or(""));
         }

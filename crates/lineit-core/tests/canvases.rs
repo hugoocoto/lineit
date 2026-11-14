@@ -12,11 +12,17 @@ fn root() -> PathBuf {
 
 fn canvases() -> Vec<PathBuf> {
     let mut v = Vec::new();
+    let dotnet = lineit_core::registry::code::sdk_ready();
     for dir in ["tests", "examples"] {
         let Ok(entries) = std::fs::read_dir(root().join(dir)) else { continue };
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().is_some_and(|x| x == "lua") && p.with_extension("out").exists() {
+            if p.extension().is_none_or(|x| x != "lua") || !p.with_extension("out").exists() {
+                continue;
+            }
+            if !dotnet && p.file_name().is_some_and(|n| n.to_string_lossy().contains("csharp")) {
+                eprintln!("skipped {}: no .NET 10 SDK", p.display());
+            } else {
                 v.push(p);
             }
         }

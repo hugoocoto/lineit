@@ -219,7 +219,7 @@ if it failed. [`tests/testing.lua`](tests/testing.lua) has two cases.
 
 ## Code squares
 
-`code/function` is a function you write, in Lua, Python, Rust or C, in its
+`code/function` is a function you write, in Lua, Python, Rust, C or C#, in its
 square (click the code to type; Esc keeps it) or in a file next to the canvas
 (its `file` param). It's read the way its language reads: its parameters are
 its inputs, what it returns its outputs.
@@ -241,15 +241,15 @@ function collatz(n, even, odd)
 end
 ```
 
-| | Lua | Python | Rust | C |
-|---|---|---|---|---|
-| The function | the one not `local` | the one not `_named` | the one `pub fn` | the one not `static` |
-| Types | LuaLS `---@param` (none: what's wired) | hints (none: what's wired) | `i64`, `f64`, `String`, `Vec<T>`, records... | `int64_t`, `double`, `const char *`, `list_int`, `map_str`, records |
-| Outputs | `---@return T name` each | `-> int`, `-> tuple[...]`, a `NamedTuple` | a value, a tuple, a struct | a value, a struct |
-| Exits | `fun(half: integer)` | `Out["half": int]` | `impl FnMut(i64)`, `impl FnMut(Struct)` | `void (*even)(int64_t half)` |
-| State | globals | module variables (`global count`) | the struct of `&mut self` | variables at the top |
-| Globals `::total` | `Shared.total` | `Shared.total` | `shared: &mut Shared` | `Shared *shared` |
-| Runs in | lineit (Lua 5.4) | `python3` | cargo | the C compiler, through cargo |
+| | Lua | Python | Rust | C | C# |
+|---|---|---|---|---|---|
+| The function | the one not `local` | the one not `_named` | the one `pub fn` | the one not `static` | the one `public static` |
+| Types | LuaLS `---@param` (none: what's wired) | hints (none: what's wired) | `i64`, `f64`, `String`, `Vec<T>`, records... | `int64_t`, `double`, `const char *`, `list_int`, `map_str`, records | `long`, `double`, `string`, `List<T>`, `Dictionary<string, T>`, records... |
+| Outputs | `---@return T name` each | `-> int`, `-> tuple[...]`, a `NamedTuple` | a value, a tuple, a struct | a value, a struct | a value, a tuple, a class or record |
+| Exits | `fun(half: integer)` | `Out["half": int]` | `impl FnMut(i64)`, `impl FnMut(Struct)` | `void (*even)(int64_t half)` | `Action<long>`, `Action<(long half, string tag)>`, or a `delegate` of the code |
+| State | globals | module variables (`global count`) | the struct of `&mut self` | variables at the top | the `static` fields of its class |
+| Globals `::total` | `Shared.total` | `Shared.total` | `shared: &mut Shared` | `Shared *shared` | `Shared.total` |
+| Runs in | lineit (Lua 5.4) | `python3` | cargo | the C compiler, through cargo | `dotnet run` (.NET 10 SDK) |
 
 - **Exits**: a parameter that is a function is a tick output, with its
   values as outputs. Calling it fires it, when the function returns, in the
@@ -283,7 +283,7 @@ which adds JavaScript (with Node.js) and is used by
 `crates/lineit-core/src/registry/code/file.rs` for what the program answers.
 
 **Crashes and Stop.** In the editor and `lineit run`, Rust and C code runs
-in a process of its own, as Python and languages from files do: a crash in
+in a process of its own, as Python and C# and languages from files do: a crash in
 it ends the run with an error, not lineit, and Stop ends a square stuck in a
 loop (its process is killed; a Lua square, which runs in lineit, checks for
 Stop as it goes). In the editor, what those processes write to stdout and
@@ -292,10 +292,27 @@ stderr shows in the Output.
 **Printing** from a code square (`print`, `println!`, `printf`) goes to the
 program's output, in order with its own lines.
 
-`tests/code.lua`, `code_python.lua`, `code_rust.lua` and `code_c.lua` are
-the same canvas in each. Python needs `python3` (or `python`) on the
-machine, Rust and C need cargo (and C a C compiler), when running and in the
-compiled program.
+`tests/code.lua`, `code_python.lua`, `code_rust.lua`, `code_c.lua` and
+`code_csharp.lua` are the same canvas in each. Python needs `python3` (or
+`python`) on the machine, Rust and C need cargo (and C a C compiler), C#
+needs the .NET 10 SDK (`dotnet`), when running and in the compiled program.
+The C# canvases are skipped by `cargo test` without `dotnet`.
+
+**C#** code is a `.cs` file as it is: `using`s, namespaces, other classes and
+`delegate`s of its own stay, and the one `public static` method is the
+function (its tuple's names, or the fields of a class or record it returns,
+name its outputs). `dotnet run` builds it the first time (several seconds, the
+first ever longer) and keeps the build; each square then runs in an assembly
+context of its own, so each has its own `static` state. `Shared.NAME` is a
+static field lineit declares for each variable the code uses, wherever it
+uses it. `#:package Name@version` lines at the top of the code (`dotnet run`'s
+own) bring in NuGet packages, such as MessagePack. A compiled program runs
+the file lineit kept in its cache folder (which isn't deleted while a
+program or the editor is running it). Starts of the same code, by any
+lineit, go one at a time (a lock file in that folder), as `dotnet run` can't
+build it twice at once; lineit sets `DOTNET_NOLOGO`,
+`DOTNET_CLI_TELEMETRY_OPTOUT` and the like for it, so a first run says nothing
+of its own.
 
 # Modules of your own
 

@@ -853,11 +853,16 @@ pub fn generate(prog: &Program) -> String {
                 ExtKind::LuaCode { name, glue } => {
                     format!("lineit_rt::lua::LuaCode::load({}, {})", rust_str(name), rust_str(glue))
                 }
-                ExtKind::Process { name, commands, args, host, load } => format!(
-                    "lineit_rt::process::Process::start({}, &[{}], &[{}], {}, {})",
+                ExtKind::Process { name, commands, args, env, lock, host, load } => format!(
+                    "lineit_rt::process::Process::start({}, &[{}], &[{}], &[{}], {}, {}, {})",
                     rust_str(name),
                     join(commands.iter().map(|c| rust_str(c))),
                     join(args.iter().map(|a| rust_str(a))),
+                    join(env.iter().map(|(k, v)| format!("({}, {})", rust_str(k), rust_str(v)))),
+                    match lock {
+                        Some(l) => format!("Some({})", rust_str(l)),
+                        None => "None".into(),
+                    },
                     rust_str(host),
                     rust_str(load)
                 ),

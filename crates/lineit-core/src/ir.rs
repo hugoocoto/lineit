@@ -89,11 +89,15 @@ pub enum ExtKind {
     },
     /// A code square's function in a language run by its own interpreter
     /// (see [`lineit_rt::process::Process`]): the first of COMMANDS that
-    /// runs, with ARGS, runs HOST, which LOAD tells what to run.
+    /// runs, with ARGS (and the variables ENV set), runs HOST, which LOAD
+    /// tells what to run. LOCK is the folder of code that is built when it
+    /// starts, if it is.
     Process {
         name: String,
         commands: Vec<String>,
         args: Vec<String>,
+        env: Vec<(String, String)>,
+        lock: Option<String>,
         host: String,
         load: String,
     },

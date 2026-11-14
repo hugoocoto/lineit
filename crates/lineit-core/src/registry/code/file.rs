@@ -9,6 +9,7 @@
 //!     extensions = { "js" },
 //!     commands = { "node" },      -- the first of them that runs
 //!     args = { "-e" },            -- and these, then HOST
+//!     env = { NODE_NO_WARNINGS = "1" }, -- variables to run it with, if any
 //!     template = "...",           -- what a new square has in it
 //!     host = [[ ... ]],           -- a program in the language
 //!     -- if it's there, to color its code: a compiled tree-sitter grammar
@@ -56,6 +57,8 @@ pub struct FileLanguage {
     extensions: Vec<String>,
     commands: Vec<String>,
     args: Vec<String>,
+    /// Variables the interpreter runs with.
+    env: Vec<(String, String)>,
     host: String,
     template: String,
     /// The grammar's library, the function in it, and the highlight
@@ -175,6 +178,7 @@ pub fn read_file(text: &str, name: &str) -> Result<FileLanguage, String> {
             extensions: list("extensions").unwrap_or_default(),
             commands: list("commands")?,
             args: list("args").unwrap_or_default(),
+            env: t.get::<mlua::Table>("env").map(|e| e.pairs::<String, String>().flatten().collect()).unwrap_or_default(),
             host: s("host")?,
             template: t.get::<String>("template").unwrap_or_default(),
             name,
@@ -209,6 +213,7 @@ impl FileLanguage {
             let child = Command::new(cmd)
                 .args(&self.args)
                 .arg(&self.host)
+                .envs(self.env.iter().map(|(k, v)| (k, v)))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -368,6 +373,8 @@ impl Language for FileLanguage {
             name: f.name.clone(),
             commands: self.commands.clone(),
             args: self.args.clone(),
+            env: self.env.clone(),
+            lock: None,
             host: self.host.clone(),
             load: load.to_string(),
         })

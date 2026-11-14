@@ -575,10 +575,11 @@ pub fn open_ext(path: &str, kind: &ExtKind) -> Result<Box<dyn Ext>, String> {
     Ok(match kind {
         ExtKind::Lua { source } => Box::new(LuaModule::load(path, source)?),
         ExtKind::LuaCode { name, glue } => Box::new(lineit_rt::lua::LuaCode::load(name, glue)?),
-        ExtKind::Process { name, commands, args, host, load } => {
+        ExtKind::Process { name, commands, args, env, lock, host, load } => {
             let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            Box::new(lineit_rt::process::Process::start(name, &commands, &args, host, load)?)
+            let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            Box::new(lineit_rt::process::Process::start(name, &commands, &args, &env, lock.as_deref(), host, load)?)
         }
         ExtKind::Native { crate_dir, crate_name, ty } => Box::new(
             crate::native::Dylib::open(crate_dir, crate_name, ty).map_err(|err| format!("{path}: {err}"))?,
