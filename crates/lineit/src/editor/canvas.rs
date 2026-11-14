@@ -892,6 +892,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 color = theme.removed;
             }
         }
+        // two wires into one data input: a red halo, so a diff's colors still show
+        if cx.tab.lowered.double.contains(l) {
+            draw_wire(&painter, a, b, theme.error, wire_w + 7.0, z);
+        }
         if selected {
             draw_wire(&painter, a, b, theme.selection, wire_w + 4.0, z);
         }
