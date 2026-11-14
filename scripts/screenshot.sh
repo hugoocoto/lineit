@@ -25,10 +25,10 @@ copy=
 xvfb=
 editor=
 cleanup() {
-    [ -n "$editor" ] && kill "$editor" 2>/dev/null || true
-    [ -n "$xvfb" ] && kill "$xvfb" 2>/dev/null || true
+    if [ -n "$editor" ]; then kill "$editor" 2>/dev/null || true; fi
+    if [ -n "$xvfb" ]; then kill "$xvfb" 2>/dev/null || true; fi
     rm -rf "$tmp"
-    [ -n "$copy" ] && rm -f "$copy"
+    if [ -n "$copy" ]; then rm -f "$copy"; fi
 }
 trap cleanup EXIT INT TERM
 

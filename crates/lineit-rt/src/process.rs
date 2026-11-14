@@ -45,7 +45,9 @@ const BUILD_LOCK: &str = "build.lock";
 const RUN_LOCK: &str = "run.lock";
 
 fn lock_file(dir: &str, name: &str) -> Option<std::fs::File> {
-    std::fs::File::options().create(true).append(true).open(std::path::Path::new(dir).join(name)).ok()
+    // written to, not appended to: Windows locks only a file open to read
+    // or write, and append isn't write there
+    std::fs::File::options().create(true).truncate(false).write(true).open(std::path::Path::new(dir).join(name)).ok()
 }
 
 /// How many of the last lines a tool says before it answers are kept (what
@@ -103,7 +105,13 @@ impl Process {
                         Process { name: name.into(), child: Arc::new(Mutex::new(child)), stderr, to, from, _run: None };
                     // one that ends without answering isn't the language
                     // (Windows has a `python3` that only offers to install it)
-                    match p.send_line(load).and_then(|_| p.first_answer()) {
+                    // one that ended before it read this (a build that
+                    // failed) can't take it: what it said says why
+                    let sent = p.send_line(load);
+                    match p.first_answer().and_then(|a| match (a, sent) {
+                        ((Some(_), _), Err(e)) => Err(e),
+                        (a, _) => Ok(a),
+                    }) {
                         Ok((Some(answer), said)) => {
                             let got = p.parse_map(answer);
                             // it's running: its folder is in use now
