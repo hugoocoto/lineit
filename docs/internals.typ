@@ -287,7 +287,7 @@ again (and is counted in `Swapped`). The same type: the value moves; another:
 it, or it starts again. Modules (`ExtDef`) with the same path and kind move
 over with their `Handles`, so a Python process isn't restarted by an edit
 elsewhere, and an instance with the same square and params keeps its state.
-The modules `closes_first` (a C# build holds a lock, a Rust dylib is
+The modules `closes_first` (a C\# build holds a lock, a Rust dylib is
 loaded by path) end before their replacements open, and if that fails they
 open again without their state. Clocks are told apart by `Clock::square`:
 they keep their next time, or now plus the new interval if that's sooner.
