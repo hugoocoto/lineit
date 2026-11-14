@@ -45,8 +45,8 @@ lineit is in alpha: expect breaking changes with any commit.
   without the editor.
 - **Edit while it runs.** A change to the canvas goes on to the running
   program (Run and Step, not compiled ones) once no branch is in the middle
-  of a handler: variables, values on squares, clocks and code squares keep
-  their state (a value of another type is converted), new entries run, and
+  of a handler: variables, values on squares (inside subgraphs too), clocks
+  and code squares keep their state (a value of another type is converted), new entries run, and
   the bar says what happened, or why the edit didn't apply (an error: the
   old program goes on). A loop that never ends waits for "apply now", which
   stops its branches where they are and runs the entries again with the

@@ -61,6 +61,7 @@ crates/lineit-core/        everything but the GUI:
     lower.rs               canvas -> IR (subgraphs inlined, types resolved)
     ir.rs                  the IR
     interp.rs              runs the IR: Run and Step, cooperative branches
+    trace.rs, bisect.rs    a run recorded square by square; bisect over it
     codegen.rs             IR -> a Rust crate, built by cargo
     package.rs, native.rs  .lipkg packages; Rust modules built and loaded
     config.rs, paths.rs    config.lua and settings.lua; where things go per OS
@@ -164,8 +165,9 @@ of a clock, say; Step too, at the press where the branches finish), so no
 branch ever sees half of each program, whatever its threads do: the one
 thread that drives the interpreter is the only one that touches the world.
 Running branches finish on the old program (they aren't migrated). The
-state carries over: variables by name and the outputs shown on a square by
-square and pin; a value whose type changed is converted as `value/convert`
+state carries over: variables by name, the outputs shown on a square by
+square and pin, and the rest (inside subgraphs, private to a square) by
+where it is: the squares down to it and what of it; a value whose type changed is converted as `value/convert`
 does, or starts again; removed squares' state is dropped; clocks keep their
 schedule (or the new interval if that comes first); modules that didn't
 change keep running with their state (a module that builds files, C# or
@@ -275,6 +277,18 @@ refuse, and a view isn't written to a session. Ids are stable: paste keeps a
 square's id when nothing on the canvas has it, and `Canvas::next` (saved as
 `next_id`) is one more than the highest id ever used, so an id is never
 given twice.
+
+## Bisect
+
+`trace.rs` records a run with Step's turns (the branches take turns on one
+thread): each square that ran is an event, with the events just before it
+(its branch's last, the fan-out's, the branches that met), its values, the
+variables, what it printed and the index of the loop it's in. `bisect.rs`
+asks about events of that DAG as `git bisect` does: good clears an event and
+everything before it, bad keeps it and what led to it, skip asks another.
+`lineit bisect` and the editor (the Run button's menu, a square's right
+click, `:bisect`) use them. The trace is of the interpreter: a race that only
+happens with branches on threads isn't in it.
 
 ## Milestones
 
