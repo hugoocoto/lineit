@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2,
 };
@@ -662,11 +663,124 @@ fn paint_scaled(painter: &egui::Painter, pos: Pos2, g: &egui::Galley, s: f32) {
     painter.add(mesh);
 }
 
+/// G with everything in it S times as big: rows, glyphs, mesh. What a
+/// layout at a bigger size, drawn smaller, looks like, with the cursor and
+/// the clicks of a text box right at the new size.
+fn scaled(g: std::sync::Arc<egui::Galley>, s: f32) -> std::sync::Arc<egui::Galley> {
+    let mut shape = egui::epaint::TextShape::new(Pos2::ZERO, g, Color32::PLACEHOLDER);
+    shape.transform(egui::emath::TSTransform::from_scaling(s));
+    let mut g = shape.galley;
+    for placed in &mut std::sync::Arc::make_mut(&mut g).rows {
+        for gl in &mut std::sync::Arc::make_mut(&mut placed.row).glyphs {
+            gl.pos *= s;
+            gl.advance_width *= s;
+            gl.line_height *= s;
+            gl.font_ascent *= s;
+            gl.font_height *= s;
+            gl.font_face_ascent *= s;
+            gl.font_face_height *= s;
+        }
+    }
+    g
+}
+
+/// G moved so that, when egui rounds its position POS to a pixel (as it
+/// does to all text), it ends up at POS itself: where [`paint_scaled`]
+/// draws, which doesn't round. The rows move (what the cursor, the
+/// selection and the clicks go by), and the bounds with them; the size
+/// stays. The text box puts the galley at POS (see the test).
+fn unrounded(g: std::sync::Arc<egui::Galley>, pos: Pos2, ppp: f32) -> std::sync::Arc<egui::Galley> {
+    let by = pos - pos.round_to_pixels(ppp);
+    let mut g = g;
+    let inner = std::sync::Arc::make_mut(&mut g);
+    for placed in &mut inner.rows {
+        placed.pos += by;
+    }
+    inner.mesh_bounds = inner.mesh_bounds.translate(by);
+    g
+}
+
+/// Galleys laid out lately (in egui's memory): a frame like the last one,
+/// and each time the text box asks again, doesn't lay out, color and scale
+/// again. What a galley is of: its kind, its text, its language, and the
+/// numbers it depends on (sizes, positions, colors).
+#[derive(Clone, Default)]
+struct Laid(Vec<(u8, String, String, Vec<u32>, std::sync::Arc<egui::Galley>)>);
+
+/// The most galleys [`Laid`] keeps.
+const LAID_KEPT: usize = 24;
+
+fn laid(
+    ctx: &egui::Context,
+    (kind, text, lang): (u8, &str, &str),
+    nums: &[u32],
+    make: impl FnOnce() -> std::sync::Arc<egui::Galley>,
+) -> std::sync::Arc<egui::Galley> {
+    let id = Id::unique("laid");
+    let hit = ctx.data_mut(|d| {
+        let all = d.get_temp_mut_or_default::<Laid>(id);
+        all.0.iter().find(|(k, t, l, n, _)| *k == kind && t == text && l == lang && n == nums).map(|e| e.4.clone())
+    });
+    if let Some(g) = hit {
+        return g;
+    }
+    let g = make();
+    ctx.data_mut(|d| {
+        let all = d.get_temp_mut_or_default::<Laid>(id);
+        if all.0.len() >= LAID_KEPT {
+            all.0.remove(0);
+        }
+        all.0.push((kind, text.to_string(), lang.to_string(), nums.to_vec(), g.clone()));
+    });
+    g
+}
+
+/// The colors of a theme that code is colored with, as numbers for [`laid`].
+fn theme_nums(t: &Theme) -> Vec<u32> {
+    [t.text, t.dim, t.accent, t.str, t.int, t.float, t.record, t.bool]
+        .iter()
+        .map(|c| u32::from_le_bytes(c.to_array()))
+        .collect()
+}
+
+/// A note's text TEXT, laid out at B times the size of zoom 1 with the
+/// lines it has at zoom 1 in a note WIDTH wide, and that galley is of TEXT
+/// (soft breaks are rows that don't end with a newline, and its job is
+/// TEXT in one section). Drawn scaled by Z / B, whether shown or typed in.
+fn note_laid(painter: &egui::Painter, text: &str, width: f32, b: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
+    let nums = [width.to_bits(), b.to_bits(), u32::from_le_bytes(color.to_array())];
+    laid(painter.ctx(), (0, text, ""), &nums, || {
+        let one = painter.layout(text.to_string(), zoomed_text(14.0), color, width - 20.0);
+        let lines: Vec<String> = one.rows.iter().map(|r| r.row.text()).collect();
+        let mut g = painter.layout_no_wrap(lines.join("\n"), zoomed_text(14.0 * b), color);
+        let inner = std::sync::Arc::make_mut(&mut g);
+        for (row, at) in inner.rows.iter_mut().zip(&one.rows) {
+            row.ends_with_newline = at.ends_with_newline;
+        }
+        // the job of the text, not of the lines joined: its sections
+        // must be of the text the galley is of
+        let job = std::sync::Arc::make_mut(&mut inner.job);
+        job.text = text.to_string();
+        job.sections.truncate(1);
+        if let Some(s) = job.sections.first_mut() {
+            s.byte_range = egui::text::ByteIndex(0)..egui::text::ByteIndex(text.len());
+        }
+        g
+    })
+}
+
 /// A note's text, as laid out at zoom 1 in a note WIDTH wide.
 fn note_galley(painter: &egui::Painter, text: &str, width: f32, z: f32) -> std::sync::Arc<egui::Galley> {
-    let (shown, color) =
-        if text.is_empty() { ("Double click to write", NOTE_TEXT.gamma_multiply(0.5)) } else { (text, NOTE_TEXT) };
-    painter.layout(shown.to_string(), zoomed_text(14.0 * z), color, (width - 20.0) * z)
+    let (shown, color) = note_shown(text);
+    let nums = [width.to_bits(), z.to_bits()];
+    laid(painter.ctx(), (1, shown, ""), &nums, || {
+        painter.layout(shown.to_string(), zoomed_text(14.0 * z), color, (width - 20.0) * z)
+    })
+}
+
+/// What a note shows for its text TEXT, and in what color: a hint if empty.
+fn note_shown(text: &str) -> (&str, Color32) {
+    if text.is_empty() { ("Double click to write", NOTE_TEXT.gamma_multiply(0.5)) } else { (text, NOTE_TEXT) }
 }
 
 /// The module of code squares: their code is drawn below their params,
@@ -675,7 +789,7 @@ pub const CODE: &str = lineit_core::registry::code::PATH;
 
 /// A code square's code, as laid out: a line each, as long as it is.
 fn code_galley(painter: &egui::Painter, text: &str, z: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
-    painter.layout_no_wrap(text.trim_end().replace('\t', "    "), zoomed_mono(12.0 * z), color)
+    painter.layout_no_wrap(text.trim_end().to_string(), zoomed_mono(12.0 * z), color)
 }
 
 /// A code square's code in LANG, colored (and, from a file, the line that
@@ -688,16 +802,25 @@ fn code_colored(
     z: f32,
     theme: &Theme,
 ) -> std::sync::Arc<egui::Galley> {
+    let mut nums = vec![from_file as u32, z.to_bits()];
+    nums.extend(theme_nums(theme));
+    laid(painter.ctx(), (2, text.trim_end(), lang), &nums, || {
+        painter.layout_job(code_job(text.trim_end(), lang, from_file, z, theme))
+    })
+}
+
+/// The job of [`code_colored`], of TEXT as it is (it's what's typed, when
+/// it's typed in).
+fn code_job(text: &str, lang: &str, from_file: bool, z: f32, theme: &Theme) -> egui::text::LayoutJob {
     use lineit_core::registry::code::{Paint, highlight};
     let font = zoomed_mono(12.0 * z);
-    let text = text.trim_end().replace('\t', "    ");
     let mut job = egui::text::LayoutJob::default();
     let fmt = |color: Color32| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
-    let (head, code) = match text.split_once("\n\n") {
-        Some((h, c)) if from_file => (format!("{h}\n\n"), c.to_string()),
-        _ => (String::new(), text.clone()),
+    let (head, code) = match text.find("\n\n") {
+        Some(i) if from_file => text.split_at(i + 2),
+        _ => ("", text),
     };
-    job.append(&head, 0.0, fmt(theme.dim));
+    job.append(head, 0.0, fmt(theme.dim));
     let paint = |p: Paint| match p {
         Paint::Keyword => theme.accent,
         Paint::String => theme.str,
@@ -709,7 +832,7 @@ fn code_colored(
         Paint::Operator => theme.text,
     };
     let mut at = 0;
-    for (range, p) in highlight(lang, &code) {
+    for (range, p) in highlight(lang, code) {
         if range.start < at || range.end > code.len() {
             continue;
         }
@@ -718,7 +841,7 @@ fn code_colored(
         at = range.end;
     }
     job.append(&code[at..], 0.0, fmt(theme.text));
-    painter.layout_job(job)
+    job
 }
 
 /// The line of the code a problem is on, if it says (`line 5: ...`).
@@ -734,6 +857,11 @@ const CODE_MAX: f32 = 640.0;
 /// The file a code square's code is in, if it's in one.
 fn code_file(sq: &Square) -> Option<&str> {
     sq.params.get("file").map(|f| f.trim()).filter(|f| !f.is_empty())
+}
+
+/// The language of a code square.
+fn code_lang(sq: &Square) -> String {
+    sq.params.get("language").cloned().unwrap_or_else(lineit_core::registry::code::default_language)
 }
 
 /// What a code square shows: what's being typed in it, its code, or the
@@ -954,11 +1082,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             if !editing_note {
                 let text = sq.params.get("text").cloned().unwrap_or_default();
                 // its lines as at zoom 1, so they don't change with the zoom
-                let rows = note_galley(&painter, &text, srect.width() / z, 1.0);
-                let lines: Vec<String> = rows.rows.iter().map(|r| r.row.text()).collect();
-                let color = if text.is_empty() { NOTE_TEXT.gamma_multiply(0.5) } else { NOTE_TEXT };
+                let (shown, color) = note_shown(&text);
                 let b = laid_at(z);
-                let g = painter.layout_no_wrap(lines.join("\n"), zoomed_text(14.0 * b), color);
+                let g = note_laid(&painter, shown, srect.width() / z, b, color);
                 paint_scaled(&painter, srect.min + vec2(10.0, 10.0) * z, &g, z / b);
             }
         } else {
@@ -1320,14 +1446,13 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 }
                 painter.rect_filled(r, 0.0, theme.field);
                 match cx.state.edit.as_mut().filter(|e| e.key.sq == id && e.key.name == "code") {
-                    Some(e) if show_widgets => code_edit(ui, e, r, z, cx.tab_id, &theme),
+                    Some(e) if show_widgets => {
+                        let lang = code_lang(&sq);
+                        code_edit(ui, e, r, z, cx.tab_id, &lang, &theme)
+                    }
                     _ => {
                         let from_file = code_file(&sq).is_some();
-                        let lang = sq
-                            .params
-                            .get("language")
-                            .cloned()
-                            .unwrap_or_else(lineit_core::registry::code::default_language);
+                        let lang = code_lang(&sq);
                         let b = laid_at(z);
                         let g = code_colored(&painter, &code_now(&sq, cx), &lang, from_file, b, &theme);
                         let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
@@ -1704,19 +1829,36 @@ fn code_of(sq: &Square, reg: &Registry) -> String {
 
 /// A code square's code being typed, in R: Enter is a new line, Tab a tab,
 /// Esc or a click away keeps it.
-fn code_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64, theme: &Theme) {
+fn code_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64, lang: &str, theme: &Theme) {
     e.rect = Some(r);
     let id = Id::unique(("code-edit", tab_id, e.key.sq));
-    let resp = ui.put(r, |ui: &mut egui::Ui| {
+    // laid out and colored as when not typed in, at a power of two
+    let b = laid_at(z);
+    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| {
+        let at = r.min + vec2(2.0, 4.0) * z;
+        let ppp = ui.ctx().pixels_per_point();
+        let mut nums = vec![b.to_bits(), z.to_bits(), at.x.to_bits(), at.y.to_bits(), ppp.to_bits()];
+        nums.extend(theme_nums(theme));
+        laid(ui.ctx(), (3, text.as_str(), lang), &nums, || {
+            let g = scaled(ui.painter().layout_job(code_job(text.as_str(), lang, false, b, theme)), z / b);
+            unrounded(g, at, ppp)
+        })
+    };
+    // (the text box has no margin of its own with a frame set, even NONE:
+    // it's put in the rect inside the margin)
+    let inner = r.shrink2(vec2(2.0, 4.0) * z);
+    let resp = ui.put(inner, |ui: &mut egui::Ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(r));
         ui.add(
             egui::TextEdit::multiline(&mut e.text)
                 .id(id)
                 .code_editor()
                 .lock_focus(true)
                 .font(zoomed_mono(12.0 * z))
+                .layouter(&mut layouter)
                 .frame(egui::Frame::NONE)
-                .margin(vec2(2.0, 4.0) * z)
-                .desired_width(r.width())
+                .margin(Vec2::ZERO)
+                .desired_width(inner.width())
                 .desired_rows(1)
                 .text_color(theme.text),
         )
@@ -1733,11 +1875,26 @@ fn note_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64)
     e.rect = Some(r);
     let id = Id::unique(("note", tab_id, e.key.sq));
     let inner = r.shrink(10.0 * z);
+    // laid out as when not typed in, with the lines of zoom 1
+    let b = laid_at(z);
+    let width = r.width() / z;
+    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _: f32| {
+        let at = r.min + vec2(10.0, 10.0) * z;
+        let ppp = ui.ctx().pixels_per_point();
+        let nums = [width.to_bits(), b.to_bits(), z.to_bits(), at.x.to_bits(), at.y.to_bits(), ppp.to_bits()];
+        laid(ui.ctx(), (4, text.as_str(), ""), &nums, || {
+            let g = scaled(note_laid(ui.painter(), text.as_str(), width, b, NOTE_TEXT), z / b);
+            unrounded(g, at, ppp)
+        })
+    };
     let resp = ui.put(inner, |ui: &mut egui::Ui| {
+        // like the shown note: nothing outside it
+        ui.set_clip_rect(ui.clip_rect().intersect(r));
         ui.add(
             egui::TextEdit::multiline(&mut e.text)
                 .id(id)
                 .font(zoomed_text(14.0 * z))
+                .layouter(&mut layouter)
                 .frame(egui::Frame::NONE)
                 .margin(Vec2::ZERO)
                 .desired_width(inner.width())
@@ -1840,5 +1997,210 @@ mod code_tests {
         assert_eq!(problem_line("line 2: `f` returns a value with no type"), Some(2));
         assert_eq!(problem_line("`x` has no type: add a line 3 above"), None);
         assert_eq!(problem_line("there's no function"), None);
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    /// Runs F in a frame with the zoomed fonts, as the app sets them.
+    fn frame_ctx(f: impl FnOnce(&egui::Context)) {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        for (from, name) in [(egui::FontFamily::Proportional, ZOOMED_TEXT), (egui::FontFamily::Monospace, ZOOMED_MONO)]
+        {
+            let list = fonts.families[&from].clone();
+            fonts.families.insert(egui::FontFamily::Name(name.into()), list);
+        }
+        ctx.set_fonts(fonts);
+        let mut f = Some(f);
+        for _ in 0..2 {
+            let out = ctx.run_pass(egui::RawInput::default(), |ctx| {
+                if let Some(f) = f.take_if(|_| ctx.cumulative_pass_nr() > 0) {
+                    f(ctx);
+                }
+            });
+            out.drop_without_applying_deltas();
+        }
+    }
+
+    fn frame(f: impl FnOnce(&egui::Painter)) {
+        frame_ctx(|ctx| f(&ctx.layer_painter(egui::LayerId::background())));
+    }
+
+    /// The text of a galley's rows, with the newlines that ended them.
+    fn rebuilt(g: &egui::Galley) -> String {
+        g.rows.iter().map(|r| format!("{}{}", r.row.text(), if r.ends_with_newline { "\n" } else { "" })).collect()
+    }
+
+    const NOTES: [&str; 6] = [
+        "",
+        "short",
+        "a long note that has to be broken into some lines when it is laid out",
+        "lines\nof its own\n\nand an empty one, and a long one that goes on and on and on",
+        "ends with a newline\n",
+        "trailing spaces   \nin the middle    of  words  and a long tail that wraps   ",
+    ];
+
+    #[test]
+    fn typed_note_has_the_rows_of_the_shown_one() {
+        frame(|p| {
+            for text in NOTES {
+                let one = p.layout(text.to_string(), zoomed_text(14.0), NOTE_TEXT, 150.0 - 20.0);
+                for z in [0.3, 0.7, 1.0, 1.9, 3.0] {
+                    let b = laid_at(z);
+                    let g = scaled(note_laid(p, text, 150.0, b, NOTE_TEXT), z / b);
+                    // the same text and the same breaks as at zoom 1
+                    assert_eq!(rebuilt(&g), text, "text at {z}");
+                    assert_eq!(rebuilt(&one), text);
+                    let rows = |g: &egui::Galley| g.rows.iter().map(|r| r.row.text()).collect::<Vec<_>>();
+                    assert_eq!(rows(&g), rows(&one), "rows at {z}");
+                    // every char is in a row, so the cursor is where it's typed
+                    assert_eq!(g.end().index.0, text.chars().count(), "end at {z}");
+                    // scaled, it's as big as laid out at Z / B times
+                    let h = note_laid(p, text, 150.0, b, NOTE_TEXT).size() * (z / b);
+                    assert!((g.size() - h).abs().max_elem() < 0.01, "size at {z}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn typed_note_sits_where_the_shown_one_is_drawn() {
+        frame(|p| {
+            // what paint_scaled draws: a row at its pos, scaled
+            let (z, b) = (1.3, laid_at(1.3));
+            let text = "some words to put\non a few lines of a note";
+            let shown = note_laid(p, text, 150.0, b, NOTE_TEXT);
+            let typed = scaled(shown.clone(), z / b);
+            for (a, t) in shown.rows.iter().zip(&typed.rows) {
+                assert!((a.pos.to_vec2() * (z / b) - t.pos.to_vec2()).abs().max_elem() < 1e-3);
+                for (ga, gt) in a.row.glyphs.iter().zip(&t.row.glyphs) {
+                    assert!((ga.pos.to_vec2() * (z / b) - gt.pos.to_vec2()).abs().max_elem() < 1e-3);
+                }
+                for (va, vt) in a.row.visuals.mesh.vertices.iter().zip(&t.row.visuals.mesh.vertices) {
+                    assert!((va.pos.to_vec2() * (z / b) - vt.pos.to_vec2()).abs().max_elem() < 1e-3);
+                    assert_eq!(va.uv, vt.uv);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn galley_of_a_note_is_of_its_text() {
+        frame(|p| {
+            for text in NOTES {
+                let g = note_laid(p, text, 150.0, 2.0, NOTE_TEXT);
+                // its sections cover exactly its text, in order
+                assert_eq!(g.job.text, text);
+                let mut at = 0;
+                for s in &g.job.sections {
+                    assert_eq!(s.byte_range.start.0, at);
+                    at = s.byte_range.end.0;
+                }
+                assert_eq!(at, text.len(), "sections of {text:?}");
+                // select across the soft breaks and slice what's selected
+                let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), g.end());
+                assert_eq!(all.slice_str(text), text);
+                let from = egui::text::CCursor::new(text.chars().count() / 3);
+                let part = egui::text::CCursorRange::two(from, g.end());
+                let want: String = text.chars().skip(from.index.0).collect();
+                assert_eq!(part.slice_str(text), want);
+                let mut sel = scaled(g, 0.7);
+                egui::text_selection::visuals::paint_text_selection(&mut sel, &egui::Visuals::dark(), &part, None);
+                // a cursor on each char is on the galley
+                for k in 0..=text.chars().count() {
+                    let c = sel.pos_from_cursor(egui::text::CCursor::new(k));
+                    assert!(sel.rect.expand(1.0).contains(c.center()), "cursor {k} of {text:?}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn galleys_are_kept_while_nothing_changes() {
+        frame(|p| {
+            let a = note_laid(p, "some words", 150.0, 2.0, NOTE_TEXT);
+            assert!(std::sync::Arc::ptr_eq(&a, &note_laid(p, "some words", 150.0, 2.0, NOTE_TEXT)));
+            assert!(!std::sync::Arc::ptr_eq(&a, &note_laid(p, "some words!", 150.0, 2.0, NOTE_TEXT)));
+            assert!(!std::sync::Arc::ptr_eq(&a, &note_laid(p, "some words", 150.0, 4.0, NOTE_TEXT)));
+        });
+    }
+
+    #[test]
+    fn a_tab_is_four_spaces_wide() {
+        frame(|p| {
+            for z in [0.25, 0.5, 1.0, 1.7, 2.0, 4.0, 8.0] {
+                let w = |t: &str| p.layout_no_wrap(t.to_string(), zoomed_mono(12.0 * z), Color32::WHITE).size().x;
+                assert!((w("\tx") - w("    x")).abs() < 1e-3, "tab at {z}");
+                assert!((w("a\tx") - w("a    x")).abs() < 1e-3, "tab after a at {z}");
+            }
+        });
+    }
+
+    /// The text box puts the galley at the position the layouters assume.
+    #[test]
+    fn text_box_puts_the_galley_where_it_is_assumed() {
+        frame_ctx(|ctx| {
+            let out = ctx.run_pass(egui::RawInput::default(), |ctx| {
+                ctx.root_ui(|ui| {
+                    let ppp = ui.ctx().pixels_per_point();
+                    let (z, b) = (1.37, laid_at(1.37));
+                    // as note_edit and code_edit set it up
+                    let r = Rect::from_min_size(pos2(103.3, 57.9), vec2(220.0, 90.0));
+                    for (rect, margin, at) in [
+                        (r.shrink(10.0 * z), Vec2::ZERO, r.min + vec2(10.0, 10.0) * z),
+                        (r.shrink2(vec2(2.0, 4.0) * z), Vec2::ZERO, r.min + vec2(2.0, 4.0) * z),
+                    ] {
+                        let mut text = "some words that go on\nand on".to_string();
+                        let mut layouter = |ui: &egui::Ui, t: &dyn egui::TextBuffer, _: f32| {
+                            let g = scaled(note_laid(ui.painter(), t.as_str(), 160.0, b, NOTE_TEXT), z / b);
+                            unrounded(g, at, ppp)
+                        };
+                        let out = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                                egui::TextEdit::multiline(&mut text)
+                                    .font(zoomed_text(14.0 * z))
+                                    .layouter(&mut layouter)
+                                    .frame(egui::Frame::NONE)
+                                    .margin(margin)
+                                    .desired_width(rect.width())
+                                    .show(ui)
+                            })
+                            .inner;
+                        // (egui puts the rect of a widget on a grid of a 64th of a point)
+                        assert!(
+                            (out.galley_pos - at).abs().max_elem() < 1.0 / 32.0,
+                            "{:?} vs {at:?} (rect {rect:?})",
+                            out.galley_pos
+                        );
+                    }
+                });
+            });
+            out.drop_without_applying_deltas();
+        });
+    }
+
+    #[test]
+    fn typed_code_has_the_rows_of_the_shown_one() {
+        frame(|p| {
+            let theme = super::super::theme::dark();
+            for text in ["fn main() {\n\tlet x = 1;\n}", "a\n\nb c d  \n", ""] {
+                for z in [0.5, 1.0, 2.5] {
+                    let b = laid_at(z);
+                    let shown = code_colored(p, text, "rust", false, b, &theme);
+                    let typed = scaled(p.layout_job(code_job(text, "rust", false, b, &theme)), z / b);
+                    // typed text keeps its tabs and the end it has
+                    assert_eq!(typed.job.text, text);
+                    assert_eq!(typed.end().index.0, text.chars().count());
+                    // the rows shown are there, at the same places (the end, trimmed, isn't)
+                    for (a, t) in shown.rows.iter().zip(&typed.rows) {
+                        assert_eq!(a.row.text().trim_end(), t.row.text().trim_end());
+                        assert!((a.pos.to_vec2() * (z / b) - t.pos.to_vec2()).abs().max_elem() < 1e-3);
+                    }
+                }
+            }
+        });
     }
 }
