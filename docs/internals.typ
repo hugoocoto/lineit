@@ -160,6 +160,25 @@ error on its square.
 What goes wrong is a `Diag` on a square of the canvas: the square itself, or
 the subgraph square it's inside of.
 
+*Functions.* `list/map`, `list/filter` and `list/reduce` have a param of kind
+`ParamKind::Function { args }`: the path of a subgraph. `Flattener::function`
+inlines it once, in a scope of its own (so its variables are per square that
+uses it), right where the square is. Its data `graph/input` ports get their
+`incoming` from the calling square's outputs named in `args` (`value`, or
+`acc` then `value`), and a `tick` port from its `call` output: from then on
+`source()` and `targets()` walk through them as through any subgraph. Its data
+`graph/output` ports go to `FNode::fn_outs` (the `Source`, the port's type and
+name), which `types::infer` checks (`the function's output y is int, and it
+gets str`). The signature comes from the subgraph's ports
+(`SigCx::function`, `Subgraph::fn_ports`), all of it concrete types: wrong
+port counts, a filter that doesn't give a bool or a reduce whose accumulator
+and output differ are errors on the calling square. A function with no tick
+input is *pure*: the loop reads `Lx::fn_result` after setting the `value`
+slot. One with a tick input runs on ticks: the loop `Fire`s `call`, which
+returns when everything it ticked has finished (branches and meets as
+anywhere), and then reads the outputs. A square with a tick pin inside a
+function with no tick input is an error, as nothing would run it.
+
 = Types <sec-types>
 
 `types::infer` gives every pin of every flat node a type:

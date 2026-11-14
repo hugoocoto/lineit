@@ -48,7 +48,6 @@ later
   (compiled is ~1000x faster); registers and typed slots instead of Values
 - compiled branches on a thread pool, not a thread per branch
 - editing while running applied to the running program
-- list/map, filter, reduce with a subgraph as the function
 - FFI to C libraries
 - native file dialog
 - Windows: no console window on double click

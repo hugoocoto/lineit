@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use lineit_rt::{Type, Value};
 
-use super::{Class, Kind, Module, ParamDef, ParamKind, Params, SigCx, Signature, TExpr};
+use super::{Class, FnPorts, Kind, Module, ParamDef, ParamKind, Params, SigCx, Signature, TExpr};
 use crate::ir::*;
 use crate::lower::Lx;
 
@@ -184,6 +184,7 @@ pub fn all() -> Vec<Arc<dyn Module>> {
     value(&mut m);
     var(&mut m);
     list(&mut m);
+    list_fns(&mut m);
     map(&mut m);
     strings(&mut m);
     io(&mut m);
@@ -668,6 +669,160 @@ fn list(m: &mut Vec<Arc<dyn Module>>) {
             .fixed(Signature::new().vars(&[Class::Any]).wire_in("list", TExpr::ListOf(0)).output("length", int()))
             .eval(|cx, _| Ok(Expr::call(Func::ListSize, vec![cx.input(0)?])))
             .done(),
+    );
+}
+
+fn list_fns(m: &mut Vec<Arc<dyn Module>>) {
+    fn fb(path: &str, doc: &str, args: &[&str]) -> B {
+        b(path, doc).param("fn", ParamKind::Function { args: args.iter().map(|a| a.to_string()).collect() }, "")
+    }
+    /// The pins of the function param, which has to take INPUTS values and give one.
+    fn ports(p: &Params, cx: &dyn SigCx, inputs: usize) -> Result<FnPorts, String> {
+        let path = p.str("fn");
+        let f = cx.function(&path)?;
+        if f.inputs.len() != inputs || f.outputs.len() != 1 {
+            let s = |n: usize| if n == 1 { "" } else { "s" };
+            return Err(format!(
+                "`{path}` has {} data input{} and {} output{}, and a function here takes {inputs} input{} and gives 1 output",
+                f.inputs.len(),
+                s(f.inputs.len()),
+                f.outputs.len(),
+                s(f.outputs.len()),
+                s(inputs)
+            ));
+        }
+        Ok(f)
+    }
+    fn list_of(t: &Type) -> Type {
+        Type::List(Box::new(t.clone()))
+    }
+    /// The pins every one of them has, from the function F: `tick` and the `list` come in; `call`
+    /// ticks the function, if it has a tick input; `done` is the end.
+    fn start(f: &FnPorts) -> Signature {
+        Signature::new().tick_in("tick").wire_in("list", t(list_of(&f.inputs[f.inputs.len() - 1].1)))
+    }
+    fn end(f: &FnPorts, s: Signature) -> Signature {
+        let s = if f.tick { s.tick_out("call") } else { s };
+        s.tick_out("done")
+    }
+    /// The loop over the items of SNAP: VALUE gets each, PRE runs, then the function is
+    /// called (if it ticks), then POST.
+    fn per_item(cx: &mut Lx, snap: SlotId, value: SlotId, pre: Vec<Stmt>, post: Vec<Stmt>) -> Stmt {
+        let i = cx.local(Type::Int);
+        let mut body = vec![Stmt::Set(value, Expr::ListGet(snap, Box::new(Expr::Local(i))))];
+        body.extend(pre);
+        if let Some(call) = cx.sig().output_index("call") {
+            body.push(cx.fire(call));
+        }
+        body.extend(post);
+        Stmt::For { local: i, from: Expr::int(0), to: Expr::ListLen(snap), body }
+    }
+    /// The slot that keeps the list as it was when the loop started.
+    fn snapshot(cx: &mut Lx, item: Type) -> SlotId {
+        let ty = list_of(&item);
+        let init = Value::default_of(&ty);
+        cx.private_slot("items", ty, init)
+    }
+    fn done(cx: &mut Lx) -> Stmt {
+        let o = cx.sig().output_index("done").unwrap_or(0);
+        cx.fire(o)
+    }
+
+    m.push(
+        fb(
+            "list/map",
+            "A list of what `function` (a subgraph: item in, value out) gives for each item of `list`",
+            &["value"],
+        )
+        .sig(|p, cx| {
+            let f = ports(p, cx, 1)?;
+            let s = start(&f).output("value", t(f.inputs[0].1.clone())).output("result", t(list_of(&f.outputs[0].1)));
+            Ok(end(&f, s))
+        })
+        .tick(|cx, _| {
+            let (value, result) = (cx.out_slot(0), cx.out_slot(1));
+            let item = cx.out_ty(0);
+            let snap = snapshot(cx, item);
+            let give = cx.fn_result(0)?;
+            let post = vec![Stmt::Do(Effect::ListPush(result), vec![give])];
+            Ok(vec![
+                Stmt::Set(snap, cx.input(1)?),
+                Stmt::Do(Effect::ListClear(result), vec![]),
+                per_item(cx, snap, value, vec![], post),
+                done(cx),
+            ])
+        })
+        .done(),
+    );
+    m.push(
+        fb(
+            "list/filter",
+            "The items of `list` for which `function` (a subgraph: item in, bool out) gives true",
+            &["value"],
+        )
+        .sig(|p, cx| {
+            let f = ports(p, cx, 1)?;
+            if f.outputs[0].1 != Type::Bool {
+                return Err(format!("`{}` gives {}, and a filter's function gives bool", p.str("fn"), f.outputs[0].1));
+            }
+            let s = start(&f).output("value", t(f.inputs[0].1.clone())).output("result", t(list_of(&f.inputs[0].1)));
+            Ok(end(&f, s))
+        })
+        .tick(|cx, _| {
+            let (value, result) = (cx.out_slot(0), cx.out_slot(1));
+            let item = cx.out_ty(0);
+            let snap = snapshot(cx, item);
+            let keep = cx.fn_result(0)?;
+            let post = vec![Stmt::If(keep, vec![Stmt::Do(Effect::ListPush(result), vec![Expr::Slot(value)])], vec![])];
+            Ok(vec![
+                Stmt::Set(snap, cx.input(1)?),
+                Stmt::Do(Effect::ListClear(result), vec![]),
+                per_item(cx, snap, value, vec![], post),
+                done(cx),
+            ])
+        })
+        .done(),
+    );
+    m.push(
+        fb(
+            "list/reduce",
+            "Folds `list` into one value: `function` (a subgraph: acc and item in, new acc out) is called for each item, starting from `initial`",
+            &["acc", "value"],
+        )
+        .sig(|p, cx| {
+            let f = ports(p, cx, 2)?;
+            let acc = f.inputs[0].1.clone();
+            if f.outputs[0].1 != acc {
+                return Err(format!(
+                    "`{}` gives {}, and its first input, the accumulator, is {acc}: they have to be the same type",
+                    p.str("fn"),
+                    f.outputs[0].1
+                ));
+            }
+            let s = Signature::new().tick_in("tick").wire_in("list", t(list_of(&f.inputs[1].1)));
+            let s = if acc.is_scalar() {
+                let d = &f.inputs[0].2;
+                s.input("initial", t(acc.clone()), if Value::parse(d, &acc).is_some() { d } else { "" })
+            } else {
+                s.wire_in("initial", t(acc.clone()))
+            };
+            Ok(end(&f, s.output("result", t(acc.clone())).output("acc", t(acc)).output("value", t(f.inputs[1].1.clone()))))
+        })
+        .tick(|cx, _| {
+            let (result, acc, value) = (cx.out_slot(0), cx.out_slot(1), cx.out_slot(2));
+            let item = cx.out_ty(2);
+            let snap = snapshot(cx, item);
+            let a = cx.local(cx.out_ty(0));
+            let give = cx.fn_result(0)?;
+            Ok(vec![
+                Stmt::Set(snap, cx.input(1)?),
+                Stmt::Let(a, cx.input(2)?),
+                per_item(cx, snap, value, vec![Stmt::Set(acc, Expr::Local(a))], vec![Stmt::Let(a, give)]),
+                Stmt::Set(result, Expr::Local(a)),
+                done(cx),
+            ])
+        })
+        .done(),
     );
 }
 

@@ -1,0 +1,25 @@
+return {
+        lineit = 1,
+        doc = "A function that runs on ticks and has a list/map inside: the sum of the squares of 1 to n.",
+        squares = {
+                { id = 1, module = "graph/input", y = 0, params = { name = "tick", type = "tick" } },
+                { id = 2, module = "graph/input", y = 50, params = { name = "n", type = "int" } },
+                { id = 3, module = "var/var", params = { name = "nums", type = "list<int>", initial = "" } },
+                { id = 4, module = "list/clear", params = { list = "nums" } },
+                { id = 5, module = "flow/loop", fields = { from = "1" } },
+                { id = 6, module = "math/add", fields = { b = "1" } },
+                { id = 7, module = "list/push", params = { list = "nums" } },
+                { id = 8, module = "var/get", params = { name = "nums" } },
+                { id = 9, module = "list/map", params = { fn = "test/square" } },
+                { id = 10, module = "list/reduce", params = { fn = "test/add_up" }, fields = { initial = "0" } },
+                { id = 11, module = "graph/output", params = { name = "sum", type = "int" } },
+        },
+        links = {
+                { 1, "value", 4, "tick" }, { 4, "then", 5, "tick" },
+                { 2, "value", 6, "a" }, { 6, "result", 5, "to" },
+                { 5, "body", 7, "tick" }, { 5, "index", 7, "value" },
+                { 5, "done", 9, "tick" }, { 8, "value", 9, "list" },
+                { 9, "done", 10, "tick" }, { 9, "result", 10, "list" },
+                { 10, "result", 11, "value" },
+        },
+}

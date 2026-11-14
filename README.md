@@ -163,6 +163,16 @@ rest belong to their canvas, so each copy of a subgraph has its own.
 module. Select squares and press Ctrl+G to make one: it goes to your
 modules folder, and a square of it takes their place.
 
+**Functions.** `list/map`, `list/filter` and `list/reduce` call a subgraph for
+each item of a list: its path is their `fn` param, which the editor lets you
+pick from the subgraphs with the right pins (map: one input, one output;
+filter: one input, a `bool` output; reduce: the total so far and the item in,
+the new total out, starting from `initial`). Their types come from the
+subgraph's ports, and a mismatch is an error on the square. A subgraph with a
+`tick` input runs on ticks, once per item, and can have branches and variables
+of its own (kept from item to item, one set for each square that uses it);
+one without is read like a pure square. See `examples/list_functions.lua`.
+
 ## Shaders
 
 `image/shader` runs a Godot shader (`.gdshader`, `shader_type canvas_item;`)
