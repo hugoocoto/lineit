@@ -4,7 +4,8 @@
 #
 #     scripts/screenshot.sh CANVAS OUT.png [ZOOM] [SECONDS]
 #
-# ZOOM replaces the zoom of the canvas's camera (on a copy), SECONDS is how
+# ZOOM replaces the zoom of the canvas's camera, or gives it one at 0, 0 (on
+# a copy next to it, so its modules and files are found), SECONDS is how
 # long the editor gets before the shot (default 6). The editor is
 # target/debug/lineit, or $LINEIT. Its config, data and cache are in a
 # folder of their own, so the user's settings and session aren't touched.
@@ -20,20 +21,27 @@ lineit=${LINEIT:-$root/target/debug/lineit}
 [ -x "$lineit" ] || { echo "no editor at $lineit: cargo build -p lineit" >&2; exit 1; }
 
 tmp=$(mktemp -d)
+copy=
 xvfb=
 editor=
 cleanup() {
     [ -n "$editor" ] && kill "$editor" 2>/dev/null || true
     [ -n "$xvfb" ] && kill "$xvfb" 2>/dev/null || true
     rm -rf "$tmp"
+    [ -n "$copy" ] && rm -f "$copy"
 }
 trap cleanup EXIT INT TERM
 
 if [ -n "$zoom" ]; then
-    cp "$canvas" "$tmp/$(basename "$canvas")"
-    canvas="$tmp/$(basename "$canvas")"
-    sed -i "s/\(camera = {.*zoom = \)[0-9.]*/\1$zoom/" "$canvas"
-    grep -q "zoom = $zoom" "$canvas" || { echo "no camera zoom in the canvas to change" >&2; exit 1; }
+    copy="$(dirname "$canvas")/.screenshot-$$-$(basename "$canvas")"
+    cp "$canvas" "$copy"
+    canvas=$copy
+    if grep -q "camera = {" "$canvas"; then
+        sed -i "s/\(camera = {.*zoom = \)[0-9.]*/\1$zoom/" "$canvas"
+    else
+        sed -i "0,/lineit = [0-9]*,/s//&\n        camera = { x = 0, y = 0, zoom = $zoom },/" "$canvas"
+    fi
+    grep -q "zoom = $zoom" "$canvas" || { echo "couldn't set the zoom of the canvas" >&2; exit 1; }
 fi
 
 # a display that's free: Xvfb picks it and writes its number
