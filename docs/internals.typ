@@ -280,9 +280,12 @@ and `swap` and `Interp::restart` (the entries again) follow.
 
 `swap` works everything out before it gives up the old program, and undoes
 what it can if something fails. Slots are told apart by `slot_keys`: where
-they show on a square (`SlotDef::shows`) and the variable's name
-(`Program::vars`), counted when a name repeats; a slot with neither starts
-again (and is counted in `Swapped`). The same type: the value moves; another:
+they show on a square (`SlotDef::shows`), the variable's name
+(`Program::vars`) and, for every slot, where it is (`SlotDef::home`: the
+squares from the canvas down to its own through the subgraphs it's inside
+of, `FNode::path`, and what of it, `out total`, `var total`, `own items`),
+each counted when it repeats. So the state inside a subgraph, and a square's
+private one, carry over too. The same type: the value moves; another:
 `registry::builtin::convert` (what `value/convert` lowers to) is evaluated on
 it, or it starts again. Modules (`ExtDef`) with the same path and kind move
 over with their `Handles`, so a Python process isn't restarted by an edit
@@ -381,6 +384,34 @@ removed squares, so they can't show false errors. `]c` and `[c` go through
 for `.graph.lua` files. `lineit diff A B` also takes `REV:path`, read with
 `git show` and placed in the working tree from `git rev-parse --show-toplevel`
 (or from here for `REV:./path`).
+
+= Bisect <sec-bisect>
+
+`trace::record` runs a program with `Interp::step_with`, which calls back
+before and after each branch's turn (Step's turns: one thread, so what a turn
+did is that branch's). An `Op::Enter` in the turn is an `Event`: its square
+and run, its `parents` (the last event of its branch; for the first square of
+a branch the fan-out's; after a meet the last events of the branches that
+met; a clock's tick after the round before), the values shown on its square,
+the variables and what it printed after the turn, and `inside`: the values
+shown on the squares whose handlers are under it (`TaskView::inside`, the
+loop's `index`), read before the turn, as after it they may be the next
+iteration's. An error ends the trace and is in it; `trace::LIMIT` (or the
+`--limit`) cuts it.
+
+`bisect::Bisect` knows only the parents. Good on an event marks it and its
+ancestors; the candidates are the bad point (an event, or the end of the run:
+all) and its ancestors that aren't good; the question is the candidate whose
+ancestors split them most evenly (bitsets over the candidates, rows dropped
+once no later candidate needs them), earliest on ties. Skipped ones aren't
+asked again: with only those left it ends with a range. The state is worked
+out again from the log after each answer, so undo pops it.
+
+`lineit bisect` (`bisectcmd.rs`) asks on stdin and replays `--answers`; the
+editor's `editor/bisect.rs` records off the UI thread, and the canvas draws
+the question's square outlined (`Theme::bisect`), the others that can't be
+the bug faded. An edit (by `diff::diff`, not a move) ends it, and Run and
+Step wait until it's ended.
 
 = The editor <sec-editor>
 

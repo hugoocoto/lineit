@@ -37,8 +37,10 @@ Layout: ~/code/ju26-review/<issue>/csharp (set A, seeded, uncommitted:
 review with `git diff HEAD~1`) and <issue>/lineit (set B); keys in
 ~/code/ju26-review/.keys/ (don't open before reviewing). 2297: only the
 generator change is drawn in lineit.
-Done: set A seeded in all 4 C# copies (keys in .keys/<issue>-A.md).
-To do: the lineit versions with set B, one agent per branch; then my reviews.
+Done: set A seeded in all 4 C# copies (keys in .keys/<issue>-A.md; 2283-A
+was lost and rebuilt from the seeded diff, without its notes on the AI
+change), and the lineit versions with set B (keys in .keys/<issue>-B.md).
+To do: my reviews.
 Building MessagePack needs the .NET SDK 8.0.4xx (global.json: 8.0.402).
 
 later
@@ -48,7 +50,7 @@ later
 - editing while running (done: `Interp::swap`): what's left is that several
   new entries at once run as branches without meets; the instances of code
   squares that went away stay allocated in a kept module (no way to free
-  one in `Ext`); slots inside subgraphs and private ones start again
+  one in `Ext`)
 - FFI to C libraries
 - check on real systems what was written without them: the native dialogs on
   Windows, macOS and a Linux desktop (whether one can be shown is read from the

@@ -273,7 +273,7 @@ impl App {
         st.rects.iter().filter(|(id, _)| tab.canvas.square(**id).is_some()).map(|(i, r)| (*i, *r)).collect()
     }
 
-    fn vim_focused(&self) -> Option<SquareId> {
+    pub(super) fn vim_focused(&self) -> Option<SquareId> {
         self.tabs[self.active].2.vim.focus
     }
 
@@ -497,6 +497,7 @@ impl App {
                     st.vim.trail = vec![f];
                 }
             }
+            Act::Escape if self.tab().bisect.is_some() => self.bisect_end(),
             Act::VisualOff | Act::Escape => self.vim_collapse(),
             Act::PinStart => {
                 let Some(f) = focus else {
@@ -985,6 +986,7 @@ impl App {
             Ex::Step => self.start(RunMode::Step, ctx),
             Ex::Test => self.run_tests(),
             Ex::Debug(name) => self.debug_named(name.as_deref(), ctx),
+            Ex::Bisect(b) => self.bisect_do(b, ctx),
             Ex::Stop => self.stop(),
             Ex::Compile => self.start(RunMode::Compile, ctx),
             Ex::Output => self.show_output = !self.show_output,

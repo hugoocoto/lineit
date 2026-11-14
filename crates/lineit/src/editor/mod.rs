@@ -1,6 +1,7 @@
 //! The editor: an egui window over [`lineit_core`].
 
 mod app;
+mod bisect;
 mod canvas;
 mod dialog;
 mod nav;

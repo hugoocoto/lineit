@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Key, Modifiers, Pos2, vec2};
+use lineit_core::bisect::Answer;
 use lineit_core::config::{Config, Kind as SKind, SETTINGS, SValue};
 use lineit_core::model::{Canvas, Link, Square, SquareId};
 use lineit_core::registry::Registry;
@@ -17,7 +18,7 @@ use super::runner::{Cmd, Runner, State};
 use super::session::{self, Exe, Ready};
 use super::tab::Tab;
 use super::theme::{self, Theme};
-use super::vim::{SAct, Vim};
+use super::vim::{Bisect as BisectCmd, SAct, Vim};
 
 mod vimctl;
 
@@ -152,6 +153,22 @@ pub struct App {
     confirm: Option<Confirm>,
     /// The window may close: it was asked for, and confirmed or clean.
     quit_ok: bool,
+}
+
+/// Goes to the square of a bisect's question: centered, with the focus
+/// there (and selected, when it's the bug).
+fn bisect_show(tab: &mut Tab, st: &mut CanvasState) {
+    let Some(a) = tab.bisect.as_ref().and_then(|b| b.asking()) else { return };
+    let Some(sq) = a.shown_square() else { return };
+    let found = matches!(a.state(), lineit_core::bisect::State::Found(_));
+    st.vim.focus = Some(sq);
+    st.center = Some(sq);
+    if found {
+        tab.selected.clear();
+        tab.selected.insert(sq);
+        tab.selected_links.clear();
+        st.vim.sel = tab.selected.clone();
+    }
 }
 
 /// The newest change in DIR and its folders.
@@ -758,6 +775,11 @@ impl App {
         if self.read_only() {
             return;
         }
+        // a run would show values of its own over the bisect's
+        if mode != RunMode::Compile && self.tab().bisect.is_some() {
+            self.status("end the bisect first (End, or Esc)", true);
+            return;
+        }
         self.mode = mode;
         if mode == RunMode::Compile {
             self.compile(ctx);
@@ -887,6 +909,10 @@ impl App {
         if self.read_only() {
             return;
         }
+        if self.tab().bisect.is_some() {
+            self.status("end the bisect first (End, or Esc)", true);
+            return;
+        }
         let reg = self.reg.clone();
         let clear = self.cfg.bool("output.clear_on_run");
         let tab = self.tab();
@@ -913,9 +939,104 @@ impl App {
     }
 
     fn stop(&mut self) {
+        if self.tab().bisect.is_some() {
+            self.bisect_end();
+        }
         if let Some(r) = &self.tab().run {
             r.send(Cmd::Stop);
         }
+    }
+
+    // ------------------------------------------------------------ bisect
+
+    /// What the bar's buttons, the keys and `:bisect` do.
+    pub(super) fn bisect_do(&mut self, what: BisectCmd, ctx: &egui::Context) {
+        let answer = match what {
+            BisectCmd::Start => return self.start_bisect(None, ctx),
+            BisectCmd::Here => {
+                // the focus in vim mode; else the one square that's selected
+                let selected: Vec<SquareId> = self.tabs[self.active].1.selected.iter().copied().collect();
+                let sq = match (self.vim_on(), selected.as_slice()) {
+                    (true, _) => self.vim_focused(),
+                    (false, [one]) => Some(*one),
+                    _ => None,
+                };
+                return match sq {
+                    Some(sq) => self.start_bisect(Some(sq), ctx),
+                    None => self.status("select a square to bisect up to (or right click it)", true),
+                };
+            }
+            BisectCmd::End => {
+                if self.tab().bisect.is_some() {
+                    self.bisect_end();
+                } else {
+                    self.status("no bisect going", true);
+                }
+                return;
+            }
+            BisectCmd::Good => Some(Answer::Good),
+            BisectCmd::Bad => Some(Answer::Bad),
+            BisectCmd::Skip => Some(Answer::Skip),
+            BisectCmd::Undo => None,
+        };
+        let Some(a) = self.tab().bisect.as_mut().and_then(|b| b.asking_mut()) else {
+            return self.status("no bisect going: the bar's menu or :bisect starts one", true);
+        };
+        match answer {
+            Some(_) if !a.is_question() => return self.status("there's no question: Undo takes an answer back", true),
+            Some(ans) => a.answer(ans),
+            None if !a.undo() => return self.status("nothing to undo", true),
+            None => {}
+        }
+        self.tab().status = None;
+        let (_, tab, st) = &mut self.tabs[self.active];
+        bisect_show(tab, st);
+    }
+
+    /// Esc ends a bisect: whether there was one.
+    fn bisect_esc(&mut self) -> bool {
+        let going = self.tab().bisect.is_some();
+        if going {
+            self.bisect_end();
+        }
+        going
+    }
+
+    /// Ends the bisect of the tab (or its recording).
+    fn bisect_end(&mut self) {
+        let msg = match self.tab().bisect.take() {
+            Some(b) if b.asking().is_none() => "recording stopped",
+            _ => "bisect ended",
+        };
+        self.status(msg, false);
+    }
+
+    /// Starts a bisect of the run, from its end or (HERE) from the last run of a square.
+    pub(super) fn start_bisect(&mut self, here: Option<SquareId>, ctx: &egui::Context) {
+        if self.tab().settings || self.read_only() {
+            return;
+        }
+        match self.tab().bisect_start(here, ctx) {
+            Ok(()) => self.show_output = true,
+            Err(e) => self.status(&e, true),
+        }
+    }
+
+    /// Puts the square to center in the middle, when the canvas knows where it is.
+    fn bisect_center(&mut self, ctx: &egui::Context) {
+        let (_, tab, st) = &mut self.tabs[self.active];
+        let Some(id) = st.center else { return };
+        if tab.canvas.square(id).is_none() {
+            st.center = None;
+            return;
+        }
+        let Some(r) = st.rects.get(&id) else {
+            ctx.request_repaint();
+            return;
+        };
+        let cam = &mut tab.canvas.camera;
+        (cam.x, cam.y) = (r.center().x, r.center().y);
+        st.center = None;
     }
 
     fn compile(&mut self, ctx: &egui::Context) {
@@ -953,7 +1074,7 @@ impl App {
     /// Takes what the runs and the compile did since the last frame.
     fn poll(&mut self) {
         let max = self.cfg.num("output.max_lines") as usize;
-        for (_, t, _) in &mut self.tabs {
+        for (_, t, st) in &mut self.tabs {
             if let Some(r) = &t.run {
                 let mut v = r.view.lock().unwrap();
                 t.output.append(&mut v.output);
@@ -962,11 +1083,16 @@ impl App {
                     t.status = Some((e, true));
                 }
             }
+            // a bisect that got to its first question goes to its square
+            if t.bisect_poll() {
+                bisect_show(t, st);
+            }
             if t.output.len() > max {
                 let extra = t.output.len() - max;
                 t.output.drain(..extra);
             }
         }
+
         if let Some(c) = &self.compiling {
             let lines: Vec<String> = std::mem::take(&mut *c.log.lock().unwrap());
             let done = c.done.lock().unwrap().take();
@@ -1154,6 +1280,20 @@ impl App {
         if key(Modifiers::NONE, Key::F6) {
             self.run_tests();
         }
+        // the questions of a bisect (vim mode: :bisect good, bad, skip, undo)
+        if self.tab().bisect.as_ref().is_some_and(|b| b.asking().is_some()) {
+            if key(Modifiers::SHIFT, Key::F7) {
+                self.bisect_do(BisectCmd::Undo, ctx);
+            } else if key(Modifiers::NONE, Key::F7) {
+                self.bisect_do(BisectCmd::Good, ctx);
+            }
+            if key(Modifiers::NONE, Key::F8) {
+                self.bisect_do(BisectCmd::Bad, ctx);
+            }
+            if key(Modifiers::NONE, Key::F9) {
+                self.bisect_do(BisectCmd::Skip, ctx);
+            }
+        }
         // in the Settings tab, Esc empties its search first
         if self.tab().settings && !self.settings_query.is_empty() && key(Modifiers::NONE, Key::Escape) {
             self.settings_query.clear();
@@ -1162,6 +1302,7 @@ impl App {
             && self.search.take().is_none()
             && self.prompt.take().is_none()
             && self.confirm.take().is_none()
+            && !self.bisect_esc()
         {
             self.tab().selected.clear();
             self.tab().selected_links.clear();
@@ -1672,6 +1813,7 @@ impl App {
     fn bar_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         egui::Panel::bottom("bar").show(ui, |ui| {
+            let mut bisect_click = None;
             ui.horizontal(|ui| {
                 let state = self.tab().run.as_ref().map(|r| r.state());
                 let live = matches!(state, Some(State::Running | State::Paused));
@@ -1699,17 +1841,25 @@ impl App {
                         // one button, its v choosing what it does: no gap between them
                         let gap = ui.spacing().item_spacing.x;
                         ui.spacing_mut().item_spacing.x = 0.0;
-                        if ui.button(label).on_hover_text("F5 runs, F10 steps").clicked() {
+                        // no run while a bisect asks: End or Esc first
+                        let bisecting = self.tabs[self.active].1.bisect.is_some();
+                        let runs = !bisecting || self.mode == RunMode::Compile;
+                        if ui
+                            .add_enabled(runs, egui::Button::new(label))
+                            .on_hover_text("F5 runs, F10 steps")
+                            .on_disabled_hover_text("End the bisect first (End, or Esc)")
+                            .clicked()
+                        {
                             let m = self.mode;
                             self.start(m, &ctx);
                         }
                         // its arrow drawn: the fonts have no ▴
                         let arrow = ui.menu_button("   ", |ui| {
-                            if ui.button("Run (F5)").clicked() {
+                            if ui.add_enabled(!bisecting, egui::Button::new("Run (F5)")).clicked() {
                                 self.start(RunMode::Run, &ctx);
                                 ui.close();
                             }
-                            if ui.button("Step (F10)").clicked() {
+                            if ui.add_enabled(!bisecting, egui::Button::new("Step (F10)")).clicked() {
                                 self.start(RunMode::Step, &ctx);
                                 ui.close();
                             }
@@ -1724,6 +1874,16 @@ impl App {
                                 .clicked()
                             {
                                 self.run_tests();
+                                ui.close();
+                            }
+                            if ui
+                                .button("Bisect (F7 F8 F9)")
+                                .on_hover_text(
+                                    "Run it once, then answer if the values are right at some squares, to find the one the bug is in",
+                                )
+                                .clicked()
+                            {
+                                self.start_bisect(None, &ctx);
                                 ui.close();
                             }
                         });
@@ -1744,6 +1904,38 @@ impl App {
                 if compiling {
                     ui.spinner();
                     ui.label("compiling");
+                } else if let Some(b) = &tab.bisect {
+                    match b.asking() {
+                        None => {
+                            ui.spinner();
+                            ui.label("bisect: recording the run");
+                            if ui.button("Stop").on_hover_text("Shift+F5").clicked() {
+                                bisect_click = Some(BisectCmd::End);
+                            }
+                        }
+                        Some(a) => {
+                            ui.colored_label(theme.bisect, a.summary());
+                            let button = |ui: &mut egui::Ui, on: bool, text: &str, tip: &str| {
+                                ui.add_enabled(on, egui::Button::new(text)).on_hover_text(tip).clicked()
+                            };
+                            let q = a.is_question();
+                            for (text, tip, cmd) in [
+                                ("Good", "The values are right after this square ran (F7)", BisectCmd::Good),
+                                ("Bad", "The values are wrong after it ran (F8)", BisectCmd::Bad),
+                                ("Skip", "I can't tell: ask about another (F9)", BisectCmd::Skip),
+                            ] {
+                                if button(ui, q, text, tip) {
+                                    bisect_click = Some(cmd);
+                                }
+                            }
+                            if button(ui, a.can_undo(), "Undo", "Take the last answer back (Shift+F7)") {
+                                bisect_click = Some(BisectCmd::Undo);
+                            }
+                            if button(ui, true, "End", "Back to the canvas (Esc)") {
+                                bisect_click = Some(BisectCmd::End);
+                            }
+                        }
+                    }
                 } else if let Some(r) = &tab.run {
                     let v = r.view.lock().unwrap();
                     let text = match v.state {
@@ -1838,6 +2030,9 @@ impl App {
                     ui.toggle_value(&mut self.show_output, "Output");
                 });
             });
+            if let Some(c) = bisect_click {
+                self.bisect_do(c, &ctx);
+            }
         });
     }
 
@@ -1923,7 +2118,13 @@ impl App {
                 actions = super::tests::report_ui(ui, &mut state.tests, &theme);
                 return;
             }
-            let lines = &self.tabs[self.active].1.output;
+            let tab = &self.tabs[self.active].1;
+            // while a bisect asks, what the run printed up to its question
+            let asked = tab.bisect.as_ref().and_then(|b| b.asking());
+            let lines = asked.map_or(&tab.output[..], |a| a.printed());
+            if asked.is_some() {
+                ui.colored_label(theme.dim, "what the run printed up to the question (End goes back to the output)");
+            }
             let start = lines.len().saturating_sub(2000);
             egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                 if start > 0 {
@@ -2157,6 +2358,7 @@ impl eframe::App for App {
         }
         self.vim_keys(&ctx);
         self.finish_debug();
+        self.bisect_center(&ctx);
         // a square to show (from the tests' report too)
         if !self.vim_on() && !self.tab().settings {
             self.vim_reveal(&ctx);
@@ -2268,25 +2470,39 @@ impl eframe::App for App {
             States,
             Checks,
             Vars,
-        ) = match &self.tabs[self.active].1.run {
-            Some(r) => {
-                let v = r.view.lock().unwrap();
-                // the last time the run got to each check
-                let checks = v.checks.iter().map(|c| (c.square, c.clone())).collect();
-                // a variable's value is that of the squares of it
-                let mut values = v.values.clone();
+        ) = {
+            // a variable's value is that of the squares of it
+            let with_vars = |mut values: HashMap<(SquareId, String), Value>, vars: &Vars| {
                 for sq in &self.tabs[self.active].1.canvas.squares {
                     if matches!(sq.module.as_str(), "var/get" | "var/var")
                         && let Some(name) = sq.params.get("name")
-                        && let Some((_, val)) = v.vars.iter().find(|(n, _)| n == name)
+                        && let Some((_, val)) = vars.iter().find(|(n, _)| n == name)
                     {
                         values.insert((sq.id, "value".to_string()), val.clone());
                     }
                 }
-                (values, v.current.iter().copied().collect(), v.states.clone(), checks, v.vars.clone())
+                values
+            };
+            let tab = &self.tabs[self.active].1;
+            // what the bisect's question is about shows as a run paused there would
+            if let Some((values, vars)) = tab.bisect.as_ref().and_then(|b| b.asking()).and_then(|a| a.values()) {
+                (with_vars(values, &vars), BTreeSet::new(), HashMap::new(), HashMap::new(), vars)
+            } else if let Some(r) = &tab.run {
+                let v = r.view.lock().unwrap();
+                // the last time the run got to each check
+                let checks = v.checks.iter().map(|c| (c.square, c.clone())).collect();
+                (
+                    with_vars(v.values.clone(), &v.vars),
+                    v.current.iter().copied().collect(),
+                    v.states.clone(),
+                    checks,
+                    v.vars.clone(),
+                )
+            } else {
+                (HashMap::new(), BTreeSet::new(), HashMap::new(), HashMap::new(), Vec::new())
             }
-            None => (HashMap::new(), BTreeSet::new(), HashMap::new(), HashMap::new(), Vec::new()),
         };
+        let bisect = self.tabs[self.active].1.bisect.as_ref().and_then(|b| b.asking()).map(|a| a.draw());
         if self.cfg.bool("canvas.previews") {
             let pure = self.pure_previews(&ctx);
             self.previews(&ctx, &pure);
@@ -2313,6 +2529,7 @@ impl eframe::App for App {
                     checks,
                     vars,
                     pending: self.search.as_ref().and_then(|s| s.pending.clone().map(|p| (p, s.at))),
+                    bisect,
                 };
                 canvas::show(ui, &mut cx);
                 actions = cx.actions;
@@ -2337,6 +2554,7 @@ impl eframe::App for App {
                         opened: Instant::now(),
                     });
                 }
+                Action::Bisect(sq) => self.start_bisect(Some(sq), &ctx),
                 Action::Delete => self.delete_selection(),
                 Action::ShowReport => {
                     self.show_output = true;
@@ -2378,6 +2596,7 @@ impl eframe::App for App {
             if !settling && ui.tests.debugging.is_none() {
                 t.offer_edit();
             }
+            t.bisect_check_edit();
         }
         let title = format!("{} — lineit", self.tabs[self.active].1.title());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));

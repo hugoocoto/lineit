@@ -412,3 +412,51 @@ fn a_loop_that_never_ends_takes_the_edit_when_restarted() {
         assert!(now > before && (now - before) % 1000 == 0, "{name}: {before} to {now}");
     }
 }
+
+/// A clock that ticks two copies of `test/accumulate` (a subgraph with a
+/// `total` of its own) as branches, on threads: square 2 adds 5, square 3
+/// adds INC. With FIRST, another copy comes before them in the canvas, so
+/// the scopes of theirs are numbered after its.
+fn accumulators(inc: &str, first: bool) -> Program {
+    let other = if first { r#"{ id = 9, module = "test/accumulate", fields = { value = "100" } },"# } else { "" };
+    let src = format!(
+        r#"return {{ lineit = 1, squares = {{ {other}
+        {{ id = 1, module = "flow/clock", fields = {{ interval = "100" }} }},
+        {{ id = 2, module = "test/accumulate", fields = {{ value = "5" }} }},
+        {{ id = 3, module = "test/accumulate", fields = {{ value = "{inc}" }} }},
+        }}, links = {{ {{ 1, "tick", 2, "tick" }}, {{ 1, "tick", 3, "tick" }} }} }}"#
+    );
+    let c = lineit_core::file::read_canvas(&src, "accumulators").unwrap();
+    let mut reg = Registry::builtin();
+    reg.load_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/modules"), "");
+    let l = lower(&c, &reg);
+    assert!(l.diags.is_empty(), "{:?}", l.diags);
+    l.program.unwrap()
+}
+
+/// The value of the variable NAME inside the subgraph square SQUARE.
+fn inside(it: &Interp, square: u32, name: &str) -> Option<Value> {
+    let home = (vec![square.into()], format!("var {name}"));
+    let s = it.program().slots.iter().position(|s| s.home == home)?;
+    Some(it.w.slot(s))
+}
+
+#[test]
+fn the_variables_inside_subgraphs_keep_their_values() {
+    let mut it = Interp::new(accumulators("1", false), std::env::temp_dir()).unwrap();
+    it.start().unwrap();
+    for _ in 0..3 {
+        tick(&mut it);
+    }
+    assert_eq!((inside(&it, 2, "total"), inside(&it, 3, "total")), (Some(Value::Int(15)), Some(Value::Int(3))));
+    // an edit of one copy, and a new copy before both
+    let r = it.swap(accumulators("10", true), false).unwrap();
+    assert!(r.reset.is_empty() && r.converted.is_empty(), "{r}");
+    assert_eq!((inside(&it, 2, "total"), inside(&it, 3, "total")), (Some(Value::Int(15)), Some(Value::Int(3))));
+    tick(&mut it);
+    assert_eq!((inside(&it, 2, "total"), inside(&it, 3, "total")), (Some(Value::Int(20)), Some(Value::Int(13))));
+    // and the copy before them goes away: theirs stay
+    it.swap(accumulators("10", false), false).unwrap();
+    tick(&mut it);
+    assert_eq!((inside(&it, 2, "total"), inside(&it, 3, "total")), (Some(Value::Int(25)), Some(Value::Int(23))));
+}

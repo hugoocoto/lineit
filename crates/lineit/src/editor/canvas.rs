@@ -110,6 +110,8 @@ pub enum Action {
     Duplicate,
     /// Open the report of the tests.
     ShowReport,
+    /// Bisect from the last run of this square.
+    Bisect(SquareId),
 }
 
 #[derive(Default)]
@@ -127,6 +129,9 @@ pub struct CanvasState {
     /// Where each square was drawn last frame, in world units: vim mode
     /// moves over them.
     pub rects: HashMap<SquareId, Rect>,
+    /// A square to put in the middle of the canvas, once its rectangle is
+    /// known (a bisect's question).
+    pub center: Option<SquareId>,
     pub vim: VimState,
     /// The tests of code squares: their table, how they went.
     pub tests: super::tests::TestsUi,
@@ -510,6 +515,8 @@ pub struct Ctx<'a> {
     /// The wire the module search was opened with, by dropping it on the
     /// canvas, and where it was dropped: drawn until the search closes.
     pub pending: Option<(Pending, Pos2)>,
+    /// What a bisect shows: the question's outline, the squares that can still be it.
+    pub bisect: Option<super::bisect::Draw>,
 }
 
 /// The curve of a wire from A to B, as the C editor drew it: its control
@@ -1092,7 +1099,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             painter.rect_filled(srect, r, theme.square);
             painter.rect_filled(header, r, theme.header);
         }
-        let border = if cx.current.contains(&id) {
+        let border = if cx.bisect.as_ref().is_some_and(|b| b.outlined.contains(&id)) {
+            Stroke::new(4.0, theme.bisect)
+        } else if cx.current.contains(&id) {
             Stroke::new(3.0, theme.step)
         } else if problems.contains_key(&id) {
             Stroke::new(2.0, theme.error)
@@ -1236,6 +1245,14 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             }
             if module.as_ref().is_some_and(|m| m.subgraph().is_some()) && ui.button("Open subgraph").clicked() {
                 cx.actions.push(Action::OpenModule(sq.module.clone()));
+                ui.close();
+            }
+            if ui
+                .button("Bisect up to here")
+                .on_hover_text("Run it once, then answer if the values are right at some squares: the bug is where they stop being")
+                .clicked()
+            {
+                cx.actions.push(Action::Bisect(id));
                 ui.close();
             }
             ui.separator();
@@ -1647,6 +1664,30 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             );
             let at = r.left_top() - vec2(0.0, 4.0 * z);
             painter.text(at, Align2::LEFT_BOTTOM, tag, font(12.0), color);
+        }
+    }
+    // a bisect: the squares that can't be the bug fade, and what the question's square had is written over it
+    if let Some(b) = &cx.bisect {
+        for (id, g) in &geos {
+            if !b.candidates.contains(id) {
+                let r = view.rect(g.rect);
+                if r.expand(40.0).intersects(rect) {
+                    painter.rect_filled(r, 0.0, theme.background.gamma_multiply(0.6));
+                }
+            }
+        }
+        if let Some((id, lines)) = &b.note
+            && let Some(g) = geos.get(id)
+        {
+            let r = view.rect(g.rect);
+            let galley = painter.layout(lines.join("\n"), mono(12.0), theme.bisect, r.width().max(260.0 * z));
+            let at = r.left_top() - vec2(0.0, galley.size().y + 8.0 * z);
+            painter.rect_filled(
+                Rect::from_min_size(at, galley.size()).expand(3.0),
+                0.0,
+                theme.background.gamma_multiply(0.85),
+            );
+            painter.galley(at, galley, theme.bisect);
         }
     }
     if let Some(d) = move_by.filter(|_| !ro) {

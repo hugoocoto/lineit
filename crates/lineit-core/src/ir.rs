@@ -43,6 +43,10 @@ pub struct SlotDef {
     pub name: String,
     /// The square (at the top of the canvas) and output it shows on, if any.
     pub shows: Option<(SquareId, String)>,
+    /// Where it is, to tell it from the others after an edit: the squares
+    /// from the canvas down to the one it's of (through the subgraphs it's
+    /// inside of), and what of it (`out total`, `var total`, `own items`).
+    pub home: (Vec<SquareId>, String),
 }
 
 #[derive(Clone, Debug)]

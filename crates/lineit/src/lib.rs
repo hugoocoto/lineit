@@ -2,6 +2,7 @@
 //! is the program; `lineitw` (lineitw.rs) is the one for Windows that has no
 //! console window and only opens the editor.
 
+mod bisectcmd;
 mod commands;
 mod diffcmd;
 mod editor;
@@ -26,6 +27,10 @@ Usage:
                                     0 same, 1 different, 2 error); --view: in the editor,
                                     on one canvas. A and B can be REV:path, a file as
                                     git has it
+    lineit bisect FILE [--limit N] [--bad SQUARE[:RUN]] [--answers STRING]
+                                    run a canvas, recording each square that ran, and
+                                    ask about points of the run (good, bad, skip) to
+                                    find the square where it went wrong
     lineit show FILE|REV:PATH...    open canvases, or files as git has them, read-only
     lineit text FILE                a canvas as text without positions (a git textconv
                                     driver, see the README)
@@ -219,6 +224,25 @@ fn run(args: &[String]) -> Result<(), String> {
             });
             let _ = out.flush();
             r
+        }
+        Some(Command::Bisect) => {
+            let with_value = ["--limit", "--bad", "--answers"];
+            only_flags(rest, &with_value, "bisect FILE [--limit N] [--bad SQUARE[:RUN]] [--answers STRING]")?;
+            let path = one_file(rest, &with_value)?;
+            let limit = flag(rest, "--limit")?
+                .map(|s| s.parse::<usize>().map_err(|_| format!("--limit {s}: not a number")))
+                .transpose()?
+                .unwrap_or(bisectcmd::DEFAULT_LIMIT);
+            let opts = bisectcmd::Options {
+                limit,
+                bad: flag(rest, "--bad")?,
+                answers: flag(rest, "--answers")?.unwrap_or_default(),
+                file: path.display().to_string(),
+            };
+            let (canvas, l) = load(&path)?;
+            let prog = l.program.clone().ok_or_else(|| format!("it can't run:{}", diags(&path, &canvas, &l)))?;
+            let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            bisectcmd::run(prog, dir, &opts, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())
         }
         Some(Command::Check) => {
             let path = one_file(rest, &[])?;

@@ -2,6 +2,7 @@
 //! inference, the IR, and running or compiling it. The editor and the CLI
 //! (the `lineit` crate) are on top of this.
 
+pub mod bisect;
 pub mod codegen;
 pub mod codetest;
 pub mod config;
@@ -16,6 +17,7 @@ pub mod native;
 pub mod package;
 pub mod paths;
 pub mod registry;
+pub mod trace;
 pub mod types;
 
 use std::path::Path;

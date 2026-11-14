@@ -26,6 +26,7 @@ pub enum Command {
     /// An older editor handing over to this one (see editor/session.rs).
     Restore,
     Diff,
+    Bisect,
 }
 
 use Command::*;
@@ -34,7 +35,7 @@ use Command::*;
 #[cfg(test)]
 pub const ALL: &[Command] = &[
     Help, Version, Run, Check, NativeHost, Test, Show, Text, Compile, NewPackage, Pack, Install, Fmt, Config, Modules,
-    Restore, Diff,
+    Restore, Diff, Bisect,
 ];
 
 /// The names each command goes by.
@@ -59,6 +60,7 @@ pub const NAMES: &[(&str, Command)] = &[
     ("modules", Modules),
     ("--restore", Restore),
     ("diff", Diff),
+    ("bisect", Bisect),
 ];
 
 impl Command {
@@ -73,7 +75,7 @@ impl Command {
             Show | NativeHost | Restore => true,
             Diff => args.iter().any(|a| a == "--view"),
             Help | Version | Run | Check | Test | Text | Compile | NewPackage | Pack | Install | Fmt | Config
-            | Modules => false,
+            | Modules | Bisect => false,
         }
     }
 }
