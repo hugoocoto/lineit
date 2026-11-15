@@ -96,6 +96,7 @@ pub fn read_canvas(source: &str, name: &str) -> Result<Canvas, String> {
                     y: get(&s, "y")?.unwrap_or(0.0),
                     params: strings(&s, "params")?,
                     fields: strings(&s, "fields")?,
+                    mirror: get(&s, "mirror")?.unwrap_or(false),
                 });
             }
         }
@@ -201,6 +202,10 @@ pub fn write_canvas(c: &Canvas) -> String {
         if !sq.fields.is_empty() {
             let _ = write!(s, ", fields = {}", map(&sq.fields));
         }
+        // only when set: files of squares nobody turned don't change
+        if sq.mirror {
+            s.push_str(", mirror = true");
+        }
         s.push_str(" },\n");
     }
     s.push_str("        },\n        links = {\n");
@@ -225,7 +230,27 @@ mod tests {
         c.connect(Link::new(1, "then", 2, "tick"), false);
         let text = write_canvas(&c);
         assert!(!text.contains("next_id"), "nothing was deleted: {text}");
+        assert!(!text.contains("mirror"), "nothing was turned: {text}");
         assert_eq!(read_canvas(&text, "t").unwrap(), c);
+    }
+
+    #[test]
+    fn a_mirrored_square_is_saved_and_the_others_are_as_before() {
+        let mut c = Canvas::default();
+        c.add(Square::new(1, "flow/entry", 0.0, 0.0));
+        c.add(Square::new(2, "io/print", 100.0, 0.0).with_field("value", "x").mirrored());
+        let text = write_canvas(&c);
+        assert_eq!(text.matches("mirror").count(), 1, "{text}");
+        assert!(text.contains("fields = { value = \"x\" }, mirror = true }"), "{text}");
+        let back = read_canvas(&text, "t").unwrap();
+        assert_eq!(back, c);
+        assert!(!back.square(1).unwrap().mirror && back.square(2).unwrap().mirror);
+        // a file from before has none; `false` is the default written out by hand
+        let old =
+            read_canvas("return { lineit = 1, squares = { { id = 1, module = 'a', mirror = false } } }", "t").unwrap();
+        assert!(!old.square(1).unwrap().mirror);
+        // saved again, it's the file it was
+        assert_eq!(write_canvas(&back), text);
     }
 
     #[test]

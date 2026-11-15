@@ -1,6 +1,7 @@
 //! What changed between two canvases, by square id: the program only
-//! (squares, wires, fields, params), not where squares are drawn or where
-//! the camera is. A square that only moved is listed apart.
+//! (squares, wires, fields, params), not where squares are drawn, which way
+//! they face or where the camera is. A square that only moved, or was
+//! mirrored, is listed apart.
 //!
 //! Matching by id is what makes a diff readable, and the editor never
 //! renumbers a square it keeps: paste, duplicate and cut-and-paste give new
@@ -45,7 +46,7 @@ pub struct Diff {
     pub added: Vec<Square>,
     pub removed: Vec<Square>,
     pub changed: Vec<Changed>,
-    /// Squares that are the same but for their position: (the square, new).
+    /// Squares that are the same but for their position or their mirror: the new ones.
     pub moved: Vec<Square>,
     pub links_added: Vec<Link>,
     pub links_removed: Vec<Link>,
@@ -91,7 +92,7 @@ pub fn diff(old: &Canvas, new: &Canvas) -> Diff {
                         fields,
                         params,
                     });
-                } else if o.x != n.x || o.y != n.y {
+                } else if o.x != n.x || o.y != n.y || o.mirror != n.mirror {
                     d.moved.push(n.clone());
                 }
             }

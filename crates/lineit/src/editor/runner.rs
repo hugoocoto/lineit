@@ -200,7 +200,10 @@ struct OutputOnDrop(Arc<Mutex<Arc<World>>>, Arc<Mutex<View>>);
 
 impl Drop for OutputOnDrop {
     fn drop(&mut self) {
-        let lines = self.0.lock().unwrap().take_output();
+        // the run is over: its processes end, and what they wrote last is read
+        let w = self.0.lock().unwrap().clone();
+        w.end_externals();
+        let lines = w.take_output();
         if let Ok(mut v) = self.1.lock() {
             v.output.extend(lines);
         }

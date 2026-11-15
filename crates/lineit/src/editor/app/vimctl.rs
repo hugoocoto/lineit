@@ -471,6 +471,10 @@ impl App {
                 self.vim_targets();
                 self.vim_yank(ctx);
             }
+            Act::Mirror => {
+                self.vim_targets();
+                self.mirror_selection();
+            }
             Act::Paste(after) => self.vim_paste(after),
             Act::Undo(n) => {
                 self.tab().update(&reg, false, false);
@@ -1039,6 +1043,11 @@ impl App {
                     if let Some(t) = self.selection_text() {
                         self.paste(&t, None);
                     }
+                }
+            }
+            Ex::Mirror => {
+                if self.in_canvas() {
+                    self.vim_act(Act::Mirror, ctx);
                 }
             }
             Ex::OpenSubgraph => self.vim_open_subgraph(),

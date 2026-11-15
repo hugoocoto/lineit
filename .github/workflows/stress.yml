@@ -1,0 +1,95 @@
+name: Stress
+
+# The Linux tests 12 times at once, each run different: its own number of
+# test threads, its own order of the tests (a random seed) and its own load
+# of busy processes beside it, to shake out races between threads and
+# processes. A failure prints the seed, the threads and the load it ran
+# with, to run it again the same way. Run it by hand (Actions, or
+# `gh workflow run stress.yml`), and on every push to main.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  APT_PACKAGES: libx11-dev libxkbcommon-dev libgl1-mesa-dev pkg-config
+
+jobs:
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    name: stress ${{ matrix.run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LINEIT_HOME: ${{ github.workspace }}/.lineit-home
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Run dotnet once
+        run: |
+          d=$(mktemp -d)
+          echo 'System.Console.WriteLine("ready");' > "$d/warm.cs"
+          dotnet run "$d/warm.cs"
+
+      - name: Install Rust
+        run: rustup update stable && rustup default stable
+
+      # one cache for all 12: they build the same
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            .lineit-home/cache/target
+          key: stress-${{ hashFiles('Cargo.lock') }}
+          restore-keys: stress-
+
+      - name: Build the tests
+        run: |
+          cargo test --locked --workspace --no-run
+          cargo test --locked -p lineit-rt --features pool --no-run
+
+      # --shuffle is libtest's, unstable: RUSTC_BOOTSTRAP lets stable take it
+      - name: The tests, shuffled, beside busy processes
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: |
+          seed=$(( (RANDOM << 15 | RANDOM) ))
+          threads=$(( RANDOM % 8 + 1 ))
+          load=$(( RANDOM % ($(nproc) * 2 + 1) ))
+          echo "seed $seed, $threads test threads, $load busy processes"
+          for _ in $(seq "$load"); do (while :; do :; done) & done
+          status=0
+          for _ in 1 2 3; do
+            cargo test --locked --workspace --lib --bins --tests --no-fail-fast -- \
+              -Z unstable-options --shuffle-seed "$seed" --test-threads "$threads" || status=1
+            cargo test --locked -p lineit-rt --features pool -- \
+              -Z unstable-options --shuffle-seed "$seed" --test-threads "$threads" || status=1
+            seed=$(( seed + 1 ))
+          done
+          kill $(jobs -p) 2>/dev/null || true
+          if [ "$status" != 0 ]; then
+            echo "::error::failed with seeds from $(( seed - 3 )), $threads test threads, $load busy processes"
+          fi
+          exit "$status"

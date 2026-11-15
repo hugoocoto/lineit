@@ -56,11 +56,20 @@ pub struct Square {
     /// What's typed in the fields of its inputs, by input name. Used while
     /// nothing is wired to the input.
     pub fields: BTreeMap<String, String>,
+    /// Turned left to right: its inputs on the right edge and its outputs on
+    /// the left, and its wires leave and arrive that way. Layout only:
+    /// lowering and the run don't see it.
+    pub mirror: bool,
 }
 
 impl Square {
     pub fn new(id: SquareId, module: impl Into<String>, x: f32, y: f32) -> Square {
-        Square { id, module: module.into(), x, y, params: BTreeMap::new(), fields: BTreeMap::new() }
+        Square { id, module: module.into(), x, y, params: BTreeMap::new(), fields: BTreeMap::new(), mirror: false }
+    }
+
+    pub fn mirrored(mut self) -> Square {
+        self.mirror = true;
+        self
     }
 
     pub fn with_param(mut self, k: &str, v: &str) -> Square {
@@ -110,6 +119,15 @@ impl Canvas {
         self.next = self.next.max(id + 1);
         self.squares.push(s);
         id
+    }
+
+    /// Mirrors the squares IDS, or turns them back if they all are: they end
+    /// up the same way, whichever way they were.
+    pub fn mirror(&mut self, ids: &std::collections::BTreeSet<SquareId>) {
+        let all = self.squares.iter().filter(|s| ids.contains(&s.id)).all(|s| s.mirror);
+        for s in self.squares.iter_mut().filter(|s| ids.contains(&s.id)) {
+            s.mirror = !all;
+        }
     }
 
     /// Removes the square and its wires.
@@ -185,5 +203,25 @@ impl Canvas {
             s.y = *y;
             *y += height(s).unwrap_or(120.0) + 48.0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mirror_ends_the_same_way_for_all() {
+        let mut c = Canvas::default();
+        c.add(Square::new(1, "a", 0.0, 0.0));
+        c.add(Square::new(2, "b", 0.0, 0.0).mirrored());
+        c.add(Square::new(3, "c", 0.0, 0.0));
+        let ids = |v: &[SquareId]| v.iter().copied().collect();
+        c.mirror(&ids(&[1, 2]));
+        assert_eq!(c.squares.iter().map(|s| s.mirror).collect::<Vec<_>>(), [true, true, false]);
+        c.mirror(&ids(&[1, 2]));
+        assert_eq!(c.squares.iter().map(|s| s.mirror).collect::<Vec<_>>(), [false, false, false]);
+        c.mirror(&ids(&[]));
+        assert!(c.squares.iter().all(|s| !s.mirror));
     }
 }

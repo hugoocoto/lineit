@@ -58,8 +58,7 @@ lineit is in alpha: expect breaking changes with any commit.
   and a float added are a float, and a string wired into a number is an
   error on the square, before anything runs.
 - **Parallel by default.** A tick wired to several squares runs them as
-  branches, on a pool of threads once compiled, and they meet again where their wires
-  do.
+  branches, in parallel, and they meet again where their wires do.
 - **Extended in Lua, in Rust, or with squares.** A module is a Lua file, a
   Rust type, or a selection of squares made a module of its own (Ctrl+G).
   Packages (`.lipkg`) share them, on every OS as they are.
@@ -82,7 +81,7 @@ its corner.
 | Drag a plugged input                 | Take its wire, to put it elsewhere or drop it        |
 | Click a wire, then Delete            | Remove it (Shift+click selects more)                 |
 | Type in a field next to an input     | The value it has while nothing is wired to it        |
-| Right click on a square              | Duplicate, copy, disconnect, make a subgraph, bisect up to it, delete |
+| Right click on a square              | Duplicate, mirror, copy, disconnect, make a subgraph, bisect up to it, delete |
 | Add a `note` square, double click it | A post-it to write on: Enter is a new line, Esc done |
 | Drag on the canvas, or Shift+click   | Select with a box, or add to the selection           |
 | Right or middle drag / mouse wheel   | Pan / zoom                                           |
@@ -94,6 +93,7 @@ its corner.
 | Ctrl+S, Ctrl+Shift+S, Ctrl+O         | Save, save as, open                                  |
 | Ctrl+T, Ctrl+Shift+T, Ctrl+W         | New tab, reopen closed tab, close tab                |
 | Ctrl+Tab, Ctrl+PageUp/PageDown       | Next / previous tab                                  |
+| Ctrl+M                               | Mirror the selection: inputs on the right, outputs on the left (again: back) |
 | Ctrl+G                               | Make a subgraph of the selection                     |
 | F5, F10, Shift+F5                    | Run, step, stop                                      |
 | F7, F8, F9, Shift+F7, Esc            | While bisecting: good, bad, skip, undo, end          |
@@ -137,13 +137,14 @@ typed and the command line. `:help` lists every key.
 | i, Enter, `3i`               | Type in a field (Tab for the next one, Esc or Enter to finish)  |
 | a, o, O + h j k l            | Add a square beside this one (module search): free, after, before; `oj` / `ok` leave room for a second one, `oh` and `Ol` touch |
 | dd, yy, p, P, u, Ctrl+R      | Delete, copy, paste, undo, redo                                 |
+| m                            | Mirror the square (or the selection): inputs on the right, outputs on the left |
 | v, V, then h j k l d y       | Select by moving, or the whole chain, and act on it             |
 | H J K L                      | Move the selected squares a grid step                           |
 | f, then 1-9, then h j k l, 1-9 | Wire: pick a pin of this square, go to the other, pick its pin; `x` removes the wires of a pin |
 | gd, gt, gT                   | Open the subgraph, next / previous tab                          |
 | `]c`, `[c`                   | Next / previous change in a diff view (see below)               |
 | Ctrl+E/Y/D/U, zh zl zz zf, + - = | Pan, center on the focus, fit everything, zoom              |
-| `:`                          | Commands: `:w` `:q` `:e` `:tabnew` `:run` `:step` `:compile` `:bisect` `:add math/add` `:set key=value` `:settings` `:subgraph` `:help` (Tab completes) |
+| `:`                          | Commands: `:w` `:q` `:e` `:tabnew` `:run` `:step` `:compile` `:bisect` `:add math/add` `:set key=value` `:settings` `:subgraph` `:mirror` `:help` (Tab completes) |
 
 `:q` refuses to close a tab with changes (`:q!` does it anyway); on the last
 tab it quits. Ctrl+D and Ctrl+R are vim's here (duplicate is `yy` `p`, or
@@ -318,8 +319,9 @@ small program, in that language, that tells lineit a function's signature
 (the language reads its own code: lineit parses nothing) and runs it. See
 [`examples/languages/javascript.lua`](examples/languages/javascript.lua),
 which adds JavaScript (with Node.js) and is used by
-[`examples/code_js.lua`](examples/code_js.lua), and
-`crates/lineit-core/src/registry/code/file.rs` for what the program answers.
+[`examples/code_js.lua`](examples/code_js.lua). A language added with a file
+can free the squares that go away while a program runs; what the program
+answers, and how, is in [`docs/internals.typ`](docs/internals.typ).
 
 **Crashes and Stop.** In the editor and `lineit run`, Rust and C code runs
 in a process of its own, as Python and C# and languages from files do: a crash in
@@ -346,12 +348,7 @@ context of its own, so each has its own `static` state. `Shared.NAME` is a
 static field lineit declares for each variable the code uses, wherever it
 uses it. `#:package Name@version` lines at the top of the code (`dotnet run`'s
 own) bring in NuGet packages, such as MessagePack. A compiled program runs
-the file lineit kept in its cache folder (which isn't deleted while a
-program or the editor is running it). Starts of the same code, by any
-lineit, go one at a time (a lock file in that folder), as `dotnet run` can't
-build it twice at once; lineit sets `DOTNET_NOLOGO`,
-`DOTNET_CLI_TELEMETRY_OPTOUT` and the like for it, so a first run says nothing
-of its own.
+the file lineit kept in its cache folder.
 
 # Modules of your own
 
@@ -489,8 +486,7 @@ only moved are dimmed. Squares and wires that changed are drawn where they
 are in B, removed ones where they were in A. In vim mode, `]c` and `[c` go
 to the next and previous change (left to right, top to bottom, wires
 changed included; `3]c` counts). `lineit show REV:path` opens a file as git has it in a read-only
-tab. Both open a new editor window, and neither can be changed, saved, run or compiled (the bar says so), nor
-is kept when the editor rebuilds itself.
+tab. Both open a new editor window, and neither can be changed, saved, run or compiled (the bar says so).
 
 **With git.** Three ways, all in your git config:
 
@@ -518,9 +514,7 @@ fails on them; name the canvases instead, like `*.canvas.lua`.
 stable. It never renumbers a square. A pasted square keeps its id if no
 square on the canvas has it, so cut and paste changes nothing in a diff;
 a copy (the original is still there) gets a new one. An id is never given
-twice: the canvas file keeps `next_id`, one more than the highest id ever
-used, when a square was deleted (older files, and files without deletions,
-don't have it: the highest id plus one is it). So a square that replaces
+twice, even after a delete. So a square that replaces
 another is an addition and a removal, never a "change of module". Ctrl+G
 takes squares out of the canvas into the subgraph, keeping their ids there,
 and puts one new square in.
@@ -562,3 +556,7 @@ built from source, with the C compiler Rust uses.
   changes. Security problems: [SECURITY.md](.github/SECURITY.md).
 - License: GPLv3 or later ([LICENSE](LICENSE)). Your canvases are yours; a
   compiled program includes lineit's runtime, so it's GPL too.
+
+# Lines of code
+
+![Lines of code of lineit per language, over the history of main](https://raw.githubusercontent.com/hugoocoto/lineit/stats/loc.svg)

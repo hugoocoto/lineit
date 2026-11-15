@@ -62,7 +62,7 @@ knows a square's pins, the types on its wires and what's wrong with it.
 = The canvas <sec-canvas>
 
 `model::Canvas` is the program's syntax tree: squares (`Square`: an id, a
-module path, a position, its params and the text in its fields) and links
+module path, a position, whether it's mirrored, its params and the text in its fields) and links
 (`Link`: from an output to an input, both by name). Pins are named, not
 numbered, so a canvas still opens after a module gains or reorders pins; a
 link to a pin that isn't there is left out when lowering, not an error.
@@ -92,7 +92,12 @@ return {
 
 A canvas that had squares deleted also has `next_id = N` (the id after the
 highest one used): older lineits ignore it, and a file without it means the
-highest id plus one, so the format number didn't change.
+highest id plus one, so the format number didn't change. A square turned round
+(its inputs on the right edge and its outputs on the left, wires leaving and
+arriving that way) has `mirror = true` after its other keys; the others have
+nothing, so a file nobody mirrored is written as it was, and one from before
+means "not mirrored". Older lineits ignore it too (and lose it if they save).
+It's layout only: lowering never reads it, and a diff counts it like a move.
 
 `file::with_data` reads it: a Lua state with no libraries at all, an empty
 environment, a memory limit (`file::MEMORY`) and an instruction limit
@@ -311,6 +316,22 @@ so the runtime and its dependencies are built once; each crate's name has a
 hash of where its canvas is, so two canvases with the same name don't share
 a binary.
 
+Each version of the runtime (`codegen::runtime_id`: the version and a hash of
+its sources) has its own folders in the cache: `rt/ID`, `native/ID` (the cargo
+target of Rust modules and of Rust and C squares), the `build/NAME` of the
+programs made with it, and their files in `target`. `cache::hold`, called by
+`write_runtime`, sets the date of `rt/ID.used` and keeps a shared lock on it
+while the process lives; the first time, `cache::evict` deletes the runtimes
+that aren't this one, nor the last 3 used, nor used in the last 7 days, and
+whose lock it can take (an exclusive try-lock: another lineit, an editor or a
+compile in progress has it, so it's skipped). The crates and `target` files
+of a runtime are found by its `rt/ID` path in their `Cargo.toml` and `.d`.
+What can't be deleted (Windows, a program's build still running) isn't an
+error: the runtime's folder is deleted last, and only if everything else
+went, so the next eviction tries again. A compiled program that runs uses
+nothing of the cache. Lineits older than this don't lock: their runtimes
+are known only by the age of their folder.
+
 - Each handler is a function. Handlers that fire each other in a cycle (the
   strongly connected components of the calls, `cycles`) are one function
   that loops over a `match`: a tail call inside the cycle is
@@ -362,6 +383,34 @@ editor and the library need the same `lineit-rt` (lineit patches it in, with
 cargo's `--config`), not the same compiler. `native::ABI` is the version of
 that ABI.
 
+= Code squares <sec-code>
+
+`code/function` squares run in Lua, Python, Rust, C or C\#. Rust and C code
+is a library that runs in a process of its own (`lineit native-host`, see
+`native.rs`: lineit asks it in frames of bytes over a local socket), as
+Python, C\# and the languages added with a file do (`lineit_rt::process`, the
+`process` feature, speaking JSON lines), so a crash ends the run with an
+error, and Stop kills the process.
+
+*C\#* is a `.cs` file as it is. `dotnet run` builds it the first time and
+keeps the build in the cache folder; a compiled program runs the file lineit
+kept there, which isn't deleted while a program or the editor is running it.
+Starts of the same code, by any lineit, go one at a time (a lock file in that
+folder), as `dotnet run` can't build it twice at once. lineit sets
+`DOTNET_NOLOGO`, `DOTNET_CLI_TELEMETRY_OPTOUT` and the like for it, so a first
+run says nothing of its own.
+
+*Languages added with a file* (`registry/code/file.rs`): a `NAME.lua` in a
+`languages` folder, which names the interpreter and has `host`, a program in
+that language. The language reads its own code, so lineit parses nothing. The
+first line the host gets is a request: `signature` (it answers the function's
+signature, or an error with the line) or `load` (it answers `{}` and then
+serves the requests of `lineit_rt::process`). If `load` is answered with
+`{"drop": true}`, the host also frees a square (`{"op": "drop", "sq": N}`,
+answered `{}`) when an edit while running deletes it; one that doesn't keeps
+them. `examples/languages/javascript.lua` is one; `file.rs` has the whole
+protocol.
+
 = Packages <sec-packages>
 
 A package (`package.rs`) is a folder with `package.lua` (name, version,
@@ -397,6 +446,10 @@ removed squares, so they can't show false errors. `]c` and `[c` go through
 for `.graph.lua` files. `lineit diff A B` also takes `REV:path`, read with
 `git show` and placed in the working tree from `git rev-parse --show-toplevel`
 (or from here for `REV:./path`).
+
+Ids: Ctrl+G takes squares out of the canvas into the subgraph keeping their
+ids there, and puts one new square in, so what moved shows in a diff as it
+was. A tab made by `Tab::view` isn't kept when the editor rebuilds itself.
 
 = Bisect <sec-bisect>
 

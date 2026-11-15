@@ -327,3 +327,19 @@ fn arranging_a_canvas_with_a_wire_to_a_square_that_isnt_there() {
     // the id a wire goes to isn't handed out to a new square
     assert_eq!(c.next_id(), 9);
 }
+
+#[test]
+fn mirroring_a_square_changes_nothing_that_runs() {
+    let reg = registry();
+    let src = r#"return { lineit = 1, squares = {
+        { id = 1, module = "flow/entry" },
+        { id = 2, module = "math/add", fields = { a = "1", b = "2" } },
+        { id = 3, module = "io/print" },
+    }, links = { { 1, "then", 3, "tick" }, { 2, "result", 3, "value" } } }"#;
+    let mirrored = src.replace(r#"{ id = 2, module = "math/add","#, r#"{ id = 2, module = "math/add", mirror = true,"#);
+    assert_ne!(src, mirrored);
+    let (a, b) = (lowered(&reg, src), lowered(&reg, &mirrored));
+    assert!(a.diags.is_empty() && b.diags.is_empty());
+    assert_eq!(format!("{:?}", a.program), format!("{:?}", b.program));
+    assert!(read_canvas(&mirrored, "t").unwrap().square(2).unwrap().mirror);
+}

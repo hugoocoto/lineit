@@ -78,6 +78,8 @@ pub enum Act {
     },
     Delete,
     Yank,
+    /// Mirrors the selected squares, left to right.
+    Mirror,
     Paste(bool),
     Undo(usize),
     Redo(usize),
@@ -266,6 +268,7 @@ impl Vim {
                 vec![]
             }
             Input::Char('x') => self.after_operator(Act::Delete),
+            Input::Char('m') => self.after_operator(Act::Mirror),
             Input::Char('H') => self.done(vec![Act::Shove(Dir::Left, n)]),
             Input::Char('J') => self.done(vec![Act::Shove(Dir::Down, n)]),
             Input::Char('K') => self.done(vec![Act::Shove(Dir::Up, n)]),
@@ -562,6 +565,7 @@ pub enum Ex {
     Subgraph,
     Disconnect,
     Dup,
+    Mirror,
     OpenSubgraph,
     Undo,
     Redo,
@@ -600,6 +604,7 @@ pub const COMMANDS: &[&str] = &[
     "dup",
     "edit",
     "help",
+    "mirror",
     "output",
     "clear",
     "quit",
@@ -676,6 +681,7 @@ pub fn parse_ex(line: &str) -> Result<Ex, String> {
         "subgraph" | "sub" => no_args(Ex::Subgraph),
         "disconnect" | "disc" => no_args(Ex::Disconnect),
         "dup" | "duplicate" => no_args(Ex::Dup),
+        "mirror" => no_args(Ex::Mirror),
         "open" | "gd" => no_args(Ex::OpenSubgraph),
         "undo" => no_args(Ex::Undo),
         "redo" => no_args(Ex::Redo),
@@ -760,6 +766,7 @@ NORMAL (the focused square has a ring; counts work: 3j)
                      on the left, Ol flush on its right
   a + h j k l        the same, not wired; aa where the view is
   dd  x              delete          yy  copy         p / P  paste right / below
+  m                  mirror: inputs on the right, outputs on the left, and back
   u  Ctrl+R          undo / redo
   v / V              Visual: extend by moving / select the whole chain
   f                  Pin: wire from the keyboard (see below)
@@ -790,7 +797,7 @@ COMMANDS (Tab completes)
   :bisect (record the run, then asked where the bug is; :bisect here starts at
   the focused square; :bisect good | bad | skip | undo | end answer; F7 F8 F9)
   :add module  :set key=value | key | nokey | key! | key?
-  :settings  :subgraph  :open  :disconnect  :dup  :undo  :redo  :help
+  :settings  :subgraph  :open  :disconnect  :dup  :mirror  :undo  :redo  :help
 ";
 
 #[cfg(test)]
@@ -820,6 +827,8 @@ mod tests {
         assert_eq!(keys(&mut v, "dd"), vec![Act::Delete]);
         assert_eq!(keys(&mut v, "yy"), vec![Act::Yank]);
         assert_eq!(keys(&mut v, "x"), vec![Act::Delete]);
+        assert_eq!(keys(&mut v, "m"), vec![Act::Mirror]);
+        assert_eq!(parse_ex("mirror"), Ok(Ex::Mirror));
         assert_eq!(keys(&mut v, "gt"), vec![Act::TabNext(1)]);
         assert_eq!(keys(&mut v, "gT"), vec![Act::TabPrev(1)]);
         assert_eq!(keys(&mut v, "3gt"), vec![Act::TabGo(3)]);
@@ -885,6 +894,8 @@ mod tests {
         assert_eq!(v.mode, Mode::Normal);
         keys(&mut v, "v");
         assert_eq!(keys(&mut v, "y"), vec![Act::Yank, Act::VisualOff]);
+        keys(&mut v, "v");
+        assert_eq!(keys(&mut v, "m"), vec![Act::Mirror, Act::VisualOff]);
         keys(&mut v, "V");
         assert_eq!(v.mode, Mode::Visual);
         assert_eq!(keys(&mut v, "H"), vec![Act::Shove(Dir::Left, 1)]);

@@ -1,7 +1,32 @@
-the text jumps in notes and code modules: checked with events in a headless
-text box (text_tests in canvas.rs): notes and code, typing, cursor, clicks,
-selection, zooming while typing, wrapped notes, tabs, long lines in code: no
-jump; left: look at it once in the real window (no xdotool to drive it here)
+check
+- the text jumps in notes and code modules: checked with events in a headless
+  text box (text_tests in canvas.rs), no jump; left: look at it once in the
+  real window (no xdotool to drive it here)
+- mirrored squares in the real window: labels and fields of a square with
+  fields (math/add) mirrored; whether Ctrl+M is free on macOS (Cmd+M minimizes)
+- CI after the next push: Windows' branch tests (they hung: spinners starved
+  the thread that starts the setter, now they yield), and the stress workflow
+  (12 runs, shuffled, beside busy processes)
+- the lines-of-code workflow's first run (loc.yml): it makes the `stats`
+  branch, and the plot shows at the end of the README; it was only run here
+  with a stand-in for tokei, not with tokei itself
+
+decide
+- the editor and bisect take a code square's output as it comes: a line that
+  arrives late can go to the next poll or the next recorded event (bisect's
+  totals are whole, which event a line belongs to is best effort)
+- a `while` that spins on a global in a compiled program takes its core: with
+  more spinners than cores it starves the other branches (the branch tests
+  did on Windows); yield in compiled loops that wait?
+- a mirrored square counts as moved in a diff (layout), not as a change
+- the pool's threads have 64 MiB stacks and there are as many as cores, not
+  configurable
+- hidden state that's still let through: Python, a class instance called
+  through __call__, `import itertools as it`, an iterator only used in a
+  `for`, a closure stored by unpacking or inside an `if`; Lua, closures made
+  by indirect calls; C#, static properties of types lineit doesn't know
+- stderr lines of a square come after its prints in the output, not in the
+  order it wrote them (two pipes)
 
 C# code squares, what's left: dotnet still keeps a few bytes per code
 (build-start.cache, build-success.cache, in ~/.local/share/dotnet/runfile)
@@ -44,6 +69,12 @@ To do: my reviews.
 Building MessagePack needs the .NET SDK 8.0.4xx (global.json: 8.0.402).
 
 later
+- cache: crates of code squares evicted by count (registry/code/mod.rs
+  evict) leave their files in the shared target/; and a lineit from before
+  the cache's `.used` locks is kept only by its folder's age (7 days)
+- a matplotlib module, to make plots from values dynamically: a square that
+  takes lists (x, y...) and draws a plot as the program runs (shown on the
+  square or saved as an image)
 - faster interpreter: ~60 ns a loop iteration, ~230 ns a square called
   (compiled is ~1000x faster); registers and typed slots instead of Values
 - FFI to C libraries
@@ -53,9 +84,3 @@ later
   installed but broken shows nothing, and the prompt isn't used then); on Windows, lineitw.exe (no console):
   double click, "Open with", code squares (no console windows flashing),
   handing a file to a running lineit's editor and the other way round
-
-
-
-
-I want to be able to mirror or rotate modules so I can invert the direction of
-the wires. The curve of the wires must be modified too.

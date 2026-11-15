@@ -1,0 +1,62 @@
+name: Lines of code
+
+# On every push to main, the lines of code per language over main's history
+# (tokei), plotted (scripts/loc.py) and put on the `stats` branch as loc.svg,
+# with loc.csv, the counts it keeps for the next run. The README shows that
+# file from the branch, so main never changes and there's nothing to pull.
+# The branch is one commit, replaced each time.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# one at a time: each starts from the counts the last one left
+concurrency:
+  group: loc
+  cancel-in-progress: false
+
+jobs:
+  plot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the whole history, to count the commits not counted yet
+          fetch-depth: 0
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/tokei
+          key: tokei-12.1.2-${{ runner.os }}
+
+      - name: Install tokei and matplotlib
+        run: |
+          command -v tokei || cargo install tokei --locked --version 12.1.2
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet matplotlib==3.11.2
+
+      - name: Count and plot
+        run: |
+          if git fetch --quiet origin stats; then
+            git show FETCH_HEAD:loc.csv > loc.csv
+          fi
+          "$RUNNER_TEMP/venv/bin/python" scripts/loc.py loc.csv loc.svg
+
+      - name: Put them on the stats branch
+        run: |
+          d="$RUNNER_TEMP/stats"
+          git worktree add --orphan -b stats-new "$d"
+          cp loc.csv loc.svg "$d"
+          cd "$d"
+          git add loc.csv loc.svg
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit --quiet -m "Lines of code at ${GITHUB_SHA::7}"
+          git push --force origin stats-new:stats

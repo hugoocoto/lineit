@@ -407,6 +407,7 @@ fn lua_handles(stop: &Arc<AtomicBool>) -> crate::ext::Handles {
         kill: Some(Box::new(move || stop.store(true, Ordering::Relaxed))),
         stderr: None,
         stdout: None,
+        readers: Vec::new(),
     }
 }
 

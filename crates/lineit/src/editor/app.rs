@@ -1173,6 +1173,11 @@ impl App {
         }
     }
 
+    /// Mirrors the selected squares (or turns them back, if they all are).
+    pub(super) fn mirror_selection(&mut self) {
+        self.tab().mirror_selection();
+    }
+
     fn delete_selection(&mut self) {
         if self.read_only() {
             return;
@@ -1326,6 +1331,9 @@ impl App {
             && let Some(t) = self.selection_text()
         {
             self.paste(&t, None);
+        }
+        if key(cmd, Key::M) {
+            self.mirror_selection();
         }
         if key(cmd, Key::G) && !self.tab().selected.is_empty() {
             self.subgraph_of = self.tab().selected.clone();
@@ -2565,6 +2573,7 @@ impl eframe::App for App {
                         self.paste(&t, None);
                     }
                 }
+                Action::Mirror => self.mirror_selection(),
                 Action::Copy => {
                     if let Some(t) = self.selection_text() {
                         ctx.copy_text(t);

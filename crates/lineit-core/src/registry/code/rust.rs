@@ -749,11 +749,18 @@ mod tests {
     /// `lineit-rt` ("package collision in the lockfile").
     #[test]
     fn versions_of_lineit_dont_share_crates() {
-        let source = format!("pub fn f() -> i64 {{ {} }}\n", std::process::id());
-        let (a_rt, a) = (crate::codegen::write_runtime().unwrap(), write_crate("code.rs", &source, "").unwrap());
-        crate::codegen::RT_SALT.with(|s| *s.borrow_mut() = "another version".into());
-        let (b_rt, b) = (crate::codegen::write_runtime().unwrap(), write_crate("code.rs", &source, "").unwrap());
-        crate::codegen::RT_SALT.with(|s| s.borrow_mut().clear());
+        // in a cache of its own: the other version isn't left in the user's
+        let cache = std::env::temp_dir().join(format!("lineit-rust-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let ((a_rt, a), (b_rt, b)) = crate::paths::with_cache(&cache, || {
+            let source = "pub fn f() -> i64 { 1 }\n";
+            let a = (crate::codegen::write_runtime().unwrap(), write_crate("code.rs", source, "").unwrap());
+            crate::codegen::RT_SALT.with(|s| *s.borrow_mut() = "another version".into());
+            let b = (crate::codegen::write_runtime().unwrap(), write_crate("code.rs", source, "").unwrap());
+            crate::codegen::RT_SALT.with(|s| s.borrow_mut().clear());
+            (a, b)
+        });
+        assert!(a_rt.starts_with(&cache) && b.0.starts_with(&cache), "wrote outside its cache");
         assert_ne!(a_rt, b_rt);
         assert_ne!(a.0, b.0, "the same crate for two runtimes");
         assert_ne!(a.1, b.1, "the same library name for two runtimes");
@@ -761,6 +768,7 @@ mod tests {
             let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
             assert!(toml.contains(&rt.to_string_lossy().replace('\\', "/")), "{toml}");
         }
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     struct Cx;

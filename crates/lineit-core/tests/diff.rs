@@ -170,3 +170,14 @@ fn what_differs_shows_in_both_front_ends() {
         assert!(shown.iter().any(|(_, l)| l.contains("\\r") || l.contains("no newline")), "{shown:?}");
     }
 }
+
+#[test]
+fn a_mirrored_square_is_layout_like_a_move() {
+    let a = base();
+    let mut b = base();
+    b.square_mut(2).unwrap().mirror = true;
+    let d = diff::diff(&a, &b);
+    assert!(d.is_empty());
+    assert_eq!(d.moved.iter().map(|s| s.id).collect::<Vec<_>>(), [2]);
+    assert_eq!(diff::merge(&a, &b).squares[&2], Mark::Moved);
+}

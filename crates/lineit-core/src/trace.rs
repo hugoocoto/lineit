@@ -240,6 +240,12 @@ pub fn record(prog: Program, base_dir: PathBuf, limit: usize, stop: Arc<AtomicBo
         }
     }
     let mut trace = rec.trace;
+    // what the processes wrote last is read after they end: it goes with the last square that ran (each event has what had been read by its end)
+    it.w.end_externals();
+    let rest = it.w.take_output();
+    if let Some(last) = trace.events.last_mut() {
+        last.printed.extend(rest);
+    }
     trace.error = error;
     // `flow/stop` sets the flag too: that's the program ending
     trace.truncated |= stop.load(Ordering::Relaxed) && !it.w.ended.load(Ordering::Relaxed);

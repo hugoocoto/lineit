@@ -33,7 +33,10 @@ fn what_a_square_writes_to_stderr_while_it_runs_goes_to_stderr() {
 /// Runs a canvas with one square in LANGUAGE (Lua: "") that writes "mine" itself.
 fn says(language: &str, code: &str) -> (Option<i32>, String, String) {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let file = dir.join(format!("says_{}.lua", if language.is_empty() { "lua" } else { language }));
+    // one file for each canvas: the tests run at once
+    let tag =
+        std::hash::BuildHasher::hash_one(&std::hash::BuildHasherDefault::<std::hash::DefaultHasher>::default(), code);
+    let file = dir.join(format!("says_{}_{tag:x}.lua", if language.is_empty() { "lua" } else { language }));
     let lang = if language.is_empty() { String::new() } else { format!("language = {language:?}, ") };
     let canvas = format!(
         "return {{ lineit = 1, squares = {{ {{ id = 1, module = \"flow/entry\" }}, {{ id = 2, module = \"code/function\", params = {{ {lang}code = {code:?} }} }} }}, links = {{ {{ 1, \"then\", 2, \"tick\" }} }} }}"
@@ -80,4 +83,29 @@ fn csharp_stdout_stays_on_stdout() {
 #[test]
 fn lua_stdout_stays_on_stdout() {
     stays_on_stdout("", "function say()\n    print(\"mine\")\nend\n");
+}
+
+/// What a process writes right before the program ends is all shown: the
+/// thread that reads its pipe may be behind when its last answer comes.
+#[test]
+fn what_a_square_writes_last_isnt_lost() {
+    let n = 20000;
+    let want = (0..n).map(|i| format!("e{i}\n")).collect::<String>();
+    let (code, stdout, stderr) = says(
+        "python",
+        &format!(
+            "import sys\n\ndef say():\n    sys.stderr.write(\"\".join(\"e%d\\n\" % i for i in range({n})))\n    sys.stderr.flush()\n"
+        ),
+    );
+    assert_eq!((code, stdout.as_str()), (Some(0), ""));
+    assert!(stderr == want, "{} lines of {n}", stderr.lines().count());
+    // C's raw `printf` goes to the process's stdout, the program's
+    let (code, stdout, stderr) = says(
+        "c",
+        &format!(
+            "#include <stdio.h>\nvoid say(void) {{\n    for (int i = 0; i < {n}; i++) printf(\"e%d\\n\", i);\n    fflush(stdout);\n}}\n"
+        ),
+    );
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert!(stdout == want, "{} lines of {n}", stdout.lines().count());
 }

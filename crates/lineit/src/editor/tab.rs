@@ -336,6 +336,15 @@ impl Tab {
         }
     }
 
+    /// Mirrors the selected squares, or turns them back if they all are.
+    pub fn mirror_selection(&mut self) {
+        if self.label.is_some() {
+            return;
+        }
+        let sel = self.selected.clone();
+        self.canvas.mirror(&sel);
+    }
+
     pub fn undo(&mut self) {
         if self.label.is_some() {
             return;

@@ -276,6 +276,8 @@ mod tests {
 
     /// Branches that wait for a sibling, as a `while` on a global does:
     /// all of them have to run at once, however many threads there are.
+    /// They give their core away while they wait: 200 spinners on a runner
+    /// with 4 starve the thread that starts the setter (Windows took minutes).
     #[test]
     fn branches_that_wait_for_each_other() {
         watchdog();
@@ -287,7 +289,7 @@ mod tests {
                     go.store(true, Ordering::SeqCst);
                 } else {
                     while !go.load(Ordering::SeqCst) {
-                        std::hint::spin_loop();
+                        std::thread::yield_now();
                     }
                     spun.fetch_add(1, Ordering::SeqCst);
                 }
@@ -312,7 +314,7 @@ mod tests {
                         go.store(true, Ordering::SeqCst);
                     } else {
                         while !go.load(Ordering::SeqCst) {
-                            std::hint::spin_loop();
+                            std::thread::yield_now();
                         }
                         spun.fetch_add(1, Ordering::SeqCst);
                     }

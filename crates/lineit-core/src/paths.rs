@@ -56,7 +56,26 @@ pub fn data_dir() -> PathBuf {
 
 /// Compiled programs' builds, packages' Rust modules built for this machine.
 pub fn cache_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(p) = CACHE.with(|c| c.borrow().clone()) {
+        return p;
+    }
     base("cache")
+}
+
+#[cfg(test)]
+thread_local! {
+    static CACHE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs F with the cache in ROOT, for this thread only (the environment is
+/// the process's, and tests run side by side).
+#[cfg(test)]
+pub fn with_cache<T>(root: &std::path::Path, f: impl FnOnce() -> T) -> T {
+    let before = CACHE.with(|c| c.replace(Some(root.to_path_buf())));
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    CACHE.with(|c| *c.borrow_mut() = before);
+    out.unwrap_or_else(|e| std::panic::resume_unwind(e))
 }
 
 pub fn modules_dir() -> PathBuf {

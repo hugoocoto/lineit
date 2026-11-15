@@ -3,6 +3,7 @@
 //! (the `lineit` crate) are on top of this.
 
 pub mod bisect;
+pub mod cache;
 pub mod codegen;
 pub mod codetest;
 pub mod config;

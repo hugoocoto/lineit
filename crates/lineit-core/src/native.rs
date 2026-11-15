@@ -38,7 +38,10 @@ fn dylib_name(name: &str) -> String {
 /// Builds the crate in CRATE_DIR, and says where its library is.
 pub fn build(crate_dir: &Path, crate_name: &str, log: &mut dyn FnMut(&str)) -> Result<PathBuf, String> {
     let rt = crate::codegen::write_runtime()?;
-    let target = crate::paths::cache_dir().join("native");
+    // a target of its own for each runtime: another lineit's build of the same
+    // crate would replace this one's library (same name, built with its runtime),
+    // while one version's processes share theirs, as cargo locks it
+    let target = crate::paths::cache_dir().join("native").join(crate::codegen::runtime_id());
     let cargo = std::env::var_os("CARGO").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cargo"));
     let run = |offline: bool| {
         let mut cmd = lineit_rt::ext::command(&cargo);
@@ -293,6 +296,8 @@ struct Helper {
     child: Arc<Mutex<std::process::Child>>,
     stderr: Option<Arc<Mutex<Vec<String>>>>,
     stdout: Option<Arc<Mutex<Vec<String>>>>,
+    /// The threads that read them.
+    readers: Vec<lineit_rt::ext::Reader>,
     to: Stream,
     from: std::io::BufReader<Stream>,
 }
@@ -462,10 +467,11 @@ impl Helper {
             .stderr(out());
         let mut child = command.spawn().map_err(|e| format!("couldn't start {} ({e})", exe.display()))?;
         // what it writes, both ways, is the library's: kept for the output, each apart
-        let stderr = lineit_rt::ext::stderr_of(&mut child);
+        let (stderr, reader) = lineit_rt::ext::stderr_of(&mut child).unzip();
+        let mut readers: Vec<_> = reader.into_iter().collect();
         let stdout = child.stdout.take().map(|o| {
             let lines = Arc::new(Mutex::new(Vec::new()));
-            lineit_rt::ext::keep_lines(o, lines.clone());
+            readers.push(lineit_rt::ext::keep_lines(o, lines.clone()));
             lines
         });
         // it, and only it (it says the token), connects
@@ -494,7 +500,7 @@ impl Helper {
             }
         };
         let from = std::io::BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
-        Ok(Helper { child: Arc::new(Mutex::new(child)), stderr, stdout, to: stream, from })
+        Ok(Helper { child: Arc::new(Mutex::new(child)), stderr, stdout, readers, to: stream, from })
     }
 
     /// What went wrong with the process: it crashed, most likely.
@@ -686,6 +692,7 @@ impl Ext for Dylib {
             })),
             stderr: h.stderr.clone(),
             stdout: h.stdout.clone(),
+            readers: h.readers.clone(),
         }
     }
 
@@ -748,5 +755,41 @@ impl Ext for Dylib {
 
     fn set_state(&mut self, inst: usize, state: &[(&str, Value)]) -> Result<(), String> {
         self.call(inst, CALL_SET_STATE, "", state).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two versions of lineit (runtimes that differ) building the same
+    /// package's crate share the cache: the library of one can't be the
+    /// file of the other, or the one built last is what both load (made with
+    /// a runtime that isn't theirs), and a build under a loaded library is
+    /// replaced by the other's.
+    #[test]
+    fn versions_of_lineit_dont_share_libraries() {
+        let root = std::env::temp_dir().join(format!("lineit-native-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("pkg");
+        crate::package::scaffold(&dir, true).unwrap();
+        let krate = dir.join("native");
+        let name = "pkg-native";
+        // in a cache of its own: the other version isn't left in the user's
+        let cache = root.join("cache");
+        crate::paths::with_cache(&cache, || {
+            let a = build(&krate, name, &mut |_| {}).unwrap();
+            let a_bytes = std::fs::read(&a).unwrap();
+            crate::codegen::RT_SALT.with(|s| *s.borrow_mut() = "another version".into());
+            let b = build(&krate, name, &mut |_| {});
+            crate::codegen::RT_SALT.with(|s| s.borrow_mut().clear());
+            let b = b.unwrap();
+            assert!(a.starts_with(&cache) && b.starts_with(&cache), "built outside its cache");
+            assert_ne!(a, b, "the same library for two runtimes");
+            assert_eq!(std::fs::read(&a).unwrap(), a_bytes, "the library of one runtime was replaced by another's");
+            // the same runtime again shares its own build
+            assert_eq!(build(&krate, name, &mut |_| {}).unwrap(), a);
+        });
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

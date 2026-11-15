@@ -402,6 +402,18 @@ impl World {
         }
     }
 
+    /// The program is over: ends the processes of extensions and waits for
+    /// what they wrote to be read, so the next [`World::take_split`] has all
+    /// of it (a line written just before the end may still be on its way
+    /// from the pipe). Nothing runs in them after this.
+    pub fn end_externals(&self) {
+        self.kill_externals();
+        let until = std::time::Instant::now() + lineit_rt::ext::SETTLE;
+        for h in &self.handles {
+            lock(h).settle(until);
+        }
+    }
+
     /// The variables of the canvas, by name, and their values now.
     pub fn variables(&self) -> Vec<(String, Value)> {
         self.prog.vars.iter().map(|(n, s)| (n.clone(), self.slot(*s as usize))).collect()
@@ -1026,7 +1038,12 @@ impl Interp {
                         let next = map.keys().map(|o| o + 1).max().unwrap_or(0);
                         m = Box::new(Renumbered { inner: m, map, next });
                     }
-                    *lock(&old.handles[i]) = m.handles();
+                    // what the one that ended wrote is kept for the output
+                    let gone = std::mem::replace(&mut *lock(&old.handles[i]), m.handles());
+                    gone.settle(std::time::Instant::now() + lineit_rt::ext::SETTLE);
+                    for kept in [&gone.stdout, &gone.stderr].into_iter().flatten() {
+                        lock(&old.output).append(&mut lock(kept));
+                    }
                     *lock(&old.exts[i]) = m;
                     Ok(())
                 });
@@ -1195,8 +1212,10 @@ impl Interp {
         }
         // done: what's left of the modules that went away is shown, and they end
         for i in (0..oldp.exts.len()).filter(|&i| !taken[i]) {
+            // it ends (its process too), and what it wrote last is read
             *lock(&old.exts[i]) = Box::new(Gone);
             let h = lock(&old.handles[i]);
+            h.settle(std::time::Instant::now() + lineit_rt::ext::SETTLE);
             for kept in [&h.stdout, &h.stderr].into_iter().flatten() {
                 lock(&w.output).append(&mut lock(kept));
             }
@@ -1805,6 +1824,18 @@ pub fn run_split(
     mut show: impl FnMut((Vec<String>, Vec<String>)),
 ) -> Result<(), String> {
     let mut it = Interp::new(prog, base_dir)?;
+    let r = run_shown(&mut it, seconds, &mut show);
+    // what the processes wrote last is read after they end
+    it.w.end_externals();
+    show(it.w.take_split());
+    r
+}
+
+fn run_shown(
+    it: &mut Interp,
+    seconds: Option<f64>,
+    show: &mut impl FnMut((Vec<String>, Vec<String>)),
+) -> Result<(), String> {
     // what it printed is printed before what went wrong, if anything did
     let r = it.start();
     show(it.w.take_split());

@@ -117,19 +117,37 @@ pub fn runtime_id() -> String {
     format!("{}-{:016x}", lineit_rt::VERSION, fnv(&h))
 }
 
-/// Writes the runtime out, once per version of it, and says where.
+/// Writes the runtime out, once per version of it, and says where. This
+/// process holds it until it ends ([`crate::cache`]), and the first time
+/// deletes those of versions nobody uses.
 pub fn write_runtime() -> Result<PathBuf, String> {
-    let dir = crate::paths::cache_dir().join("rt").join(runtime_id());
+    let (cache, id) = (crate::paths::cache_dir(), runtime_id());
+    // (the tests of this crate don't delete the user's)
+    if crate::cache::hold(&cache, &id)? && !cfg!(test) {
+        crate::cache::evict(&cache, &id, std::time::SystemTime::now());
+    }
+    let dir = cache.join("rt").join(id);
     if !dir.join("src/lib.rs").exists() {
-        let tmp = dir.with_extension("tmp");
-        let _ = std::fs::remove_dir_all(&tmp);
-        for (name, src) in RT_FILES {
-            let p = tmp.join(name);
-            std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| format!("{}: {e}", p.display()))?;
-            std::fs::write(&p, src).map_err(|e| format!("{}: {e}", p.display()))?;
+        // a folder of its own for each writer (other processes and threads
+        // write the same runtime at once), moved in whole: the first one
+        // there stays, as another may be building with it
+        static WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = dir.with_file_name(format!("{}.{}-{n}.tmp", runtime_id(), std::process::id()));
+        let written = (|| {
+            for (name, src) in RT_FILES {
+                let p = tmp.join(name);
+                std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| format!("{}: {e}", p.display()))?;
+                std::fs::write(&p, src).map_err(|e| format!("{}: {e}", p.display()))?;
+            }
+            std::fs::rename(&tmp, &dir).map_err(|e| format!("{}: {e}", dir.display()))
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            if !dir.join("src/lib.rs").exists() {
+                written?;
+            }
         }
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::rename(&tmp, &dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     Ok(dir)
 }

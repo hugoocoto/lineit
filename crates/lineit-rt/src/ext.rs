@@ -111,6 +111,54 @@ pub struct Handles {
     /// own, as if it wasn't captured (a process whose stdout is its talk with
     /// lineit has none: what the code prints comes in its answers).
     pub stdout: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+    /// The threads that read those lines: they have all of them once these
+    /// are done ([`Handles::settle`]).
+    pub readers: Vec<Reader>,
+}
+
+impl Handles {
+    /// Waits for the threads that read what the process wrote to reach its
+    /// end, up to UNTIL: after the process ended (or was killed) what it
+    /// wrote is all in the buffers then. Not forever: a process it started
+    /// may hold the pipe open after it.
+    pub fn settle(&self, until: std::time::Instant) {
+        for r in &self.readers {
+            r.wait(until);
+        }
+    }
+}
+
+/// How long the end of a program waits for what its processes wrote to be
+/// read ([`Handles::settle`]): the pipe closes when the process is gone, so
+/// it takes no time unless something else holds it.
+pub const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A thread that reads lines ([`keep_lines`]): says when it reached the end.
+#[derive(Clone)]
+pub struct Reader(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl Reader {
+    /// Waits for the end of what it reads, up to UNTIL; whether it came.
+    pub fn wait(&self, until: std::time::Instant) -> bool {
+        let (done, cv) = &*self.0;
+        let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
+        while !*done {
+            let Some(left) = until.checked_duration_since(std::time::Instant::now()) else { return false };
+            done = cv.wait_timeout(done, left).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        true
+    }
+}
+
+/// Says its reader is done when dropped, whatever ends the thread.
+struct Done(Reader);
+
+impl Drop for Done {
+    fn drop(&mut self) {
+        let (done, cv) = &*(self.0).0;
+        *done.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_all();
+    }
 }
 
 static CAPTURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -128,21 +176,28 @@ pub fn captures_stderr() -> bool {
 
 /// Where a child process's stderr goes: kept in a buffer, read by a
 /// thread, if it's captured; the program's own stderr if not.
-pub fn stderr_of(child: &mut std::process::Child) -> Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>> {
+pub fn stderr_of(child: &mut std::process::Child) -> Option<(std::sync::Arc<std::sync::Mutex<Vec<String>>>, Reader)> {
     let err = child.stderr.take()?;
     let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    keep_lines(err, lines.clone());
-    Some(lines)
+    let reader = keep_lines(err, lines.clone());
+    Some((lines, reader))
 }
 
 /// The lines of FROM, as they come, into LINES (by a thread of its own).
-pub fn keep_lines(from: impl std::io::Read + Send + 'static, lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+pub fn keep_lines(
+    from: impl std::io::Read + Send + 'static,
+    lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> Reader {
+    let reader = Reader(std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())));
+    let done = Done(reader.clone());
     std::thread::spawn(move || {
+        let _done = done;
         use std::io::BufRead;
         for line in std::io::BufReader::new(from).lines().map_while(Result::ok) {
             lines.lock().unwrap_or_else(|e| e.into_inner()).push(line);
         }
     });
+    reader
 }
 
 /// How a child process's stderr is set up: piped if it's captured.

@@ -38,6 +38,8 @@ pub struct Process {
     /// while a call waits for it.
     child: Arc<Mutex<Child>>,
     stderr: Option<Arc<Mutex<Vec<String>>>>,
+    /// The thread that reads it.
+    reader: Option<crate::ext::Reader>,
     /// Whether it frees squares when asked (`drop`).
     drops: bool,
     to: ChildStdin,
@@ -107,11 +109,12 @@ impl Process {
                 Ok(mut child) => {
                     let to = child.stdin.take().ok_or("no stdin")?;
                     let from = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-                    let stderr = crate::ext::stderr_of(&mut child);
+                    let (stderr, reader) = crate::ext::stderr_of(&mut child).unzip();
                     let mut p = Process {
                         name: name.into(),
                         child: Arc::new(Mutex::new(child)),
                         stderr,
+                        reader,
                         drops: false,
                         to,
                         from,
@@ -299,6 +302,7 @@ impl Ext for Process {
             })),
             stderr: self.stderr.clone(),
             stdout: None,
+            readers: self.reader.clone().into_iter().collect(),
         }
     }
 

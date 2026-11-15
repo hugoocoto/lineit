@@ -462,7 +462,8 @@ pub fn run_cases_within(
             if run.is_err() {
                 it.w.kill_externals();
             }
-            // what it did, however it ended
+            // what it did, however it ended (what its processes wrote last is read after they end)
+            it.w.end_externals();
             r.error = run.err();
             r.checks = it.w.checks();
             r.output = it.w.take_output();

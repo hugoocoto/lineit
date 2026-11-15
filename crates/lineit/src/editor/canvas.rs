@@ -70,10 +70,12 @@ pub fn geometry(sq: &Square, info: Option<&SquareInfo>, params: usize, width: f3
     let h = (extra_top + extra + 6.0 - top.y).max(HEADER + ROW);
     let rect = Rect::from_min_size(top, vec2(width, h));
     let pin_y = |i: usize| pins_top + ROW * i as f32 + ROW / 2.0;
+    // a mirrored square has them the other way round
+    let (left, right) = if sq.mirror { (top.x + width, top.x) } else { (top.x, top.x + width) };
     Geo {
         rect,
-        ins: (0..ni).map(|i| pos2(top.x, pin_y(i))).collect(),
-        outs: (0..no).map(|i| pos2(top.x + width, pin_y(i))).collect(),
+        ins: (0..ni).map(|i| pos2(left, pin_y(i))).collect(),
+        outs: (0..no).map(|i| pos2(right, pin_y(i))).collect(),
         params_top,
         extra_top,
     }
@@ -108,6 +110,8 @@ pub enum Action {
     Copy,
     Delete,
     Duplicate,
+    /// Mirror the selection, left to right.
+    Mirror,
     /// Open the report of the tests.
     ShowReport,
     /// Bisect from the last run of this square.
@@ -519,11 +523,18 @@ pub struct Ctx<'a> {
     pub bisect: Option<super::bisect::Draw>,
 }
 
+/// The way a pin faces, out of its square: outputs to the right and inputs
+/// to the left, the other way in a mirrored one.
+pub fn pin_dir(mirror: bool, output: bool) -> Vec2 {
+    vec2(if output != mirror { 1.0 } else { -1.0 }, 0.0)
+}
+
 /// The curve of a wire from A to B, as the C editor drew it: its control
-/// points half the larger of the two distances out, along the pins.
-fn bezier(a: Pos2, b: Pos2, _zoom: f32) -> [Pos2; 4] {
+/// points half the larger of the two distances out, each along the way its
+/// pin FACES (DA, DB: unit vectors out of the square).
+fn bezier(a: Pos2, da: Vec2, b: Pos2, db: Vec2) -> [Pos2; 4] {
     let d = (b.x - a.x).abs().max((b.y - a.y).abs()) * 0.5;
-    [a, a + vec2(d, 0.0), b - vec2(d, 0.0), b]
+    [a, a + da * d, b + db * d, b]
 }
 
 /// A pin as the C editor drew it: a dark circle, with a dot of its color if
@@ -559,8 +570,7 @@ fn distance_to_bezier(p: &[Pos2; 4], q: Pos2) -> f32 {
     best
 }
 
-fn draw_wire(painter: &egui::Painter, a: Pos2, b: Pos2, color: Color32, width: f32, zoom: f32) {
-    let pts = bezier(a, b, zoom);
+fn draw_wire(painter: &egui::Painter, pts: [Pos2; 4], color: Color32, width: f32) {
     painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
         pts,
         false,
@@ -1021,6 +1031,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         }
     };
 
+    // which way the pins of each square face
+    let mirrored: BTreeSet<SquareId> = cx.tab.canvas.squares.iter().filter(|s| s.mirror).map(|s| s.id).collect();
+    let dir_of = |id: SquareId, output: bool| pin_dir(mirrored.contains(&id), output);
+
     // wires
     let wire_w = cx.cfg.num("canvas.wire_width") as f32 * z.max(0.5);
     let mut wire_curves: Vec<(Link, [Pos2; 4])> = Vec::new();
@@ -1029,6 +1043,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             continue;
         };
         let (a, b) = (view.to_screen(a), view.to_screen(b));
+        let curve = bezier(a, dir_of(l.from, true), b, dir_of(l.to, false));
         let selected = cx.tab.selected_links.contains(l);
         let mut color = theme.of(ty.as_ref());
         // in a diff: a wire that's new or gone
@@ -1041,13 +1056,13 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         }
         // two wires into one data input: a red halo, so a diff's colors still show
         if cx.tab.lowered.double.contains(l) {
-            draw_wire(&painter, a, b, theme.error, wire_w + 7.0, z);
+            draw_wire(&painter, curve, theme.error, wire_w + 7.0);
         }
         if selected {
-            draw_wire(&painter, a, b, theme.selection, wire_w + 4.0, z);
+            draw_wire(&painter, curve, theme.selection, wire_w + 4.0);
         }
-        draw_wire(&painter, a, b, color, wire_w, z);
-        wire_curves.push((l.clone(), bezier(a, b, z)));
+        draw_wire(&painter, curve, color, wire_w);
+        wire_curves.push((l.clone(), curve));
     }
 
     // what's wrong, by square
@@ -1231,6 +1246,14 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 cx.actions.push(Action::Duplicate);
                 ui.close();
             }
+            if ui
+                .button("Mirror (Ctrl+M)")
+                .on_hover_text("Inputs on the right, outputs on the left, and back")
+                .clicked()
+            {
+                cx.actions.push(Action::Mirror);
+                ui.close();
+            }
             if ui.button("Copy (Ctrl+C)").clicked() {
                 cx.actions.push(Action::Copy);
                 ui.close();
@@ -1286,7 +1309,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 draw_pin(&painter, p, PIN * z, color, theme.pin_border, is_wired);
                 let label = painter.layout_no_wrap(pin.name.clone(), font(12.0), theme.dim);
                 let label_w = label.size().x;
-                painter.galley(p + vec2(10.0 * z, -label.size().y / 2.0), label, theme.dim);
+                // its name on the inside of the square, the other way if mirrored
+                let at = if sq.mirror { -label_w - 10.0 * z } else { 10.0 * z };
+                painter.galley(p + vec2(at, -label.size().y / 2.0), label, theme.dim);
                 let pin_resp = ui.interact(
                     Rect::from_center_size(p, Vec2::splat(PIN * z * 3.0)),
                     Id::unique(("in", cx.tab_id, id, i)),
@@ -1312,14 +1337,15 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 }
                 // its field
                 if let (Some(default), false) = (&pin.field, is_wired) {
-                    let left = p.x + 10.0 * z + label_w + 6.0 * z;
-                    // up to the label of the output on its row, if there's one
-                    let right = match info.sig.outputs.get(i) {
-                        Some(o) => {
-                            let ow = painter.layout_no_wrap(o.name.clone(), font(12.0), theme.dim).size().x;
-                            srect.right() - 10.0 * z - ow - 10.0 * z
-                        }
-                        None => srect.right() - 10.0 * z,
+                    // between the label of the input and the one of the output on its row, if there's one
+                    let ow = match info.sig.outputs.get(i) {
+                        Some(o) => painter.layout_no_wrap(o.name.clone(), font(12.0), theme.dim).size().x + 10.0 * z,
+                        None => 0.0,
+                    };
+                    let (left, right) = if sq.mirror {
+                        (srect.left() + 10.0 * z + ow, p.x - 10.0 * z - label_w - 6.0 * z)
+                    } else {
+                        (p.x + 10.0 * z + label_w + 6.0 * z, srect.right() - 10.0 * z - ow)
                     };
                     if right - left < 16.0 * z {
                         continue;
@@ -1349,7 +1375,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
                 let color = theme.of(ty.as_ref());
                 let out_wired = wired_from.contains(&(id, pin.name.clone()));
                 draw_pin(&painter, p, PIN * z, color, theme.pin_border, out_wired);
-                painter.text(p - vec2(10.0 * z, 0.0), Align2::RIGHT_CENTER, &pin.name, font(12.0), theme.dim);
+                let (at, align) = if sq.mirror { (10.0, Align2::LEFT_CENTER) } else { (-10.0, Align2::RIGHT_CENTER) };
+                painter.text(p + vec2(at * z, 0.0), align, &pin.name, font(12.0), theme.dim);
                 let pin_resp = ui.interact(
                     Rect::from_center_size(p, Vec2::splat(PIN * z * 3.0)),
                     Id::unique(("out", cx.tab_id, id, o)),
@@ -1600,7 +1627,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         for h in &cx.state.vim.hints {
             let Some((p, _)) = pin_pos(h.pin.sq, &h.pin.name, h.pin.output) else { continue };
             let p = view.to_screen(p);
-            let c = p + vec2(if h.pin.output { 18.0 } else { -18.0 } * zz, 0.0);
+            let c = p + dir_of(h.pin.sq, h.pin.output) * 18.0 * zz;
             let (fill, text) = if h.cursor { (theme.step, Color32::BLACK) } else { (theme.accent, Color32::BLACK) };
             painter.circle_filled(c, 9.0 * zz, fill);
             painter.text(c, Align2::CENTER_CENTER, &h.label, FontId::monospace(12.0 * zz), text);
@@ -1746,12 +1773,14 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
         match p {
             Pending::From(sq, out, ty) => {
                 if let Some((a, _)) = pin_pos(*sq, out, true) {
-                    draw_wire(&painter, view.to_screen(a), at, theme.of(ty.as_ref()), wire_w, z);
+                    let (a, da) = (view.to_screen(a), dir_of(*sq, true));
+                    draw_wire(&painter, bezier(a, da, at, -da), theme.of(ty.as_ref()), wire_w);
                 }
             }
             Pending::To(sq, input, ty) => {
                 if let Some((b, _)) = pin_pos(*sq, input, false) {
-                    draw_wire(&painter, at, view.to_screen(b), theme.of(ty.as_ref()), wire_w, z);
+                    let (b, db) = (view.to_screen(b), dir_of(*sq, false));
+                    draw_wire(&painter, bezier(at, -db, b, db), theme.of(ty.as_ref()), wire_w);
                 }
             }
         }
@@ -1776,12 +1805,14 @@ pub fn show(ui: &mut egui::Ui, cx: &mut Ctx) {
             }
             Drag::Wire { from, ty, .. } => {
                 if let Some((a, _)) = pin_pos(from.0, &from.1, true) {
-                    draw_wire(&painter, view.to_screen(a), p, theme.of(ty.as_ref()), wire_w, z);
+                    let (a, da) = (view.to_screen(a), dir_of(from.0, true));
+                    draw_wire(&painter, bezier(a, da, p, -da), theme.of(ty.as_ref()), wire_w);
                 }
             }
             Drag::WireBack { to, ty } => {
                 if let Some((b, _)) = pin_pos(to.0, &to.1, false) {
-                    draw_wire(&painter, p, view.to_screen(b), theme.of(ty.as_ref()), wire_w, z);
+                    let (b, db) = (view.to_screen(b), dir_of(to.0, false));
+                    draw_wire(&painter, bezier(p, -db, b, db), theme.of(ty.as_ref()), wire_w);
                 }
             }
         }
@@ -2617,5 +2648,233 @@ mod text_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+    use lineit_core::config::Config;
+    use lineit_core::model::{Canvas, Link};
+    use lineit_core::registry::Registry;
+    use std::sync::Arc;
+
+    const X: Vec2 = vec2(1.0, 0.0);
+    const Y: Vec2 = vec2(0.0, 1.0);
+
+    #[test]
+    fn pins_face_out_of_their_square() {
+        assert_eq!(pin_dir(false, true), X);
+        assert_eq!(pin_dir(false, false), -X);
+        assert_eq!(pin_dir(true, true), -X);
+        assert_eq!(pin_dir(true, false), X);
+    }
+
+    #[test]
+    fn the_curve_leaves_each_end_the_way_its_pin_faces() {
+        let (a, b) = (pos2(0.0, 0.0), pos2(100.0, 40.0));
+        // as always: an output facing right, an input facing left
+        let c = bezier(a, X, b, -X);
+        assert_eq!((c[1] - a, c[2] - b), (vec2(50.0, 0.0), vec2(-50.0, 0.0)));
+        // every way a pin can face pulls its control point that way
+        for (da, db) in [(X, X), (-X, -X), (-X, X), (Y, -Y), (-Y, Y), (X, Y)] {
+            let c = bezier(a, da, b, db);
+            assert_eq!((c[0], c[3]), (a, b));
+            assert_eq!(c[1] - a, da * 50.0);
+            assert_eq!(c[2] - b, db * 50.0);
+        }
+        // the curve starts out along the first pin, and arrives along the second
+        let c = bezier(a, -X, b, X);
+        assert!(bezier_point(&c, 0.05).x < 0.0 && bezier_point(&c, 0.95).x > 100.0);
+        // the larger of the two distances, whichever it is
+        assert_eq!(bezier(a, X, pos2(10.0, 80.0), -X)[1], pos2(40.0, 0.0));
+    }
+
+    fn two_squares(mirror: [bool; 2]) -> Canvas {
+        let mut c = Canvas::default();
+        c.add(Square { mirror: mirror[0], ..Square::new(1, "flow/entry", 0.0, 0.0) });
+        c.add(Square { mirror: mirror[1], ..Square::new(2, "io/print", 300.0, 400.0) });
+        c.connect(Link::new(1, "then", 2, "tick"), false);
+        c
+    }
+
+    #[test]
+    fn pins_are_on_the_other_edge_of_a_mirrored_square() {
+        let reg = Arc::new(Registry::builtin());
+        let mut tab = Tab::new(two_squares([false, true]), None, &reg);
+        tab.update(&reg, true, true);
+        for (sq, w) in [(1, 200.0), (2, 230.0)] {
+            let s = tab.canvas.square(sq).unwrap();
+            let info = tab.lowered.squares.get(&sq);
+            let g = geometry(s, info, 0, w, 0.0);
+            let (near, far) = (s.x, s.x + w);
+            let (ins, outs) = if s.mirror { (far, near) } else { (near, far) };
+            assert!(!g.ins.is_empty() || !g.outs.is_empty());
+            assert!(g.ins.iter().all(|p| p.x == ins), "inputs of {sq}");
+            assert!(g.outs.iter().all(|p| p.x == outs), "outputs of {sq}");
+            // the same rows, so the same heights
+            let plain = geometry(&Square::new(sq, s.module.clone(), s.x, s.y), info, 0, w, 0.0);
+            let ys = |v: &[Pos2]| v.iter().map(|p| p.y).collect::<Vec<_>>();
+            assert_eq!((ys(&g.ins), ys(&g.outs)), (ys(&plain.ins), ys(&plain.outs)));
+            assert_eq!(g.rect, plain.rect);
+        }
+    }
+
+    /// The canvas drawn by `show`, frame by frame, with events.
+    struct Rig {
+        ctx: egui::Context,
+        tab: Tab,
+        state: CanvasState,
+        reg: Arc<Registry>,
+        time: f64,
+    }
+
+    impl Rig {
+        fn new(c: Canvas) -> Rig {
+            let ctx = egui::Context::default();
+            let mut fonts = egui::FontDefinitions::default();
+            for (from, name) in
+                [(egui::FontFamily::Proportional, ZOOMED_TEXT), (egui::FontFamily::Monospace, ZOOMED_MONO)]
+            {
+                let list = fonts.families[&from].clone();
+                fonts.families.insert(egui::FontFamily::Name(name.into()), list);
+            }
+            ctx.set_fonts(fonts);
+            let reg = Arc::new(Registry::builtin());
+            let mut tab = Tab::new(c, None, &reg);
+            tab.update(&reg, false, true);
+            let mut rig = Rig { ctx, tab, state: CanvasState::default(), reg, time: 0.0 };
+            rig.frame(vec![]);
+            rig.frame(vec![]);
+            rig
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.time += 0.2;
+            let input = egui::RawInput {
+                time: Some(self.time),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1200.0))),
+                events,
+                ..Default::default()
+            };
+            let (theme, cfg) = (super::super::theme::dark(), Config::defaults());
+            let (tab, state, reg) = (&mut self.tab, &mut self.state, &self.reg);
+            let out = self.ctx.run_pass(input, |ctx| {
+                ctx.root_ui(|ui| {
+                    let mut cx = Ctx {
+                        tab,
+                        tab_id: 1,
+                        reg,
+                        theme: &theme,
+                        cfg: &cfg,
+                        state,
+                        actions: Vec::new(),
+                        values: HashMap::new(),
+                        current: BTreeSet::new(),
+                        states: HashMap::new(),
+                        checks: HashMap::new(),
+                        vars: Vec::new(),
+                        pending: None,
+                        bisect: None,
+                    };
+                    show(ui, &mut cx);
+                });
+            });
+            out.drop_without_applying_deltas();
+            self.tab.update(&self.reg, false, false);
+        }
+
+        /// Where the canvas's world origin is on the screen.
+        fn origin(&self) -> Vec2 {
+            self.state.rect.expect("drawn").center().to_vec2()
+        }
+
+        /// The wire as the canvas draws it, in screen points.
+        fn curve(&self) -> [Pos2; 4] {
+            let l = &self.tab.canvas.links[0];
+            let pin = |id, output| {
+                let s = self.tab.canvas.square(id).unwrap();
+                let w = self.state.rects[&id].width();
+                let g = geometry(s, self.tab.lowered.squares.get(&id), 0, w, 0.0);
+                let p = if output { g.outs[0] } else { g.ins[0] };
+                (p + self.origin(), pin_dir(s.mirror, output))
+            };
+            let ((a, da), (b, db)) = (pin(l.from, true), pin(l.to, false));
+            bezier(a, da, b, db)
+        }
+
+        /// A click at P: the wires it selects.
+        fn click(&mut self, p: Pos2) -> Vec<Link> {
+            self.tab.selected_links.clear();
+            let button = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![egui::Event::PointerMoved(p)]);
+            self.frame(vec![button(true)]);
+            self.frame(vec![button(false)]);
+            self.frame(vec![]);
+            self.tab.selected_links.iter().cloned().collect()
+        }
+    }
+
+    #[test]
+    fn a_click_on_the_wire_of_a_mirrored_square_selects_it_and_not_where_it_was() {
+        let link = Link::new(1, "then", 2, "tick");
+        let mut plain = Rig::new(two_squares([false, false]));
+        let on_plain = bezier_point(&plain.curve(), 0.5);
+        assert_eq!(plain.click(on_plain), std::slice::from_ref(&link));
+
+        // the first turned round: the wire goes out to the left of it
+        let mut turned = Rig::new(two_squares([true, false]));
+        let on_turned = bezier_point(&turned.curve(), 0.5);
+        assert!(on_turned.distance(on_plain) > 50.0, "{on_turned:?} {on_plain:?}");
+        assert_eq!(turned.click(on_turned), [link]);
+        assert_eq!(turned.click(on_plain), []);
+        // the curve starts at the left edge of the mirrored square, going left
+        let c = turned.curve();
+        let r = turned.state.rects[&1];
+        assert_eq!(c[0].x, r.left() + turned.origin().x);
+        assert!(c[1].x < c[0].x);
+    }
+
+    #[test]
+    fn mirroring_the_selection_and_undoing_it() {
+        let mut rig = Rig::new(two_squares([false, false]));
+        let before = rig.curve();
+        rig.tab.selected = [1, 2].into_iter().collect();
+        rig.tab.mirror_selection();
+        rig.frame(vec![]);
+        let after = rig.curve();
+        assert!(rig.tab.canvas.squares.iter().all(|s| s.mirror));
+        assert_ne!(before, after);
+        // both turned: out of the left of the first, into the right of the second
+        assert!(after[1].x < after[0].x && after[2].x > after[3].x);
+        // it's in the history, so undo takes it back (and redo does it again)
+        rig.tab.undo();
+        rig.frame(vec![]);
+        assert!(rig.tab.canvas.squares.iter().all(|s| !s.mirror));
+        assert_eq!(rig.curve(), before);
+        rig.tab.redo();
+        assert!(rig.tab.canvas.squares.iter().all(|s| s.mirror));
+        // the lowered program is the one it was: it's only layout
+        assert!(rig.tab.lowered.diags.is_empty());
+        // again, and they turn back
+        rig.tab.mirror_selection();
+        assert!(rig.tab.canvas.squares.iter().all(|s| !s.mirror));
+        // a read-only tab keeps what it has
+        rig.tab.label = Some("diff".into());
+        rig.tab.mirror_selection();
+        assert!(rig.tab.canvas.squares.iter().all(|s| !s.mirror));
+    }
+
+    #[test]
+    fn a_copy_keeps_the_way_a_square_faces() {
+        // what Ctrl+C and Ctrl+D do: the squares go through the file text
+        let c = two_squares([true, false]);
+        let back = lineit_core::file::read_canvas(&lineit_core::file::write_canvas(&c), "clip").unwrap();
+        assert_eq!(back.squares.iter().map(|s| s.mirror).collect::<Vec<_>>(), [true, false]);
     }
 }
