@@ -36,8 +36,10 @@
 //!   `Pt` a class, struct or record of the code, its public fields and
 //!   properties'.
 //! - Its state: the `static` fields of its class that aren't `const` or
-//!   `readonly`. Each square runs the code in an assembly context of its
-//!   own, so each has its own.
+//!   `readonly`, of a type lineit knows (the types above, but not an exit);
+//!   a `static` of any other type is refused, but for a `readonly` one (a
+//!   cache). Each square runs the code in an assembly context of its own,
+//!   so each has its own.
 //! - `Shared.NAME` is the variable `::NAME`, wherever in the code it's used:
 //!   lineit gives the code a `Shared` class with a static field for each.
 //! - `#:package Name@version` lines at the top (`dotnet run`'s directives)
@@ -671,7 +673,7 @@ fn read(original: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
             }
             let mut c = m.walk();
             for v in m.named_children(&mut c).filter(|c| c.kind() == "variable_declaration") {
-                // only those whose type lineit knows
+                // those whose type lineit knows (any other is refused below)
                 let known = v
                     .child_by_field_name("type")
                     .is_some_and(|t| matches!(cs_type(t, source, cx, &d), Ok(CsType::T(_))));
@@ -680,6 +682,69 @@ fn read(original: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
                     if let (true, Some(n)) = (known, n.child_by_field_name("name")) {
                         state.push(text(n).to_string());
                     }
+                }
+            }
+        }
+    }
+
+    // what's kept where lineit can't see it (and of a type it knows): a
+    // `static` property that keeps its own value, and the statics of any
+    // other type of the code
+    let owner_body = owner.and_then(|c| c.child_by_field_name("body"));
+    let goes = "what a C# square keeps goes in a `static` field of its class, where lineit sees it";
+    for m in all.iter().filter(|m| matches!(m.kind(), "field_declaration" | "property_declaration")) {
+        if !has_mod(*m, source, "static") || has_mod(*m, source, "const") || has_mod(*m, source, "readonly") {
+            continue;
+        }
+        let line = m.start_position().row + 1;
+        let known = |t: Option<Node>| t.is_some_and(|t| matches!(cs_type(t, source, cx, &d), Ok(CsType::T(_))));
+        if m.kind() == "property_declaration" {
+            // `{ get; set; }`: not one that gets and sets a field
+            let mut c = m.walk();
+            let auto_set = m
+                .child_by_field_name("accessors")
+                .map(|a| a.named_children(&mut c).collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .any(|a| {
+                    a.child_by_field_name("name").is_some_and(|n| matches!(text(n), "set" | "init"))
+                        && !descendants(a).iter().any(|b| matches!(b.kind(), "block" | "arrow_expression_clause"))
+                });
+            if let (true, true, Some(n)) =
+                (auto_set, known(m.child_by_field_name("type")), m.child_by_field_name("name"))
+            {
+                return Err(format!("line {line}: `{}` is a `static` property that keeps its value: {goes}", text(n)));
+            }
+        } else {
+            let mut c = m.walk();
+            for v in m.named_children(&mut c).filter(|c| c.kind() == "variable_declaration") {
+                let mut c = v.walk();
+                let decl = v.named_children(&mut c).find(|c| c.kind() == "variable_declarator");
+                // a type lineit doesn't know: its value would be hidden from it
+                if let (false, Some(t), Some(n)) = (
+                    known(v.child_by_field_name("type")),
+                    v.child_by_field_name("type"),
+                    decl.and_then(|d| d.child_by_field_name("name")),
+                ) {
+                    return Err(format!(
+                        "line {line}: `{}` is a `static` of type `{}`, which lineit doesn't know: state goes in a `static` field of a type it knows (long, double, bool, string, `List<T>`, `T[]`, `Dictionary<string, T>`, a record of lineit's), or `readonly` for a cache it only fills",
+                        text(n),
+                        text(t)
+                    ));
+                }
+                if m.parent() == owner_body {
+                    continue;
+                }
+                if let (true, Some(n)) =
+                    (known(v.child_by_field_name("type")), decl.and_then(|d| d.child_by_field_name("name")))
+                {
+                    let class = |t: Option<Node>| t.and_then(|t| t.child_by_field_name("name")).map_or("it", text);
+                    return Err(format!(
+                        "line {line}: `{}` is a `static` of `{}`, not of `{}`, the class of `{name}`: {goes}",
+                        text(n),
+                        class(m.parent().and_then(|b| b.parent())),
+                        class(owner)
+                    ));
                 }
             }
         }
@@ -856,6 +921,9 @@ static class Collatz
         assert!(e.starts_with("F.cs:6: "), "{e}");
 
         // code .NET doesn't build: its error
+        // (dotnet says "The build failed" on its stderr: kept, as the editor does,
+        // not written to the test's)
+        lineit_rt::ext::capture_stderr();
         let (mut bad, _) = read("static class A { public static long F(long x) { return x; } }", &Cx).unwrap();
         bad.source = "static class A { public static long F(long x) { return y; } }".into();
         let kind = CSharp.ext(&bad).unwrap();

@@ -28,8 +28,8 @@ pub struct Options {
     /// Where the program goes.
     pub out: PathBuf,
     /// The crate's name: the program's, and a hash of where its canvas is,
-    /// so programs of canvases with the same name don't share a binary in
-    /// the target folder they all use.
+    /// so programs of canvases with the same name (or of another version of
+    /// lineit) don't share a binary in the target folder they all use.
     pub name: String,
     /// Where the generated crate is built.
     pub build_dir: PathBuf,
@@ -40,7 +40,9 @@ pub struct Options {
 impl Options {
     pub fn for_canvas(canvas: &Path, out: PathBuf) -> Options {
         let canonical = std::fs::canonicalize(canvas).unwrap_or_else(|_| canvas.to_path_buf());
-        let name = format!("{}-{:016x}", program_name(canvas), fnv(canonical.to_string_lossy().as_bytes()));
+        // the runtime's version too: another lineit's build of the same canvas is another crate
+        let key = format!("{}\0{}", canonical.to_string_lossy(), runtime_id());
+        let name = format!("{}-{:016x}", program_name(canvas), fnv(key.as_bytes()));
         Options { out, build_dir: crate::paths::cache_dir().join("build").join(&name), name, debug: false }
     }
 }
@@ -94,14 +96,30 @@ const RT_FILES: &[(&str, &str)] = &[
     ("src/value.rs", include_str!("../../lineit-rt/src/value.rs")),
 ];
 
-/// Writes the runtime out, once per version of it, and says where.
-pub fn write_runtime() -> Result<PathBuf, String> {
+#[cfg(test)]
+thread_local! {
+    /// What a test adds to the runtime's sources to be another version of it.
+    pub(crate) static RT_SALT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Names this version of the runtime: its version and a hash of its source.
+/// What is built with it, and shares a cache with what other versions of
+/// lineit build, has this in its name: cargo can't have two `lineit-rt`
+/// from different folders in one dependency graph.
+pub fn runtime_id() -> String {
     let mut h = Vec::new();
     for (n, s) in RT_FILES {
         h.extend_from_slice(n.as_bytes());
         h.extend_from_slice(s.as_bytes());
     }
-    let dir = crate::paths::cache_dir().join("rt").join(format!("{}-{:016x}", lineit_rt::VERSION, fnv(&h)));
+    #[cfg(test)]
+    RT_SALT.with(|s| h.extend_from_slice(s.borrow().as_bytes()));
+    format!("{}-{:016x}", lineit_rt::VERSION, fnv(&h))
+}
+
+/// Writes the runtime out, once per version of it, and says where.
+pub fn write_runtime() -> Result<PathBuf, String> {
+    let dir = crate::paths::cache_dir().join("rt").join(runtime_id());
     if !dir.join("src/lib.rs").exists() {
         let tmp = dir.with_extension("tmp");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -153,16 +171,17 @@ pub fn compile(prog: &Program, opts: &Options, log: &mut dyn FnMut(&str)) -> Res
     } else {
         format!("[patch.crates-io]\nlineit-rt = {{ path = \"{rt_path}\" }}\n\n")
     };
-    let manifest = format!(
-        "# Made by lineit from a canvas: changes here are lost when it compiles it again.\n\
-         [package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
-         [dependencies]\nlineit-rt = {{ path = \"{rt_path}\", features = [{}] }}\n{natives}\n{patch}\
-         [profile.release]\nopt-level = 3\nlto = \"fat\"\ncodegen-units = 1\npanic = \"abort\"\nstrip = true\n\n\
-         [workspace]\n",
-        opts.name,
-        features.join(", ")
-    );
-    write_if_changed(&dir.join("Cargo.toml"), &manifest)?;
+    let manifest = |features: &[&str]| {
+        format!(
+            "# Made by lineit from a canvas: changes here are lost when it compiles it again.\n\
+             [package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n\
+             [dependencies]\nlineit-rt = {{ path = \"{rt_path}\", features = [{}] }}\n{natives}\n{patch}\
+             [profile.release]\nopt-level = 3\nlto = \"fat\"\ncodegen-units = 1\npanic = \"abort\"\nstrip = true\n\n\
+             [workspace]\n",
+            opts.name,
+            features.join(", ")
+        )
+    };
     write_if_changed(&dir.join("src/main.rs"), &src)?;
 
     let cargo = std::env::var_os("CARGO").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cargo"));
@@ -188,11 +207,29 @@ pub fn compile(prog: &Program, opts: &Options, log: &mut dyn FnMut(&str)) -> Res
         }
         Ok(child.wait().map_err(|e| e.to_string())?.success())
     };
-    if !build(false, log)? {
-        log("lineit: trying again without the network (--offline)");
-        if !build(true, log)? {
-            return Err("cargo couldn't build the program (what it said is above)".into());
+    // the program's own build: from the network, then without it
+    let attempt = |features: &[&str], log: &mut dyn FnMut(&str)| -> Result<bool, String> {
+        write_if_changed(&dir.join("Cargo.toml"), &manifest(features))?;
+        if build(false, log)? {
+            return Ok(true);
         }
+        log("lineit: trying again without the network (--offline)");
+        build(true, log)
+    };
+    // branches on a pool of threads (rayon), if it can be had: if not, a thread each
+    let pooled = [features.as_slice(), &["\"pool\""]].concat();
+    let mut no_rayon = false;
+    let mut said = |l: &str| {
+        no_rayon |= l.contains("rayon");
+        log(l)
+    };
+    let mut ok = attempt(if prog.has_branches() { &pooled } else { &features }, &mut said)?;
+    if !ok && prog.has_branches() && no_rayon {
+        log("lineit: no rayon to be had: running each branch on a thread of its own");
+        ok = attempt(&features, log)?;
+    }
+    if !ok {
+        return Err("cargo couldn't build the program (what it said is above)".into());
     }
     let built = target.join(if opts.debug { "debug" } else { "release" }).join(crate::paths::exe(&opts.name));
     if let Some(p) = opts.out.parent().filter(|p| !p.as_os_str().is_empty()) {

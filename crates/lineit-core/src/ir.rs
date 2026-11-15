@@ -643,9 +643,8 @@ impl Program {
             .collect()
     }
 
-    /// Works out every fire's meets (see [`Fire`]).
-    pub fn find_meets(&mut self) {
-        let calls = self.calls();
+    /// Works out F's meets (see [`Fire`]), from what each handler CALLS.
+    pub fn fire_meets(calls: &[Vec<HandlerId>], f: &mut Fire) {
         // what FROM reaches, not going past the handlers in STOP
         let reach = |from: HandlerId, stop: &[bool]| -> Vec<bool> {
             let mut seen = vec![false; calls.len()];
@@ -657,45 +656,48 @@ impl Program {
             }
             seen
         };
-        let meets = |f: &mut Fire| {
-            f.meets.clear();
-            if f.targets.len() < 2 {
-                return;
+        f.meets.clear();
+        if f.targets.len() < 2 {
+            return;
+        }
+        let mut targets = f.targets.clone();
+        targets.sort_unstable();
+        targets.dedup();
+        // a branch stops at the first meet it gets to, so the meets
+        // behind other meets aren't: go again, stopping at them, until
+        // nothing changes (only taking some out, so it ends)
+        let mut stop = vec![false; calls.len()];
+        let mut first = true;
+        loop {
+            let mut count = vec![0u32; calls.len()];
+            for t in &targets {
+                for (h, r) in reach(*t, &stop).iter().enumerate() {
+                    count[h] += *r as u32;
+                }
             }
-            let mut targets = f.targets.clone();
-            targets.sort_unstable();
-            targets.dedup();
-            // a branch stops at the first meet it gets to, so the meets
-            // behind other meets aren't: go again, stopping at them, until
-            // nothing changes (only taking some out, so it ends)
-            let mut stop = vec![false; calls.len()];
-            let mut first = true;
-            loop {
-                let mut count = vec![0u32; calls.len()];
-                for t in &targets {
-                    for (h, r) in reach(*t, &stop).iter().enumerate() {
-                        count[h] += *r as u32;
-                    }
+            // a target fired twice by the same fire is reached twice
+            for t in &targets {
+                if f.targets.iter().filter(|x| *x == t).count() > 1 {
+                    count[*t as usize] = 2;
                 }
-                // a target fired twice by the same fire is reached twice
-                for t in &targets {
-                    if f.targets.iter().filter(|x| *x == t).count() > 1 {
-                        count[*t as usize] = 2;
-                    }
-                }
-                let now: Vec<bool> = count.iter().zip(&stop).map(|(c, s)| *c >= 2 && (first || *s)).collect();
-                if now == stop && !first {
-                    break;
-                }
-                first = false;
-                stop = now;
             }
-            f.meets = (0..calls.len() as u32).filter(|h| stop[*h as usize]).collect();
-        };
-        meets(&mut self.starts);
+            let now: Vec<bool> = count.iter().zip(&stop).map(|(c, s)| *c >= 2 && (first || *s)).collect();
+            if now == stop && !first {
+                break;
+            }
+            first = false;
+            stop = now;
+        }
+        f.meets = (0..calls.len() as u32).filter(|h| stop[*h as usize]).collect();
+    }
+
+    /// Works out every fire's meets (see [`Fire`]).
+    pub fn find_meets(&mut self) {
+        let calls = self.calls();
+        Self::fire_meets(&calls, &mut self.starts);
         for h in &mut self.handlers {
             for s in &mut h.body {
-                s.fires_mut(&mut |f| meets(f));
+                s.fires_mut(&mut |f| Self::fire_meets(&calls, f));
             }
         }
     }

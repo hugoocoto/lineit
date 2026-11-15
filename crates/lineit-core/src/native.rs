@@ -171,7 +171,12 @@ fn load(path: &Path, crate_name: &str) -> Result<Arc<Lib>, String> {
         return Ok(l.clone());
     }
     // a copy, so building it again while it's loaded works (Windows locks
-    // a loaded file), named for this process: another editor may have its own
+    // a loaded file), named for this process: another editor may have its own.
+    // From the copy to its loading no other process cleans up (it would
+    // remove the copy before it's loaded)
+    let _one_at_a_time = std::fs::File::create(path.with_file_name(".loaded-lock")).ok().inspect(|f| {
+        let _ = fs4::FileExt::lock(f);
+    });
     if libs.is_empty() {
         remove_old_copies(path);
     }
@@ -214,7 +219,11 @@ pub fn run_apart(exe: PathBuf) {
 
 /// Where a module's library runs: here, or in a process of its own.
 enum Backend {
-    Here { lib: Arc<Lib>, squares: Vec<*mut c_void> },
+    /// A square that was freed is null.
+    Here {
+        lib: Arc<Lib>,
+        squares: Vec<*mut c_void>,
+    },
     Apart(Helper),
 }
 
@@ -237,10 +246,27 @@ impl Backend {
         }
     }
 
+    /// Frees square SQ.
+    fn drop_square(&mut self, sq: usize) -> Result<(), String> {
+        match self {
+            Backend::Here { lib, squares } => {
+                let Some(s) = squares.get_mut(sq).filter(|s| !s.is_null()) else {
+                    return Err(format!("no square {sq}"));
+                };
+                unsafe { (lib.free)(std::mem::replace(s, std::ptr::null_mut())) };
+                Ok(())
+            }
+            Backend::Apart(h) => h.drop_square(sq),
+        }
+    }
+
     /// Calls square SQ (WHAT: eval, run...): the library's code, and its bytes.
     fn call(&mut self, sq: usize, what: i32, input: &str, args: &[u8]) -> Result<(i32, Vec<u8>), String> {
         match self {
-            Backend::Here { lib, squares } => Ok(unsafe { raw_call(lib, squares[sq], what, input.as_bytes(), args) }),
+            Backend::Here { lib, squares } => match squares.get(sq) {
+                Some(s) if !s.is_null() => Ok(unsafe { raw_call(lib, *s, what, input.as_bytes(), args) }),
+                _ => Err(format!("no square {sq}")),
+            },
             Backend::Apart(h) => h.call(sq, what, input, args),
         }
     }
@@ -258,12 +284,15 @@ unsafe fn raw_call(lib: &Lib, sq: *mut c_void, what: i32, input: &[u8], args: &[
 /// TOKEN`), which connects to ADDRESS (see [`Stream`]) and sends TOKEN (so
 /// it's this one), then is asked in frames of bytes: `0, ty, params` makes
 /// a square (the answer: 1 and its number, or 0 and why not); `1, square,
-/// what, input, args` calls one (the answer: its code and bytes). Its
+/// what, input, args` calls one (the answer: its code and bytes, 1 and why
+/// not if there's no such square); `2,
+/// square` frees one (the answer: 1, or 0 and why not). Its
 /// stdout and stderr are the library's to write to.
 struct Helper {
     /// Shared with what stops it, which can kill it while a call waits.
     child: Arc<Mutex<std::process::Child>>,
     stderr: Option<Arc<Mutex<Vec<String>>>>,
+    stdout: Option<Arc<Mutex<Vec<String>>>>,
     to: Stream,
     from: std::io::BufReader<Stream>,
 }
@@ -432,11 +461,13 @@ impl Helper {
             .stdout(out())
             .stderr(out());
         let mut child = command.spawn().map_err(|e| format!("couldn't start {} ({e})", exe.display()))?;
-        // what it writes, both ways, is the library's: kept for the output
+        // what it writes, both ways, is the library's: kept for the output, each apart
         let stderr = lineit_rt::ext::stderr_of(&mut child);
-        if let (Some(lines), Some(o)) = (&stderr, child.stdout.take()) {
+        let stdout = child.stdout.take().map(|o| {
+            let lines = Arc::new(Mutex::new(Vec::new()));
             lineit_rt::ext::keep_lines(o, lines.clone());
-        }
+            lines
+        });
         // it, and only it (it says the token), connects
         listener.set_nonblocking().map_err(|e| e.to_string())?;
         let started = std::time::Instant::now();
@@ -463,7 +494,7 @@ impl Helper {
             }
         };
         let from = std::io::BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
-        Ok(Helper { child: Arc::new(Mutex::new(child)), stderr, to: stream, from })
+        Ok(Helper { child: Arc::new(Mutex::new(child)), stderr, stdout, to: stream, from })
     }
 
     /// What went wrong with the process: it crashed, most likely.
@@ -492,6 +523,15 @@ impl Helper {
         put(&mut f, params);
         match self.ask(&f)? {
             (1, b) => Ok(u64::from_le_bytes(b.try_into().map_err(|_| "a bad answer")?) as usize),
+            (_, why) => Err(String::from_utf8_lossy(&why).into_owned()),
+        }
+    }
+
+    fn drop_square(&mut self, sq: usize) -> Result<(), String> {
+        let mut f = vec![2u8];
+        f.extend_from_slice(&(sq as u64).to_le_bytes());
+        match self.ask(&f)? {
+            (1, _) => Ok(()),
             (_, why) => Err(String::from_utf8_lossy(&why).into_owned()),
         }
     }
@@ -558,9 +598,23 @@ pub fn serve(lib: &Path, crate_name: &str, address: &str, token: u64) -> Result<
                 let what = take_u64(&mut input).map_err(|e| e.to_string())? as i64 as i32;
                 let inp = take_bytes(&mut input).map_err(|e| e.to_string())?;
                 let args = take_bytes(&mut input).map_err(|e| e.to_string())?;
-                let Some(s) = squares.get(sq) else { return Err(format!("no square {sq}")) };
-                let (code, bytes) = unsafe { raw_call(&lib, *s, what, &inp, &args) };
-                answer(&mut out, code as i64 as u64, &bytes)
+                match squares.get(sq).filter(|s| !s.is_null()) {
+                    Some(s) => {
+                        let (code, bytes) = unsafe { raw_call(&lib, *s, what, &inp, &args) };
+                        answer(&mut out, code as i64 as u64, &bytes)
+                    }
+                    None => answer(&mut out, 1, format!("no square {sq}").as_bytes()),
+                }
+            }
+            2 => {
+                let sq = take_u64(&mut input).map_err(|e| e.to_string())? as usize;
+                match squares.get_mut(sq).filter(|s| !s.is_null()) {
+                    Some(s) => {
+                        unsafe { (lib.free)(std::mem::replace(s, std::ptr::null_mut())) };
+                        answer(&mut out, 1, &[])
+                    }
+                    None => answer(&mut out, 0, format!("no square {sq}").as_bytes()),
+                }
             }
             o => return Err(format!("no request {o}")),
         };
@@ -605,7 +659,7 @@ impl Dylib {
 impl Drop for Backend {
     fn drop(&mut self) {
         if let Backend::Here { lib, squares } = self {
-            for s in squares.drain(..) {
+            for s in squares.drain(..).filter(|s| !s.is_null()) {
                 unsafe { (lib.free)(s) };
             }
         }
@@ -631,6 +685,7 @@ impl Ext for Dylib {
                 let _ = child.lock().unwrap_or_else(|e| e.into_inner()).kill();
             })),
             stderr: h.stderr.clone(),
+            stdout: h.stdout.clone(),
         }
     }
 
@@ -639,6 +694,10 @@ impl Ext for Dylib {
         let mut bytes = Vec::new();
         native::encode(&Value::Map(Arc::new(p)), &mut bytes);
         self.backend.new_square(&self.ty, &bytes)
+    }
+
+    fn drop_instance(&mut self, inst: usize) -> Result<(), String> {
+        self.backend.drop_square(inst)
     }
 
     fn eval(&mut self, inst: usize, inputs: &[(&str, Value)], outs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {

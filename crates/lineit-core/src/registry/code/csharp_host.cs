@@ -7,6 +7,7 @@ static class LineitHost
         public System.Reflection.MethodInfo M;
         public System.Type Shared;
         public System.Type Owner;
+        public System.Runtime.Loader.AssemblyLoadContext Ctx;
     }
 
     static System.Delegate Exit(System.Type dt, System.Action<object[]> sink)
@@ -78,7 +79,7 @@ static class LineitHost
             return write ? null : f.GetValue(null);
         }
 
-        Send(new());
+        Send(new() { ["drop"] = true });
         for (var line = stdin.ReadLine(); line != null; line = stdin.ReadLine())
         {
             var req = System.Text.Json.JsonDocument.Parse(line).RootElement;
@@ -92,7 +93,7 @@ static class LineitHost
                         var asm = ctx.LoadFromAssemblyPath(typeof(LineitHost).Assembly.Location);
                         var flags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.DeclaredOnly;
                         var m = asm.GetTypes().SelectMany(t => t.GetMethods(flags)).First(x => x.Name == name);
-                        squares.Add(new Sq { M = m, Owner = m.DeclaringType, Shared = asm.GetType(typeof(Shared).FullName) });
+                        squares.Add(new Sq { M = m, Owner = m.DeclaringType, Shared = asm.GetType(typeof(Shared).FullName), Ctx = ctx });
                         Send(new() { ["sq"] = squares.Count - 1 });
                         break;
                     }
@@ -148,6 +149,15 @@ static class LineitHost
                     {
                         var sq = squares[req.GetProperty("sq").GetInt32()];
                         foreach (var p in req.GetProperty("state").EnumerateObject()) Field(sq.Owner, p.Name, p.Value, true);
+                        Send(new());
+                        break;
+                    }
+                    case "drop":
+                    {
+                        // its assembly goes with its context, when nothing holds it
+                        var i = req.GetProperty("sq").GetInt32();
+                        squares[i].Ctx.Unload();
+                        squares[i] = null;
                         Send(new());
                         break;
                     }

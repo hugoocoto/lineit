@@ -179,6 +179,9 @@ struct Flattener<'a> {
     path: Vec<SquareId>,
     diags: Vec<Diag>,
     in_fn: Option<(String, bool)>,
+    /// The pins the links name, to check once the signatures are known:
+    /// (node, is an output, pin, the square it's on, its module)
+    pins: Vec<(usize, bool, String, SquareId, String)>,
 }
 
 struct Ports {
@@ -187,6 +190,17 @@ struct Ports {
 }
 
 impl Flattener<'_> {
+    fn no_pin(&mut self, square: SquareId, module: &str, pin: &str) {
+        self.once(Some(square), format!("`{module}` has no pin `{pin}`"));
+    }
+
+    /// A subgraph used twice reports once.
+    fn once(&mut self, square: Option<SquareId>, message: String) {
+        if !self.diags.iter().any(|d| d.square == square && d.message == message) {
+            self.diags.push(Diag { square, message });
+        }
+    }
+
     /// Adds the squares of CANVAS. TOP is the square of the main canvas
     /// it's inside of, if it's a subgraph's; STACK the subgraphs it's in.
     fn expand(&mut self, canvas: &Canvas, scope: usize, top: Option<SquareId>, stack: &mut Vec<String>) -> Ports {
@@ -267,17 +281,46 @@ impl Flattener<'_> {
             }
         }
         for (li, l) in canvas.links.iter().enumerate() {
+            let module = |id| canvas.squares.iter().find(|s| s.id == id).map(|s| s.module.clone()).unwrap_or_default();
+            // a wire to a square that isn't there: on the other end's square (or the
+            // subgraph's), if there is one
+            let there = |id| canvas.squares.iter().any(|s| s.id == id);
+            for (id, what) in [(l.from, "comes from"), (l.to, "goes to")] {
+                if !there(id) {
+                    let other = if id == l.from { l.to } else { l.from };
+                    let on = top.or(there(other).then_some(other));
+                    self.once(on, format!("a wire {what} square {id}, which isn't there"));
+                }
+            }
             let src = match map.get(&l.from) {
-                Some(Mapping::Real(g)) => Some((*g, l.output.clone())),
-                Some(Mapping::Sub { outputs, .. }) => outputs.get(&l.output).map(|g| (*g, "value".to_string())),
+                Some(Mapping::Real(g)) => {
+                    self.pins.push((*g, true, l.output.clone(), top.unwrap_or(l.from), module(l.from)));
+                    Some((*g, l.output.clone()))
+                }
+                Some(Mapping::Sub { outputs, .. }) => {
+                    let o = outputs.get(&l.output).map(|g| (*g, "value".to_string()));
+                    if o.is_none() {
+                        self.no_pin(top.unwrap_or(l.from), &module(l.from), &l.output);
+                    }
+                    o
+                }
                 None => None,
             };
             let dst = match map.get(&l.to) {
-                Some(Mapping::Real(g)) => Some((*g, l.input.clone())),
-                Some(Mapping::Sub { inputs, .. }) => inputs.get(&l.input).map(|g| (*g, "value".to_string())),
+                Some(Mapping::Real(g)) => {
+                    self.pins.push((*g, false, l.input.clone(), top.unwrap_or(l.to), module(l.to)));
+                    Some((*g, l.input.clone()))
+                }
+                Some(Mapping::Sub { inputs, .. }) => {
+                    let i = inputs.get(&l.input).map(|g| (*g, "value".to_string()));
+                    if i.is_none() {
+                        self.no_pin(top.unwrap_or(l.to), &module(l.to), &l.input);
+                    }
+                    i
+                }
                 None => None,
             };
-            // wires to pins that aren't there (any more) are left out
+            // wires to pins that aren't there are an error (see `pins`), and left out
             if let (Some((sg, so)), Some((dg, di))) = (src, dst) {
                 self.g[dg].incoming.push((di, sg, so, top.is_none().then_some(li)));
             }
@@ -410,9 +453,10 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
         path: Vec::new(),
         diags: Vec::new(),
         in_fn: None,
+        pins: Vec::new(),
     };
     f.expand(canvas, 0, None, &mut Vec::new());
-    let Flattener { g, mut diags, top_subs, scope_paths, .. } = f;
+    let Flattener { g, mut diags, top_subs, scope_paths, pins, .. } = f;
     let deps = std::cell::RefCell::new(Vec::new());
     let dir = canvas.dir.as_deref();
 
@@ -473,6 +517,27 @@ pub fn flatten(canvas: &Canvas, reg: &Registry) -> Flat {
             Err(e) => diags.push(Diag { square: Some(n.square), message: e }),
         }
     }
+
+    // links to pins the square doesn't have (a square whose signature failed
+    // has its own diagnostic)
+    let mut missing: Vec<(SquareId, String)> = Vec::new();
+    for (at, output, pin, square, module) in &pins {
+        let there = match (&g[*at].kind, flat_of[*at]) {
+            (GKind::Real(_), Some(f)) => {
+                let sig = &nodes[f as usize].sig;
+                if *output { sig.output_index(pin).is_some() } else { sig.input_index(pin).is_some() }
+            }
+            (GKind::Real(_), None) => true,
+            (GKind::Pass, _) => pin == "value" && module == if *output { "graph/input" } else { "graph/output" },
+        };
+        if !there {
+            missing.push((*square, format!("`{module}` has no pin `{pin}`")));
+        }
+    }
+    // a subgraph used twice reports once
+    missing.sort();
+    missing.dedup();
+    diags.extend(missing.into_iter().map(|(square, message)| Diag { square: Some(square), message }));
 
     // a function that has no tick input is read, not run: nothing in it can run on ticks
     for (i, n) in g.iter().enumerate() {

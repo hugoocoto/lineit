@@ -95,11 +95,22 @@ fn compiled() {
             failed.push(format!("{}: {e}\n{log}", path.display()));
             continue;
         }
-        let mut child = std::process::Command::new(&exe)
-            .current_dir(path.parent().unwrap())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
+        // a process the other test forks while the exe was being written holds
+        // it open until it execs ("text file busy"): only for a moment
+        let mut tries = 0;
+        let mut child = loop {
+            match std::process::Command::new(&exe)
+                .current_dir(path.parent().unwrap())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+            {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                r => break r.unwrap(),
+            }
+        };
         let started = std::time::Instant::now();
         while child.try_wait().unwrap().is_none() && started.elapsed().as_secs_f64() < limit {
             std::thread::sleep(std::time::Duration::from_millis(10));

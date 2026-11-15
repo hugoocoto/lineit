@@ -142,7 +142,7 @@ fn identical_wires_are_one_when_read() {
 }
 
 #[test]
-fn wires_to_a_pin_that_isnt_there_are_left_out() {
+fn wires_to_a_pin_that_isnt_there_are_not_counted_as_two() {
     let l = lowered(
         &registry(),
         r#"return { lineit = 1, squares = {
@@ -155,7 +155,9 @@ fn wires_to_a_pin_that_isnt_there_are_left_out() {
             { 2, "result", 4, "nope" }, { 3, "result", 4, "nope" },
         } }"#,
     );
-    assert!(l.diags.is_empty(), "{:?}", l.diags);
+    // an error of their own, not "takes one wire"
+    assert_eq!(about(&l, 4), ["`io/print` has no pin `nope`"]);
+    assert!(l.double.is_empty());
 }
 
 #[test]
@@ -232,4 +234,96 @@ fn many_wires_into_a_tick_port() {
         } }"#,
     );
     assert!(l.diags.is_empty(), "{:?}", l.diags);
+}
+
+#[test]
+fn a_wire_to_a_pin_the_square_hasnt_is_an_error() {
+    // a pure function has no tick pins: clock -> tick of it -> then to print
+    let l = lowered(
+        &registry(),
+        r#"return { lineit = 1, squares = {
+            { id = 1, module = "flow/entry" },
+            { id = 2, module = "math/add", fields = { a = "1", b = "2" } },
+            { id = 3, module = "io/print" },
+        }, links = {
+            { 1, "then", 2, "tick" }, { 2, "then", 3, "tick" }, { 2, "result", 3, "value" },
+            { 2, "result", 3, "nope" },
+        } }"#,
+    );
+    assert!(l.program.is_none());
+    let mut msgs = about(&l, 2);
+    msgs.sort();
+    assert_eq!(msgs, ["`math/add` has no pin `then`", "`math/add` has no pin `tick`"]);
+    assert_eq!(about(&l, 3), ["`io/print` has no pin `nope`"]);
+}
+
+#[test]
+fn a_wire_to_a_pin_a_subgraph_hasnt_is_an_error() {
+    let dir = std::env::temp_dir().join(format!("lineit-pins-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("once.graph.lua"),
+        r#"return { lineit = 1, squares = {
+            { id = 1, module = "graph/input", params = { name = "x", type = "int" } },
+            { id = 2, module = "graph/output", params = { name = "y", type = "int" } },
+        }, links = { { 1, "value", 2, "value" }, { 1, "value", 2, "other" } } }"#,
+    )
+    .unwrap();
+    let mut reg = Registry::builtin();
+    reg.load_dir(&dir, "");
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+    let l = lowered(
+        &reg,
+        r#"return { lineit = 1, squares = {
+            { id = 1, module = "flow/entry" },
+            { id = 2, module = "once" },
+            { id = 3, module = "once" },
+            { id = 4, module = "io/print" },
+        }, links = {
+            { 1, "then", 4, "tick" }, { 2, "y", 4, "value" }, { 2, "z", 4, "value" }, { 3, "y", 2, "w" },
+        } }"#,
+    );
+    assert!(l.program.is_none());
+    // inside, a subgraph used twice reports once, on its square
+    let mut msgs = about(&l, 2);
+    msgs.sort();
+    assert_eq!(msgs, ["`graph/output` has no pin `other`", "`once` has no pin `w`", "`once` has no pin `z`"]);
+    assert_eq!(about(&l, 3), ["`graph/output` has no pin `other`"]);
+}
+
+#[test]
+fn a_wire_to_a_square_that_isnt_there_is_an_error() {
+    let l = lowered(
+        &registry(),
+        r#"return { lineit = 1, squares = {
+            { id = 1, module = "flow/entry" },
+            { id = 2, module = "io/print" },
+        }, links = {
+            { 1, "then", 2, "tick" }, { 1, "then", 7, "tick" },
+            { 8, "result", 2, "value" }, { 8, "then", 9, "tick" },
+        } }"#,
+    );
+    assert!(l.program.is_none());
+    assert_eq!(about(&l, 1), ["a wire goes to square 7, which isn't there"]);
+    assert_eq!(about(&l, 2), ["a wire comes from square 8, which isn't there"]);
+    // neither end: on no square
+    let none: Vec<_> = l.diags.iter().filter(|d| d.square.is_none()).map(|d| d.message.as_str()).collect();
+    assert_eq!(none, ["a wire comes from square 8, which isn't there", "a wire goes to square 9, which isn't there"]);
+}
+
+#[test]
+fn arranging_a_canvas_with_a_wire_to_a_square_that_isnt_there() {
+    let mut c = read_canvas(
+        r#"return { lineit = 1, squares = {
+            { id = 1, module = "flow/entry" },
+            { id = 2, module = "io/print" },
+        }, links = { { 1, "then", 2, "tick" }, { 1, "then", 7, "tick" }, { 8, "result", 2, "value" } } }"#,
+        "test",
+    )
+    .unwrap();
+    lower::arrange(&mut c, &registry());
+    assert!(c.square(2).unwrap().x > c.square(1).unwrap().x);
+    // the id a wire goes to isn't handed out to a new square
+    assert_eq!(c.next_id(), 9);
 }

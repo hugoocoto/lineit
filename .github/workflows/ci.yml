@@ -114,6 +114,11 @@ jobs:
         if: matrix.suite == 'test'
         run: cargo test --locked
 
+      # the workspace leaves the pool off: compiled programs with branches turn it on
+      - name: cargo test (branches on the pool)
+        if: matrix.suite == 'test'
+        run: cargo test --locked -p lineit-rt --features pool
+
       - name: Compile every canvas
         if: matrix.suite == 'compile'
         env:
@@ -130,6 +135,8 @@ jobs:
         run: |
           sudo sysctl vm.mmap_rnd_bits=28
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu
+          # the branches of compiled programs, on the pool
+          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu -p lineit-rt --features pool
 
       # The CLI as a user runs it: an example, and a package made, packed,
       # installed and used

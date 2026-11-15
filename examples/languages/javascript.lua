@@ -173,7 +173,7 @@ rl.on("line", (line) => {
         } else if (req.op === "load") {
             load = req;
             script = new vm.Script(runnable(load.source), { filename: load.file });
-            answer({});
+            answer({ drop: true });
         } else if (req.op === "new") {
             const ctx = vm.createContext({ Shared: {}, console: { log: (...a) => printed.push(a.map(String).join(" ")) } });
             script.runInContext(ctx);
@@ -186,6 +186,9 @@ rl.on("line", (line) => {
             answer({ state: Object.fromEntries(load.state.filter((k) => k in ctx).map((k) => [k, ctx[k]])) });
         } else if (req.op === "set_state") {
             Object.assign(squares[req.sq], req.state);
+            answer({});
+        } else if (req.op === "drop") {
+            squares[req.sq] = null;
             answer({});
         }
     } catch (e) {

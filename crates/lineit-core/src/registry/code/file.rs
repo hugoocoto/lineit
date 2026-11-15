@@ -34,7 +34,9 @@
 //!   "line 3: ..."}`.
 //! - `{"op": "load", ...}`: what to run (as [`Language::ext`] gives it,
 //!   with `"signature"`, its own answer): it answers `{}` and then serves
-//!   the requests of [`lineit_rt::process`].
+//!   the requests of [`lineit_rt::process`]. If it answers `{"drop": true}`
+//!   it also frees a square (`{"op": "drop", "sq": N}`, answered `{}`) when
+//!   an edit while running deletes it; one that doesn't keeps them.
 //!
 //! `examples/languages/javascript.lua` is one, for Node.js.
 

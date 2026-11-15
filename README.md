@@ -58,7 +58,7 @@ lineit is in alpha: expect breaking changes with any commit.
   and a float added are a float, and a string wired into a number is an
   error on the square, before anything runs.
 - **Parallel by default.** A tick wired to several squares runs them as
-  branches, on threads once compiled, and they meet again where their wires
+  branches, on a pool of threads once compiled, and they meet again where their wires
   do.
 - **Extended in Lua, in Rust, or with squares.** A module is a Lua file, a
   Rust type, or a selection of squares made a module of its own (Ctrl+G).

@@ -1,7 +1,7 @@
-the text jumps in notes and code modules: fixed when looking and when typing
-(laid out at a power of two and scaled, the text box too); check it with the
-mouse and the keyboard: typing, cursor, selection, clicks, zooming while
-typing, long and wrapped notes, tabs and long lines in code
+the text jumps in notes and code modules: checked with events in a headless
+text box (text_tests in canvas.rs): notes and code, typing, cursor, clicks,
+selection, zooming while typing, wrapped notes, tabs, long lines in code: no
+jump; left: look at it once in the real window (no xdotool to drive it here)
 
 C# code squares, what's left: dotnet still keeps a few bytes per code
 (build-start.cache, build-success.cache, in ~/.local/share/dotnet/runfile)
@@ -46,11 +46,6 @@ Building MessagePack needs the .NET SDK 8.0.4xx (global.json: 8.0.402).
 later
 - faster interpreter: ~60 ns a loop iteration, ~230 ns a square called
   (compiled is ~1000x faster); registers and typed slots instead of Values
-- compiled branches on a thread pool, not a thread per branch
-- editing while running (done: `Interp::swap`): what's left is that several
-  new entries at once run as branches without meets; the instances of code
-  squares that went away stay allocated in a kept module (no way to free
-  one in `Ext`)
 - FFI to C libraries
 - check on real systems what was written without them: the native dialogs on
   Windows, macOS and a Linux desktop (whether one can be shown is read from the
@@ -58,3 +53,9 @@ later
   installed but broken shows nothing, and the prompt isn't used then); on Windows, lineitw.exe (no console):
   double click, "Open with", code squares (no console windows flashing),
   handing a file to a running lineit's editor and the other way round
+
+
+
+
+I want to be able to mirror or rotate modules so I can invert the direction of
+the wires. The curve of the wires must be modified too.

@@ -25,7 +25,9 @@
 //! - A parameter of type `fun(name: type, ...)` is an exit.
 //! - Its globals (what's set at the top of the code without `local`, or in
 //!   the function without being declared) are the square's state: each
-//!   square runs the code in an environment of its own.
+//!   square runs the code in an environment of its own. A closure kept in a
+//!   `local` at the top (`local inc = make()`) that a function calls is
+//!   refused.
 //!
 //! The glue around the code ([`glue`]) runs it, and gives and takes values
 //! by pin name ([`lineit_rt::lua::LuaCode`]).
@@ -151,6 +153,53 @@ fn set_names<'a>(list: Node, src: &'a str) -> Vec<&'a str> {
     list.children(&mut c).filter(|n| n.kind() == "identifier").map(|n| &src[n.byte_range()]).collect()
 }
 
+/// What NODES (of a function) declare, and what they assign without
+/// declaring: its locals and parameters, and the names it sets.
+fn scope<'a>(nodes: &[Node], src: &'a str) -> (Vec<&'a str>, Vec<&'a str>) {
+    let text = |n: Node| &src[n.byte_range()];
+    let mut declared = Vec::new();
+    let mut assigned = Vec::new();
+    for n in nodes {
+        match n.kind() {
+            "variable_declaration" => {
+                // its own names, not those of a function in its values
+                for list in descendants(*n).into_iter().filter(|d| d.kind() == "variable_list") {
+                    let owner = list.parent().filter(|p| p.kind() == "assignment_statement").and_then(|p| p.parent());
+                    if list.parent() == Some(*n) || owner == Some(*n) {
+                        declared.extend(set_names(list, src));
+                    }
+                }
+                if let Some(fname) = n.child_by_field_name("name") {
+                    declared.push(text(fname));
+                }
+            }
+            // its own names: a function's parameters are those of `parameters`
+            "function_declaration" | "for_numeric_clause" | "for_generic_clause" | "parameters" => {
+                for d in descendants(*n) {
+                    if d.kind() == "identifier"
+                        && d.parent().is_some_and(|p| {
+                            p == *n || (n.kind() == "for_generic_clause" && p.kind() == "variable_list")
+                        })
+                    {
+                        declared.push(text(d));
+                    }
+                }
+            }
+            "assignment_statement" => {
+                let mut c = n.walk();
+                for list in n.children(&mut c).filter(|d| d.kind() == "variable_list") {
+                    // not `local x = ...`: that's a declaration
+                    if n.parent().is_some_and(|p| p.kind() != "variable_declaration") {
+                        assigned.extend(set_names(list, src));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (declared, assigned)
+}
+
 fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
     let tree = super::parse(source, tree_sitter_lua::LANGUAGE.into(), "Lua")?;
     let root = tree.root_node();
@@ -261,41 +310,13 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
     let body = f.child_by_field_name("body");
     let nodes = body.map(descendants).unwrap_or_default();
     let mut called: Vec<&str> = Vec::new();
-    let mut declared: Vec<&str> = Vec::new();
-    let mut assigned: Vec<&str> = Vec::new();
+    let (declared, assigned) = scope(&nodes, source);
     let mut shared: Vec<(String, bool)> = Vec::new();
     for n in &nodes {
         match n.kind() {
             "function_call" => {
                 if let Some(c) = n.child_by_field_name("name").filter(|c| c.kind() == "identifier") {
                     called.push(text(c));
-                }
-            }
-            "variable_declaration" => {
-                for list in descendants(*n).into_iter().filter(|d| d.kind() == "variable_list") {
-                    declared.extend(set_names(list, source));
-                }
-                if let Some(fname) = n.child_by_field_name("name") {
-                    declared.push(text(fname));
-                }
-            }
-            "function_declaration" | "for_numeric_clause" | "for_generic_clause" | "parameters" => {
-                for d in descendants(*n) {
-                    if d.kind() == "identifier"
-                        && d.parent()
-                            .is_some_and(|p| p == *n || p.kind() == "variable_list" || p.kind() == "parameters")
-                    {
-                        declared.push(text(d));
-                    }
-                }
-            }
-            "assignment_statement" => {
-                let mut c = n.walk();
-                for list in n.children(&mut c).filter(|d| d.kind() == "variable_list") {
-                    // not `local x = ...`: that's a declaration
-                    if n.parent().is_some_and(|p| p.kind() != "variable_declaration") {
-                        assigned.extend(set_names(list, source));
-                    }
                 }
             }
             "dot_index_expression" => {
@@ -328,7 +349,106 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
         }
         state.push(a.to_string());
     }
+    // and what its helpers set: the same
+    for (n, _) in top.iter().filter(|(n, _)| n.kind() == "function_declaration" && *n != f) {
+        let hname = n.child_by_field_name("name").map_or("a helper", text);
+        let (declared, assigned) = scope(&descendants(*n), source);
+        for a in assigned {
+            if declared.contains(&a) || state.iter().any(|s| s == a) {
+                continue;
+            }
+            if top_locals.iter().any(|l| l == a) {
+                return Err(format!(
+                    "`{hname}` changes `{a}`, which is `local` at the top: drop the `local` to make it the square's state, which lineit can see"
+                ));
+            }
+            state.push(a.to_string());
+        }
+    }
     state.retain(|s| s != "Shared");
+
+    // `_G` is the machine's, shared by every square: what's set in it is
+    // state lineit can't see
+    for n in descendants(root) {
+        let line = n.start_position().row + 1;
+        let global = |t: Option<Node>| t.is_some_and(|t| t.kind() == "identifier" && text(t) == "_G");
+        let sets_in = match n.kind() {
+            "variable_list" => {
+                let mut c = n.walk();
+                n.children(&mut c).any(|v| {
+                    matches!(v.kind(), "dot_index_expression" | "bracket_index_expression")
+                        && global(v.child_by_field_name("table"))
+                })
+            }
+            "function_call" => {
+                n.child_by_field_name("name").is_some_and(|c| text(c) == "rawset")
+                    && n.child_by_field_name("arguments").is_some_and(|a| global(a.named_child(0)))
+            }
+            _ => false,
+        };
+        if sets_in {
+            return Err(format!(
+                "line {line}: what's set in `_G` isn't the square's state, and lineit can't see it: set a global by its name, like `count = 0`"
+            ));
+        }
+    }
+
+    // a closure at the top: `local inc = make()` of a function of the code
+    // (or `coroutine.wrap(...)`) that a function then calls: where it is,
+    // lineit can't see it
+    let mut defined: Vec<&str> = Vec::new();
+    let mut made: Vec<(&str, &str, usize)> = Vec::new();
+    for (n, _) in &top {
+        if n.kind() == "function_declaration" {
+            defined.extend(n.child_by_field_name("name").filter(|n| n.kind() == "identifier").map(text));
+        }
+        if n.kind() != "variable_declaration" {
+            continue;
+        }
+        for a in descendants(*n).into_iter().filter(|a| a.kind() == "assignment_statement") {
+            let mut c = a.walk();
+            let lists: Vec<Node> = a.children(&mut c).collect();
+            let (Some(names), Some(values)) = (
+                lists.iter().find(|l| l.kind() == "variable_list"),
+                lists.iter().find(|l| l.kind() == "expression_list"),
+            ) else {
+                continue;
+            };
+            let mut c = values.walk();
+            for (name, v) in set_names(*names, source).into_iter().zip(values.named_children(&mut c)) {
+                match v.kind() {
+                    // `local make = function() ... end`
+                    "function_definition" => defined.push(name),
+                    "function_call" => {
+                        if let Some(by) = v.child_by_field_name("name") {
+                            made.push((name, text(by), v.start_position().row + 1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    for (v, by, line) in made {
+        if !defined.contains(&by) && by != "coroutine.wrap" {
+            continue;
+        }
+        for (n, _) in top.iter().filter(|(n, _)| n.kind() == "function_declaration") {
+            let nodes = descendants(*n);
+            if scope(&nodes, source).0.contains(&v) {
+                continue;
+            }
+            if nodes.iter().any(|c| {
+                c.kind() == "function_call"
+                    && c.child_by_field_name("name").is_some_and(|c| c.kind() == "identifier" && text(c) == v)
+            }) {
+                let caller = n.child_by_field_name("name").map_or("a function", text);
+                return Err(format!(
+                    "line {line}: `{v}` is what `{by}(...)` returns, and `{caller}` calls it, so it keeps state between runs: what a Lua square keeps goes in a global, like `count = 0`, where lineit sees it"
+                ));
+            }
+        }
+    }
 
     // a value returned with no type: say so, rather than lose it
     let has_exits = types.iter().any(|(_, t)| t.starts_with("fun("));
@@ -550,6 +670,14 @@ end
         let xs = Value::List(Arc::new(vec![Value::Int(7), Value::Int(8)]));
         let r = m.run(sq, Some("tick"), &[("xs", xs)], &[("x", &Type::Int)]).unwrap();
         assert_eq!(r.fire, [("item".into(), vec![(0, Value::Int(7))]), ("item".into(), vec![(0, Value::Int(8))])]);
+
+        // what's set in `_G` is the machine's: every square sees it
+        let mut f = read("---@return integer\nfunction f()\n  return 1\nend", &Cx).unwrap();
+        f.source = "function f() _G.hits = (_G.hits or 0) + 1 return _G.hits end".into();
+        let mut m = lineit_rt::lua::LuaCode::load("f", &glue(&f)).unwrap();
+        let (a, b) = (m.instance(&[]).unwrap(), m.instance(&[]).unwrap());
+        assert_eq!(m.eval(a, &[], &[("result", &Type::Int)]).unwrap(), [Value::Int(1)]);
+        assert_eq!(m.eval(b, &[], &[("result", &Type::Int)]).unwrap(), [Value::Int(2)]);
 
         // errors are on the code's lines
         let f = read("---@return integer\nfunction f()\n  return nil + 1\nend", &Cx).unwrap();

@@ -25,8 +25,10 @@
 //! - A parameter of type `Out[...]` is an exit: `Out[int]` gives
 //!   `NAME.value`, `Out["half": int]` gives `half`.
 //! - Its state: the variables at the top of the code that aren't in
-//!   capitals (those are constants), and those it declares `global`. Each
-//!   square runs the code as a module of its own.
+//!   capitals (those are constants), and those it or its helpers declare
+//!   `global`. A closure kept at the top (`inc = make()`, `itertools.count()`)
+//!   that a function calls is refused. Each square runs the code as a module
+//!   of its own.
 //!
 //! [`HOST`] runs it (see [`lineit_rt::process::Process`]).
 
@@ -102,7 +104,7 @@ impl Language for Python {
 /// requests (see [`lineit_rt::process`]). What the code prints comes with
 /// each answer, not mixed with them.
 pub const HOST: &str = r#"
-import io, json, sys, types, traceback
+import gc, io, json, sys, types, traceback
 
 out = sys.stdout
 # what the code prints goes to lineit with each answer
@@ -153,7 +155,7 @@ def exit_fn(fire, name, pins):
 
 try:
     code = compile(load["source"], load["file"], "exec")
-    send({})
+    send({"drop": True})
 except Exception as e:
     send(error(e))
     sys.exit(1)
@@ -194,6 +196,12 @@ for line in sys.stdin:
             send({"state": {k: g[k] for k in load["state"] if k in g and plain(g[k])}})
         elif op == "set_state":
             squares[req["sq"]].update(req["state"])
+            send({})
+        elif op == "drop":
+            # `g` is the last one called; its functions' globals are itself,
+            # so only the collector frees it
+            g = squares[req["sq"]] = None
+            gc.collect()
             send({})
     except Exception as e:
         send(error(e))
@@ -292,10 +300,203 @@ fn default_text(n: Node, src: &str) -> Option<String> {
     })
 }
 
+/// Whether N changes the variable NAME in place: sets its items or
+/// attributes, or calls what changes a list, dict or set.
+fn changes(n: Node, name: &str, src: &str) -> bool {
+    let text = |n: Node| &src[n.byte_range()];
+    let is = |n: Option<Node>| n.is_some_and(|n| n.kind() == "identifier" && text(n) == name);
+    match n.kind() {
+        "assignment" | "augmented_assignment" | "delete_statement" => {
+            let target = n.child_by_field_name("left").or_else(|| n.named_child(0));
+            target.is_some_and(|t| match t.kind() {
+                "subscript" => is(t.child_by_field_name("value")),
+                "attribute" => is(t.child_by_field_name("object")),
+                // `acc += [1]` changes a list in place
+                _ => n.kind() == "augmented_assignment" && is(Some(t)),
+            })
+        }
+        "call" => n.child_by_field_name("function").is_some_and(|f| {
+            f.kind() == "attribute"
+                && is(f.child_by_field_name("object"))
+                && f.child_by_field_name("attribute").is_some_and(|a| {
+                    matches!(
+                        text(a),
+                        "append"
+                            | "extend"
+                            | "insert"
+                            | "remove"
+                            | "pop"
+                            | "clear"
+                            | "sort"
+                            | "reverse"
+                            | "add"
+                            | "discard"
+                            | "update"
+                            | "setdefault"
+                            | "popitem"
+                            | "appendleft"
+                            | "popleft"
+                    )
+                })
+        }),
+        _ => false,
+    }
+}
+
+/// Refuses what a function keeps where lineit can't see it: an attribute
+/// set on a function or class of the code (`f.count += 1`), and a mutable
+/// default (`acc=[]`) that a function changes. Such a function looks
+/// stateless: it'd have no tick, and run only if something read its result.
+fn hidden_state(root: Node, src: &str) -> Result<(), String> {
+    let text = |n: Node| &src[n.byte_range()];
+    let goes = "what a Python square keeps goes in a variable at the top of the code, where lineit sees it";
+    let mut c = root.walk();
+    let owners: Vec<&str> = root
+        .named_children(&mut c)
+        .map(|n| if n.kind() == "decorated_definition" { n.child_by_field_name("definition").unwrap_or(n) } else { n })
+        .filter(|n| matches!(n.kind(), "function_definition" | "class_definition"))
+        .filter_map(|n| n.child_by_field_name("name").map(text))
+        .collect();
+    // a closure at the top: `inc = make()` of a function of the code, or of an
+    // iterator that moves (`itertools.count()`, `iter(...)`), that a function
+    // then calls (`inc()`, `next(inc)`): where it is, lineit can't see
+    let mut c = root.walk();
+    let tops: Vec<Node> = root
+        .named_children(&mut c)
+        .map(|n| if n.kind() == "decorated_definition" { n.child_by_field_name("definition").unwrap_or(n) } else { n })
+        .collect();
+    let defs: Vec<&str> = tops
+        .iter()
+        .filter(|n| n.kind() == "function_definition")
+        .filter_map(|n| n.child_by_field_name("name").map(text))
+        .collect();
+    // what `from itertools import ...` brings: (its name here, its name there)
+    let mut from_itertools: Vec<(&str, &str)> = Vec::new();
+    for n in tops.iter().filter(|n| n.kind() == "import_from_statement") {
+        if n.child_by_field_name("module_name").is_none_or(|m| text(m) != "itertools") {
+            continue;
+        }
+        let mut c = n.walk();
+        for i in n.children_by_field_name("name", &mut c) {
+            match i.kind() {
+                "aliased_import" => {
+                    if let (Some(a), Some(o)) = (i.child_by_field_name("alias"), i.child_by_field_name("name")) {
+                        from_itertools.push((text(a), text(o)));
+                    }
+                }
+                _ => from_itertools.push((text(i), text(i))),
+            }
+        }
+    }
+    let functions: Vec<Node> = descendants(root).into_iter().filter(|n| n.kind() == "function_definition").collect();
+    for a in tops.iter().filter(|n| n.kind() == "expression_statement").filter_map(|n| n.named_child(0)) {
+        let (Some(l), Some(r)) = (a.child_by_field_name("left"), a.child_by_field_name("right")) else { continue };
+        if a.kind() != "assignment" || l.kind() != "identifier" || r.kind() != "call" {
+            continue;
+        }
+        let Some(made) = r.child_by_field_name("function") else { continue };
+        let by = text(made);
+        let moves = by == "itertools.count"
+            || by == "itertools.cycle"
+            || by == "iter"
+            || from_itertools.iter().any(|(here, there)| *here == by && matches!(*there, "count" | "cycle"));
+        if !moves && !(made.kind() == "identifier" && defs.contains(&by)) {
+            continue;
+        }
+        let v = text(l);
+        for f in functions.iter() {
+            // a parameter of that name is another variable
+            let shadowed = f.child_by_field_name("parameters").is_some_and(|ps| {
+                let mut c = ps.walk();
+                ps.named_children(&mut c).any(|p| {
+                    let n = if p.kind() == "identifier" {
+                        Some(p)
+                    } else {
+                        p.child_by_field_name("name").or(p.named_child(0))
+                    };
+                    n.is_some_and(|n| text(n) == v)
+                })
+            });
+            let body = f.child_by_field_name("body").map(descendants).unwrap_or_default();
+            // or one it sets itself (it's `global` if it says so)
+            let sets = body
+                .iter()
+                .any(|n| n.kind() == "assignment" && n.child_by_field_name("left").is_some_and(|l| text(l) == v))
+                && !body.iter().any(|n| n.kind() == "global_statement" && text(*n).contains(v));
+            let calls = !shadowed
+                && !sets
+                && body.iter().any(|n| {
+                    n.kind() == "call"
+                        && n.child_by_field_name("function").is_some_and(|c| {
+                            c.kind() == "identifier"
+                                && (text(c) == v
+                                    || text(c) == "next"
+                                        && n.child_by_field_name("arguments")
+                                            .and_then(|a| a.named_child(0))
+                                            .is_some_and(|a| a.kind() == "identifier" && text(a) == v))
+                        })
+                });
+            if calls {
+                return Err(format!(
+                    "line {}: `{v}` is what `{by}(...)` returns, and `{}` calls it, so it keeps state between runs: {goes}",
+                    a.start_position().row + 1,
+                    f.child_by_field_name("name").map_or("a function", text)
+                ));
+            }
+        }
+    }
+    for f in descendants(root).into_iter().filter(|n| n.kind() == "function_definition") {
+        let body = f.child_by_field_name("body").map(descendants).unwrap_or_default();
+        for n in body.iter().filter(|n| matches!(n.kind(), "assignment" | "augmented_assignment")) {
+            if let Some(l) = n.child_by_field_name("left").filter(|l| l.kind() == "attribute")
+                && let (Some(o), Some(a)) = (l.child_by_field_name("object"), l.child_by_field_name("attribute"))
+                && o.kind() == "identifier"
+                && owners.contains(&text(o))
+            {
+                return Err(format!(
+                    "line {}: `{}.{}` is set on `{}`: {goes}",
+                    n.start_position().row + 1,
+                    text(o),
+                    text(a),
+                    text(o)
+                ));
+            }
+        }
+        let Some(ps) = f.child_by_field_name("parameters") else { continue };
+        let mut c = ps.walk();
+        for p in ps.named_children(&mut c).filter(|p| p.kind().ends_with("default_parameter")) {
+            let (Some(name), Some(v)) = (p.child_by_field_name("name"), p.child_by_field_name("value")) else {
+                continue;
+            };
+            let mutable = match v.kind() {
+                "list"
+                | "dictionary"
+                | "set"
+                | "list_comprehension"
+                | "dictionary_comprehension"
+                | "set_comprehension" => true,
+                "call" => v
+                    .child_by_field_name("function")
+                    .is_some_and(|f| matches!(text(f), "list" | "dict" | "set" | "bytearray")),
+                _ => false,
+            };
+            if mutable && body.iter().any(|n| changes(*n, text(name), src)) {
+                return Err(format!(
+                    "line {}: `{}` is a default that the function changes, so it keeps it between runs: {goes}",
+                    p.start_position().row + 1,
+                    text(name)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
     let tree = super::parse(source, tree_sitter_python::LANGUAGE.into(), "Python")?;
     let root = tree.root_node();
     let text = |n: Node| &source[n.byte_range()];
+    hidden_state(root, source)?;
 
     // what's at the top: the function, its helpers, the variables, the
     // named tuples
@@ -449,20 +650,22 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<Function, String> {
         ));
     }
 
+    // what it declares `global`, in its helpers too
+    for n in descendants(root).into_iter().filter(|n| n.kind() == "global_statement") {
+        let mut c = n.walk();
+        for g in n.named_children(&mut c) {
+            let g = text(g).to_string();
+            if !state.contains(&g) {
+                state.push(g);
+            }
+        }
+    }
+
     // what its body uses
     let nodes = body.map(descendants).unwrap_or_default();
     let mut shared: Vec<(String, bool)> = Vec::new();
     for n in &nodes {
         match n.kind() {
-            "global_statement" => {
-                let mut c = n.walk();
-                for g in n.named_children(&mut c) {
-                    let g = text(g).to_string();
-                    if !state.contains(&g) {
-                        state.push(g);
-                    }
-                }
-            }
             "call" => {
                 if let Some(callee) = n.child_by_field_name("function").filter(|c| c.kind() == "identifier") {
                     let callee = text(callee);

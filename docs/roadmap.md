@@ -172,7 +172,10 @@ does, or starts again; removed squares' state is dropped; clocks keep their
 schedule (or the new interval if that comes first); modules that didn't
 change keep running with their state (a module that builds files, C# or
 Rust, ends before its replacement opens, and opens again if its files
-changed on disk). New entries run, the old ones don't. Everything that can
+changed on disk), and free the instances of the squares that went away
+(`Ext::drop_instance`; a language added with a file does if its host says
+it can). New entries run (several at once as branches, with the meets they have
+among themselves), the old ones don't. Everything that can
 fail is worked out before the old program is given up. A canvas with errors
 is not swapped: the old program goes on and the bar says so. A program that
 never goes idle (a loop of wires, a `while` in a fan-out) waits, and the bar
@@ -191,7 +194,8 @@ checks it.
 **Codegen** (Compile). Each handler becomes a function. A set of handlers
 that tick each other in a cycle becomes one function looping over a `match`,
 so a tick back into the cycle is a jump. Fan-outs become
-`std::thread::scope`. A program with no fan-out keeps its state as plain
+`branch::fan_out`: branches on a pool of threads (rayon, one per core), and
+on a thread of their own past that, as they can wait for each other. A program with no fan-out keeps its state as plain
 fields in a struct passed as `&mut`; with fan-outs, numbers and bools are
 atomics (relaxed order) and the rest are behind `Mutex`es. Types are
 concrete: `i64`, `f64`, `String`, `Vec<T>`, generated structs for records.

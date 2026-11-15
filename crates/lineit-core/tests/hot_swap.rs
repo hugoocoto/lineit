@@ -255,6 +255,310 @@ fn a_csharp_square_keeps_its_state_and_the_files_changing_opens_it_again() {
     assert_eq!(ticks(&it), Some(Value::Int(1)));
 }
 
+/// A clock that ticks the Python squares 2 and 3 (which have the same code, so
+/// they're instances of one module), the second only if TWO; and INTERVAL
+/// (Lua) sets the interval. Each instance writes a line to LOG when it's
+/// freed (Python runs a destructor then).
+fn probes(log: &std::path::Path, two: bool, interval: &str) -> lineit_core::model::Canvas {
+    let code = format!(
+        "PATH = {:?}\n\nclass Probe:\n    def __del__(self):\n        with open(PATH, 'a') as f:\n            f.write('x\\n')\n\nprobe = Probe()\nticks = 0\n\ndef counter() -> int:\n    global ticks\n    ticks += 1\n    return ticks\n",
+        log.display().to_string()
+    );
+    let (second, link) = if two {
+        (
+            format!(
+                r#"{{ id = 3, module = "code/function", params = {{ language = "python", code = {} }} }},"#,
+                lineit_core::file::quote(&code)
+            ),
+            r#", { 1, "tick", 3, "tick" }"#,
+        )
+    } else {
+        (String::new(), "")
+    };
+    let src = format!(
+        r#"return {{ lineit = 1, squares = {{
+        {{ id = 1, module = "flow/clock" }},
+        {{ id = 2, module = "code/function", params = {{ language = "python", code = {} }} }},
+        {{ id = 4, module = "code/function", params = {{ code = {} }} }},
+        {second}
+        }}, links = {{ {{ 4, "result", 1, "interval" }}, {{ 1, "tick", 2, "tick" }} {link} }} }}"#,
+        lineit_core::file::quote(&code),
+        lineit_core::file::quote(interval)
+    );
+    lineit_core::file::read_canvas(&src, "probes").unwrap()
+}
+
+/// How many instances of the probes have been freed.
+fn freed(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |s| s.lines().count())
+}
+
+#[test]
+fn the_instance_of_a_deleted_square_is_freed_and_one_that_stays_isnt() {
+    let log = std::env::temp_dir().join(format!("lineit-freed-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let good = "---@return number\nfunction iv()\n    return 100.0\nend\n";
+    let bad = "---@return number\nfunction iv()\n    error('boom')\nend\n";
+    let mut it = start(&probes(&log, true, good));
+    tick(&mut it);
+    // an edit that keeps both
+    it.swap(program(&probes(&log, true, good)), false).unwrap();
+    assert_eq!(freed(&log), 0, "they stay");
+    // an edit that fails (as it sets the clocks) while it deletes one: nothing is freed
+    assert!(it.swap(program(&probes(&log, false, bad)), false).is_err());
+    assert_eq!(freed(&log), 0, "the old program goes on, with both");
+    tick(&mut it);
+    // the edit that deletes one frees its instance, in the module that stays
+    it.swap(program(&probes(&log, false, good)), false).unwrap();
+    assert_eq!(freed(&log), 1, "square 3 is freed");
+    tick(&mut it);
+    assert_eq!(it.w.code_states()[&2].iter().find(|(n, _)| n == "ticks").map(|(_, v)| v.clone()), Some(Value::Int(3)));
+    it.swap(program(&probes(&log, false, good)), false).unwrap();
+    assert_eq!(freed(&log), 1, "and square 2 stays");
+    let _ = std::fs::remove_file(&log);
+}
+
+/// Like `probes`, with Rust squares: the state of each (`ticks`) writes a
+/// line to LOG when it's dropped, which is what freeing it does.
+fn rust_probes(log: &std::path::Path, two: bool, interval: &str) -> lineit_core::model::Canvas {
+    let code = format!(
+        "#[derive(Default)]\npub struct Probe {{\n    ticks: i64,\n}}\n\nimpl Drop for Probe {{\n    fn drop(&mut self) {{\n        use std::io::Write;\n        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open({:?}) {{\n            let _ = writeln!(f, \"x\");\n        }}\n    }}\n}}\n\nimpl Probe {{\n    pub fn counter(&mut self) -> i64 {{\n        self.ticks += 1;\n        self.ticks\n    }}\n}}\n",
+        log.display().to_string()
+    );
+    let (second, link) = if two {
+        (
+            format!(
+                r#"{{ id = 3, module = "code/function", params = {{ language = "rust", code = {} }} }},"#,
+                lineit_core::file::quote(&code)
+            ),
+            r#", { 1, "tick", 3, "tick" }"#,
+        )
+    } else {
+        (String::new(), "")
+    };
+    let src = format!(
+        r#"return {{ lineit = 1, squares = {{
+        {{ id = 1, module = "flow/clock" }},
+        {{ id = 2, module = "code/function", params = {{ language = "rust", code = {} }} }},
+        {{ id = 4, module = "code/function", params = {{ code = {} }} }},
+        {second}
+        }}, links = {{ {{ 4, "result", 1, "interval" }}, {{ 1, "tick", 2, "tick" }} {link} }} }}"#,
+        lineit_core::file::quote(&code),
+        lineit_core::file::quote(interval)
+    );
+    lineit_core::file::read_canvas(&src, "rust_probes").unwrap()
+}
+
+#[test]
+fn the_instance_of_a_deleted_rust_square_is_freed_and_one_that_stays_isnt() {
+    let log = std::env::temp_dir().join(format!("lineit-rust-freed-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let good = "---@return number\nfunction iv()\n    return 100.0\nend\n";
+    let bad = "---@return number\nfunction iv()\n    error('boom')\nend\n";
+    let state = |it: &Interp, sq| it.w.code_states()[&sq].iter().find(|(n, _)| n == "ticks").map(|(_, v)| v.clone());
+    let mut it = start(&rust_probes(&log, true, good));
+    tick(&mut it);
+    tick(&mut it);
+    assert_eq!((state(&it, 2), state(&it, 3)), (Some(Value::Int(2)), Some(Value::Int(2))));
+    assert_eq!(freed(&log), 0, "made, not dropped");
+    // an edit that keeps both
+    it.swap(program(&rust_probes(&log, true, good)), false).unwrap();
+    assert_eq!(freed(&log), 0, "they stay");
+    // an edit that fails while it deletes one: nothing is freed
+    assert!(it.swap(program(&rust_probes(&log, false, bad)), false).is_err());
+    assert_eq!(freed(&log), 0, "the old program goes on, with both");
+    // the edit that deletes one frees its instance, and that one only
+    it.swap(program(&rust_probes(&log, false, good)), false).unwrap();
+    assert_eq!(freed(&log), 1, "square 3 is freed");
+    tick(&mut it);
+    assert_eq!(state(&it, 2), Some(Value::Int(3)), "square 2 kept its state");
+    assert!(!it.w.code_states().contains_key(&3));
+    it.swap(program(&rust_probes(&log, false, good)), false).unwrap();
+    assert_eq!(freed(&log), 1, "and square 2 stays");
+    let _ = std::fs::remove_file(&log);
+}
+
+/// The host of LANGUAGE frees an instance when asked, and the others go on.
+fn host_frees(language: &str, code: &str) {
+    let p = program(&counter(language, code, "n {}"));
+    let mut m = lineit_core::interp::open_ext(&p.exts[0].path, &p.exts[0].kind).unwrap();
+    let (a, b) = (m.instance(&[]).unwrap(), m.instance(&[]).unwrap());
+    assert!(m.state(a).is_ok() && m.state(b).is_ok(), "{language}");
+    m.drop_instance(a).unwrap();
+    assert!(m.state(a).is_err(), "{language}: it's gone");
+    assert!(m.state(b).is_ok(), "{language}: the other one isn't");
+    assert_eq!(m.instance(&[]).unwrap(), 2, "{language}: its number isn't used again");
+}
+
+#[test]
+fn a_python_host_frees_an_instance() {
+    host_frees("python", PYTHON);
+}
+
+#[test]
+fn a_csharp_host_frees_an_instance() {
+    if !lineit_core::registry::code::sdk_ready() {
+        eprintln!("skipped: no .NET SDK");
+        return;
+    }
+    host_frees("csharp", CSHARP);
+}
+
+#[test]
+fn a_failed_swap_frees_the_instances_it_made() {
+    let log = std::env::temp_dir().join(format!("lineit-made-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let good = "---@return number\nfunction iv()\n    return 100.0\nend\n";
+    let bad = "---@return number\nfunction iv()\n    error('boom')\nend\n";
+    let mut it = start(&probes(&log, false, good));
+    tick(&mut it);
+    // square 3 is new: it's made, and then the clocks fail
+    assert!(it.swap(program(&probes(&log, true, bad)), false).is_err());
+    assert_eq!(freed(&log), 1, "the instance made for square 3");
+    tick(&mut it);
+    assert_eq!(it.w.code_states()[&2].iter().find(|(n, _)| n == "ticks").map(|(_, v)| v.clone()), Some(Value::Int(2)));
+    let _ = std::fs::remove_file(&log);
+}
+
+/// A clock that ticks a C counter (CODE) in each of SQUARES, which print what
+/// it gives; INTERVAL (Lua) sets the interval.
+fn c_squares(squares: &[u32], code: &str, interval: &str) -> lineit_core::model::Canvas {
+    let mut body = format!(
+        r#"{{ id = 1, module = "flow/clock" }},
+        {{ id = 9, module = "code/function", params = {{ code = {} }} }},"#,
+        lineit_core::file::quote(interval)
+    );
+    let mut links = r#"{ 9, "result", 1, "interval" },"#.to_string();
+    for s in squares {
+        body += &format!(
+            r#"
+        {{ id = {s}, module = "code/function", params = {{ language = "c", code = {} }} }},
+        {{ id = {f}, module = "string/format", params = {{ format = "n {{}}" }} }},
+        {{ id = {p}, module = "io/print" }},"#,
+            lineit_core::file::quote(code),
+            f = s + 100,
+            p = s + 200
+        );
+        links += &format!(
+            r#" {{ 1, "tick", {s}, "tick" }}, {{ {s}, "result", {f}, "1" }}, {{ {f}, "text", {p}, "value" }}, {{ {s}, "then", {p}, "tick" }},"#,
+            f = s + 100,
+            p = s + 200
+        );
+    }
+    let src = format!("return {{ lineit = 1, squares = {{ {body} }}, links = {{ {links} }} }}");
+    lineit_core::file::read_canvas(&src, "c_squares").unwrap()
+}
+
+#[test]
+fn a_failed_swap_reopens_the_modules_that_closed_first_with_the_numbers_it_had() {
+    let good = "---@return number\nfunction iv()\n    return 100.0\nend\n";
+    let bad = "---@return number\nfunction iv()\n    error('boom')\nend\n";
+    let code = "static int64_t ticks = 0;\n\nint64_t counter(void) {\n    return ++ticks;\n}\n";
+    let other = code.replace("++ticks", "ticks += 2, ticks");
+    let mut it = start(&c_squares(&[3, 4], code, good));
+    tick(&mut it);
+    // 2 is new (its number is the last) and 3 is freed: they aren't in order, and have a gap
+    it.swap(program(&c_squares(&[2, 4], code, good)), false).unwrap();
+    assert_eq!(output(&it).len(), 2);
+    // other code opens a new module, so this one ends first; the edit fails, and it opens again
+    let e = it.swap(program(&c_squares(&[2, 4], &other, bad)), false).unwrap_err();
+    assert!(e.contains("opened again") && !e.contains("can't go on"), "{e}");
+    tick(&mut it);
+    assert_eq!(output(&it), vec!["n 1", "n 1"], "both squares work, from the start");
+    // and an edit that keeps them works too
+    it.swap(program(&c_squares(&[2, 4], code, good)), false).unwrap();
+    tick(&mut it);
+    assert_eq!(output(&it), vec!["n 2", "n 2"]);
+}
+
+/// The squares of IDS count in code of LANGUAGE (CODE), each adding its own
+/// step (what makes them tell apart: 1, 7 or 100), one clock ticks them, and
+/// they print what they give.
+fn stepped(language: &str, ids: &[u32], code: &str, interval: &str) -> lineit_core::model::Canvas {
+    let mut body = format!(
+        r#"{{ id = 1, module = "flow/clock" }},
+        {{ id = 9, module = "code/function", params = {{ code = {} }} }},"#,
+        lineit_core::file::quote(interval)
+    );
+    let mut links = r#"{ 9, "result", 1, "interval" },"#.to_string();
+    for &s in ids {
+        let step = match s {
+            2 => 1,
+            3 => 7,
+            _ => 100,
+        };
+        body += &format!(
+            r#"
+        {{ id = {s}, module = "code/function", params = {{ language = "{language}", code = {} }}, fields = {{ step = "{step}" }} }},
+        {{ id = {f}, module = "string/format", params = {{ format = "n {{}}" }} }},
+        {{ id = {p}, module = "io/print" }},"#,
+            lineit_core::file::quote(code),
+            f = s + 100,
+            p = s + 200
+        );
+        links += &format!(
+            r#" {{ 1, "tick", {s}, "tick" }}, {{ {s}, "result", {f}, "1" }}, {{ {f}, "text", {p}, "value" }}, {{ {s}, "then", {p}, "tick" }},"#,
+            f = s + 100,
+            p = s + 200
+        );
+    }
+    let src = format!("return {{ lineit = 1, squares = {{ {body} }}, links = {{ {links} }} }}");
+    lineit_core::file::read_canvas(&src, "stepped").unwrap()
+}
+
+fn sorted_output(it: &Interp) -> Vec<String> {
+    let mut o = output(it);
+    o.sort();
+    o
+}
+
+/// What a failed edit does to a module that ended first (C# and Rust, as C
+/// above): it opens again, and each square has the number the program holds
+/// (2 is new and 3 is freed, so they're out of order, with a gap) and
+/// counts its own steps. CODE adds STEP to `ticks`; OTHER does the same
+/// written in another way, so it's another module.
+fn reopens_with_their_numbers(language: &str, code: &str, other: &str) {
+    let good = "---@return number\nfunction iv()\n    return 100.0\nend\n";
+    let bad = "---@return number\nfunction iv()\n    error('boom')\nend\n";
+    let mut it = start(&stepped(language, &[3, 4], code, good));
+    tick(&mut it);
+    tick(&mut it);
+    assert_eq!(sorted_output(&it), vec!["n 100", "n 14", "n 200", "n 7"], "{language}");
+    it.swap(program(&stepped(language, &[2, 4], code, good)), false).unwrap();
+    tick(&mut it);
+    assert_eq!(sorted_output(&it), vec!["n 1", "n 300"], "{language}: 4 keeps its state, 2 is new");
+    // other code opens a new module, so this one ends first; the edit fails, and it opens again
+    let e = it.swap(program(&stepped(language, &[2, 4], other, bad)), false).unwrap_err();
+    assert!(e.contains("opened again") && !e.contains("can't go on"), "{language}: {e}");
+    let states = it.w.code_states();
+    assert!(states[&2].iter().all(|(_, v)| *v == Value::Int(0)), "{language}: {states:?}");
+    assert!(states[&4].iter().all(|(_, v)| *v == Value::Int(0)), "{language}: {states:?}");
+    tick(&mut it);
+    assert_eq!(sorted_output(&it), vec!["n 1", "n 100"], "{language}: each one adds its own step, from the start");
+    tick(&mut it);
+    assert_eq!(sorted_output(&it), vec!["n 2", "n 200"], "{language}");
+    // and an edit that keeps them works too
+    it.swap(program(&stepped(language, &[2, 4], code, good)), false).unwrap();
+    tick(&mut it);
+    assert_eq!(sorted_output(&it), vec!["n 3", "n 300"], "{language}");
+}
+
+#[test]
+fn a_failed_swap_reopens_a_csharp_module_with_the_numbers_it_had() {
+    if !lineit_core::registry::code::sdk_ready() {
+        eprintln!("skipped: no .NET SDK");
+        return;
+    }
+    let code = "static class Counter\n{\n    static long ticks = 0;\n\n    public static long Counter1(long step)\n    {\n        ticks += step;\n        return ticks;\n    }\n}\n";
+    reopens_with_their_numbers("csharp", code, &code.replace("ticks += step", "ticks = ticks + step"));
+}
+
+#[test]
+fn a_failed_swap_reopens_a_rust_module_with_the_numbers_it_had() {
+    let code = "#[derive(Default)]\npub struct Counter {\n    ticks: i64,\n}\n\nimpl Counter {\n    pub fn counter(&mut self, step: i64) -> i64 {\n        self.ticks += step;\n        self.ticks\n    }\n}\n";
+    reopens_with_their_numbers("rust", code, &code.replace("self.ticks += step", "self.ticks = self.ticks + step"));
+}
+
 #[test]
 fn a_failed_swap_leaves_the_old_program_as_it_was() {
     // the interval comes from a Lua function: the edit's fails, when the clocks are set
@@ -308,6 +612,59 @@ fn a_new_entry_runs_after_the_swap_and_the_old_ones_dont() {
     assert_eq!(r.started, 1);
     while it.run(1 << 20).unwrap() != Status::Idle {}
     assert_eq!(output(&it), vec!["b"]);
+}
+
+/// Entries that are new together are branches with meets, as at the start:
+/// a square they all reach runs once.
+#[test]
+fn new_entries_that_meet_run_the_meet_once() {
+    let canvas = |entries: usize| {
+        let mut squares = String::from(
+            r#"{ id = 1, module = "flow/entry" }, { id = 2, module = "io/print", fields = { value = "a" } },
+            { id = 9, module = "io/print", fields = { value = "m" } },"#,
+        );
+        let mut links = String::from(r#"{ 1, "then", 2, "tick" },"#);
+        for i in 0..entries {
+            let (e, p) = (10 + 2 * i, 11 + 2 * i);
+            squares += &format!(
+                r#"{{ id = {e}, module = "flow/entry" }}, {{ id = {p}, module = "io/print", fields = {{ value = "n{i}" }} }},"#
+            );
+            links += &format!(r#" {{ {e}, "then", {p}, "tick" }}, {{ {p}, "then", 9, "tick" }},"#);
+        }
+        let src = format!("return {{ lineit = 1, squares = {{ {squares} }}, links = {{ {links} }} }}");
+        lineit_core::file::read_canvas(&src, "meets").unwrap()
+    };
+    let mut it = start(&canvas(0));
+    while it.run(1 << 20).unwrap() != Status::Idle {}
+    assert_eq!(output(&it), vec!["a"]);
+    let r = it.swap(program(&canvas(2)), false).unwrap();
+    assert_eq!(r.started, 2);
+    while it.run(1 << 20).unwrap() != Status::Idle {}
+    let out = output(&it);
+    assert_eq!(out.iter().filter(|l| *l == "m").count(), 1, "{out:?}");
+    assert_eq!(out.len(), 3, "{out:?}");
+}
+
+/// One new entry is a plain call: no meets, nothing changes.
+#[test]
+fn one_new_entry_with_a_square_it_shares_with_an_old_one_runs_it() {
+    let canvas = |two: bool| {
+        let extra = if two { r#"{ id = 3, module = "flow/entry" },"# } else { "" };
+        let more = if two { r#", { 3, "then", 4, "tick" }"# } else { "" };
+        let src = format!(
+            r#"return {{ lineit = 1, squares = {{
+            {{ id = 1, module = "flow/entry" }}, {{ id = 4, module = "io/print", fields = {{ value = "m" }} }}, {extra}
+            }}, links = {{ {{ 1, "then", 4, "tick" }} {more} }} }}"#
+        );
+        lineit_core::file::read_canvas(&src, "one").unwrap()
+    };
+    let mut it = start(&canvas(false));
+    while it.run(1 << 20).unwrap() != Status::Idle {}
+    assert_eq!(output(&it), vec!["m"]);
+    let r = it.swap(program(&canvas(true)), false).unwrap();
+    assert_eq!(r.started, 1);
+    while it.run(1 << 20).unwrap() != Status::Idle {}
+    assert_eq!(output(&it), vec!["m"]);
 }
 
 /// Stop reaches the processes of the world an edit made, and a new entry

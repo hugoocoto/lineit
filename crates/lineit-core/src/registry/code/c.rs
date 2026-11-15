@@ -30,7 +30,8 @@
 //!   `::NAME` it uses as fields: `shared->total`.
 //! - Its state: the variables at the top of the code (not `const`): int64_t,
 //!   double or bool. Each square has its own; lineit puts them in the
-//!   variables before each call, and takes them back after.
+//!   variables before each call, and takes them back after. A `static`
+//!   inside a function is refused: lineit can't see it.
 //!
 //! The code goes in a crate as it is (`#include`d by the glue, so the
 //! compiler's errors have its lines), with its glue in C ([`glue_c`]),
@@ -204,6 +205,26 @@ fn has_child(n: Node, kind: &str, text: Option<&str>, src: &str) -> bool {
     n.children(&mut c).any(|c| c.kind() == kind && text.is_none_or(|t| &src[c.byte_range()] == t))
 }
 
+/// Refuses a `static` variable inside the function F (or its helpers):
+/// it's state lineit can't see (the square wouldn't be a ticked one, and
+/// would run only if something read its result).
+fn hidden_state(f: Node, src: &str) -> Result<(), String> {
+    for n in f.child_by_field_name("body").map(descendants).unwrap_or_default() {
+        if n.kind() == "declaration"
+            && has_child(n, "storage_class_specifier", Some("static"), src)
+            && !has_child(n, "type_qualifier", Some("const"), src)
+        {
+            let mut c = n.walk();
+            let name = n.children_by_field_name("declarator", &mut c).find_map(|d| declared(d, src)).unwrap_or("it");
+            return Err(format!(
+                "line {}: `{name}` is `static` inside a function: what a C square keeps goes at the top of the code, where lineit sees it",
+                n.start_position().row + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
     let tree = super::parse(source, tree_sitter_c::LANGUAGE.into(), "C")?;
     let root = tree.root_node();
@@ -216,6 +237,9 @@ fn read(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
     let mut c = root.walk();
     for n in root.named_children(&mut c) {
         let is_static = has_child(n, "storage_class_specifier", Some("static"), source);
+        if n.kind() == "function_definition" {
+            hidden_state(n, source)?;
+        }
         match n.kind() {
             "function_definition" if !is_static => found.push(n),
             "declaration" => {
@@ -835,7 +859,8 @@ lineit_rt::export_modules!(LineitSquare);
 fn write_crate(f: &Function, read: &Read) -> Result<(PathBuf, String), String> {
     let file = f.origin("c", true);
     // the crate's names are its own: a program can link several
-    let key = format!("{}{file}{:?}{:?}", f.source, f.shared, f.shared_types);
+    // and the runtime's, as in the Rust squares'
+    let key = format!("{}{file}{:?}{:?}{}", f.source, f.shared, f.shared_types, crate::codegen::runtime_id());
     let h = format!("{:016x}", crate::codegen::fnv(key.as_bytes()));
     let crate_name = format!("{}{h}", super::rust::CRATE_PREFIX);
     let dir = crate::paths::cache_dir().join("code").join(&crate_name);
@@ -935,5 +960,19 @@ void collatz(int64_t n, Shared *shared, void (*even)(int64_t half), void (*odd)(
         assert!(err("void f(foo x) {}").contains("`foo` isn't a type"));
         assert!(err("static list_int seen;\nvoid f(void) {}").contains("int64_t, double or bool"));
         assert!(err("void f(int64_t x {}").contains("line 1"));
+        // a `static` inside a function is state lineit can't see
+        assert!(err("int64_t f() { static int64_t n = 0; return ++n; }").contains("`n` is `static` inside"));
+        assert!(
+            err("static int64_t g(void) {\n    static int64_t m;\n    return ++m;\n}\nint64_t f(void) { return g(); }")
+                .contains("line 2: `m` is `static`")
+        );
+    }
+
+    #[test]
+    fn empty_parameters_are_none() {
+        let (f, _) = read("int64_t f() { return 1; }", &Cx).unwrap();
+        assert!(f.params.is_empty());
+        // a constant inside is no state
+        assert!(read("int64_t f() { static const int64_t k = 1; return k; }", &Cx).is_ok());
     }
 }

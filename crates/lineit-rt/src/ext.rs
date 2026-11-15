@@ -62,6 +62,12 @@ pub trait Ext: Send {
         Handles::default()
     }
 
+    /// Frees square INST: its state goes, and its number isn't used again.
+    /// For a square that went away while the module stays (an edit while
+    /// running); a program that ends ends its modules. One that can't free
+    /// it (a language host that doesn't know how) says Ok and keeps it.
+    fn drop_instance(&mut self, inst: usize) -> Result<(), String>;
+
     /// Gives square INST these values to keep, as a test does.
     fn set_state(&mut self, inst: usize, state: &[(&str, Value)]) -> Result<(), String> {
         let _ = (inst, state);
@@ -76,6 +82,9 @@ impl Ext for crate::lua::LuaModule {
     }
     fn instance(&mut self, params: &[(&str, Value)]) -> Result<usize, String> {
         crate::lua::LuaModule::instance(self, params)
+    }
+    fn drop_instance(&mut self, inst: usize) -> Result<(), String> {
+        crate::lua::LuaModule::drop_instance(self, inst)
     }
     fn eval(&mut self, inst: usize, inputs: &[(&str, Value)], outputs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
         crate::lua::LuaModule::eval(self, inst, inputs, outputs)
@@ -98,6 +107,10 @@ pub struct Handles {
     pub kill: Option<Box<dyn Fn() + Send + Sync>>,
     /// The lines it wrote to stderr, if they're kept ([`capture_stderr`]).
     pub stderr: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+    /// The lines it wrote to stdout itself, if they're kept: the program's
+    /// own, as if it wasn't captured (a process whose stdout is its talk with
+    /// lineit has none: what the code prints comes in its answers).
+    pub stdout: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
 }
 
 static CAPTURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

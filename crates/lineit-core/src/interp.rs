@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use lineit_rt::Ext;
-use lineit_rt::ext::{Handles, Ticked};
+use lineit_rt::ext::{Handles, Run, Ticked};
 use lineit_rt::lua::LuaModule;
 use lineit_rt::{Record, Type, Value, image as img, ops, rand, text};
 
@@ -281,11 +281,82 @@ impl Ext for Gone {
     fn instance(&mut self, _: &[(&str, Value)]) -> Result<usize, String> {
         Err("the module is in another program".into())
     }
+    fn drop_instance(&mut self, _: usize) -> Result<(), String> {
+        Ok(())
+    }
     fn eval(&mut self, _: usize, _: &[(&str, Value)], _: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
         Err("the module is in another program".into())
     }
     fn tick(&mut self, _: usize, _: Option<&str>, _: &[(&str, Value)], _: &[(&str, &Type)]) -> Result<Ticked, String> {
         Err("the module is in another program".into())
+    }
+}
+
+/// A module that opened again, whose squares have the numbers the program
+/// holds (OUTER), not those it gave now (INNER): a module numbers the
+/// squares in the order they're made, and the program's numbers have gaps
+/// and are out of order after edits.
+struct Renumbered {
+    inner: Box<dyn Ext>,
+    /// By outer number.
+    map: HashMap<usize, usize>,
+    /// The outer number of the next square.
+    next: usize,
+}
+
+impl Renumbered {
+    fn at(&self, outer: usize) -> Result<usize, String> {
+        self.map.get(&outer).copied().ok_or_else(|| format!("no square {outer}"))
+    }
+}
+
+impl Ext for Renumbered {
+    fn instance(&mut self, params: &[(&str, Value)]) -> Result<usize, String> {
+        let inner = self.inner.instance(params)?;
+        self.map.insert(self.next, inner);
+        self.next += 1;
+        Ok(self.next - 1)
+    }
+    fn drop_instance(&mut self, inst: usize) -> Result<(), String> {
+        let inner = self.at(inst)?;
+        self.inner.drop_instance(inner)?;
+        self.map.remove(&inst);
+        Ok(())
+    }
+    fn eval(&mut self, inst: usize, inputs: &[(&str, Value)], outputs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
+        let inner = self.at(inst)?;
+        self.inner.eval(inner, inputs, outputs)
+    }
+    fn tick(
+        &mut self,
+        inst: usize,
+        input: Option<&str>,
+        inputs: &[(&str, Value)],
+        outputs: &[(&str, &Type)],
+    ) -> Result<Ticked, String> {
+        let inner = self.at(inst)?;
+        self.inner.tick(inner, input, inputs, outputs)
+    }
+    fn run(
+        &mut self,
+        inst: usize,
+        input: Option<&str>,
+        inputs: &[(&str, Value)],
+        outputs: &[(&str, &Type)],
+    ) -> Result<Run, String> {
+        let inner = self.at(inst)?;
+        self.inner.run(inner, input, inputs, outputs)
+    }
+    fn state(&mut self, inst: usize) -> Result<Vec<(String, Value)>, String> {
+        let inner = self.at(inst)?;
+        self.inner.state(inner)
+    }
+    fn handles(&mut self) -> Handles {
+        self.inner.handles()
+    }
+    fn set_state(&mut self, inst: usize, state: &[(&str, Value)]) -> Result<(), String> {
+        let inner = self.at(inst)?;
+        self.inner.set_state(inner, state)
     }
 }
 
@@ -367,13 +438,27 @@ impl World {
     /// What it printed since this was last called, and what the processes
     /// of its extensions wrote to stderr (if that's kept).
     pub fn take_output(&self) -> Vec<String> {
+        let (mut out, mut err) = self.take_split();
+        out.append(&mut err);
+        out
+    }
+
+    /// What it printed (and what the processes of its extensions wrote to
+    /// stdout themselves), and apart from it what they wrote to stderr,
+    /// since this was last called.
+    pub fn take_split(&self) -> (Vec<String>, Vec<String>) {
         let mut out = std::mem::take(&mut *lock(&self.output));
+        let mut err = Vec::new();
         for h in &self.handles {
-            if let Some(e) = &lock(h).stderr {
-                out.append(&mut lock(e));
+            let h = lock(h);
+            if let Some(o) = &h.stdout {
+                out.append(&mut lock(o));
+            }
+            if let Some(e) = &h.stderr {
+                err.append(&mut lock(e));
             }
         }
-        out
+        (out, err)
     }
 
     fn stopped(&self) -> bool {
@@ -930,12 +1015,16 @@ impl Interp {
             let mut failed = Vec::new();
             for &i in &closed {
                 let again = open_ext(&oldp.exts[i].path, &oldp.exts[i].kind).and_then(|mut m| {
+                    // the squares open again, with the numbers the old program holds
+                    let mut map = HashMap::new();
                     for (j, oi) in oldp.ext_instances.iter().enumerate().filter(|(_, oi)| oi.module == i) {
                         let params: Vec<(&str, Value)> =
                             oi.params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-                        if m.instance(&params)? != old.ext_instances[j].1 {
-                            return Err("its squares changed places".to_string());
-                        }
+                        map.insert(old.ext_instances[j].1, m.instance(&params)?);
+                    }
+                    if map.iter().any(|(o, n)| o != n) {
+                        let next = map.keys().map(|o| o + 1).max().unwrap_or(0);
+                        m = Box::new(Renumbered { inner: m, map, next });
                     }
                     *lock(&old.handles[i]) = m.handles();
                     *lock(&old.exts[i]) = m;
@@ -953,13 +1042,16 @@ impl Interp {
                 }
             }
         };
+        // the instances of the old program that the new one keeps, and those
+        // it made in modules that stay (to free if it fails)
+        let mut used = vec![false; oldp.ext_instances.len()];
+        let mut made: Vec<(usize, usize)> = Vec::new();
         let opened = (|| -> Result<(Vec<Option<Box<dyn Ext>>>, Vec<(usize, usize)>), String> {
             let mut fresh: Vec<Option<Box<dyn Ext>>> = Vec::new();
             for (j, e) in prog.exts.iter().enumerate() {
                 fresh.push(if opening(j) { Some(open_ext(&e.path, &e.kind)?) } else { None });
             }
             // the squares of code: the same square with the same params keeps its state
-            let mut used = vec![false; oldp.ext_instances.len()];
             let mut instances = Vec::new();
             for ni in &prog.ext_instances {
                 let params: Vec<(&str, Value)> = ni.params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
@@ -983,7 +1075,11 @@ impl Interp {
                         old.ext_instances[j].1
                     }
                     None => match origin[ni.module] {
-                        Some(om) => lock(&old.exts[om]).instance(&params)?,
+                        Some(om) => {
+                            let inst = lock(&old.exts[om]).instance(&params)?;
+                            made.push((om, inst));
+                            inst
+                        }
                         None => fresh[ni.module].as_mut().expect("a new module").instance(&params)?,
                     },
                 };
@@ -991,7 +1087,20 @@ impl Interp {
             }
             Ok((fresh, instances))
         })();
-        let (fresh, instances) = opened.map_err(reopen)?;
+        // what a failure frees: the instances it made in the modules that stay
+        let forget = |made: &[(usize, usize)]| {
+            for &(om, inst) in made {
+                let _ = lock(&old.exts[om]).drop_instance(inst);
+            }
+            old.printed();
+        };
+        let (fresh, instances) = match opened {
+            Ok(got) => got,
+            Err(e) => {
+                forget(&made);
+                return Err(reopen(e));
+            }
+        };
         // the modules move to the new world; if what's left to work out
         // fails they move back
         let (mut exts, mut handles) = (Vec::new(), Vec::new());
@@ -1079,6 +1188,7 @@ impl Interp {
                             *lock(&old.handles[*i]) = std::mem::take(&mut *lock(&w.handles[j]));
                         }
                     }
+                    forget(&made);
                     return Err(reopen(format!("a clock's interval fails: {e}")));
                 }
             }
@@ -1086,10 +1196,18 @@ impl Interp {
         // done: what's left of the modules that went away is shown, and they end
         for i in (0..oldp.exts.len()).filter(|&i| !taken[i]) {
             *lock(&old.exts[i]) = Box::new(Gone);
-            if let Some(e) = &lock(&old.handles[i]).stderr {
-                lock(&w.output).append(&mut lock(e));
+            let h = lock(&old.handles[i]);
+            for kept in [&h.stdout, &h.stderr].into_iter().flatten() {
+                lock(&w.output).append(&mut lock(kept));
             }
         }
+        // and the instances in the modules that stay, that no square has now
+        for (j, oi) in oldp.ext_instances.iter().enumerate().filter(|(j, _)| !used[*j]) {
+            if let Some(nj) = origin.iter().position(|o| *o == Some(oi.module)) {
+                let _ = lock(&w.exts[nj]).drop_instance(old.ext_instances[j].1);
+            }
+        }
+        w.printed();
         let mut out = std::mem::take(&mut *lock(&old.output));
         out.append(&mut lock(&w.output));
         *lock(&w.output) = out;
@@ -1105,8 +1223,11 @@ impl Interp {
         }
         if !fresh_entries.is_empty() {
             report.started = fresh_entries.len();
+            // their meets are the ones they have among themselves: not the old entries'
+            let mut fire = Fire { targets: fresh_entries, meets: Vec::new() };
+            Program::fire_meets(&self.prog.calls(), &mut fire);
             // can't fail: one frame each
-            let _ = self.root(&Fire { targets: fresh_entries, meets: Vec::new() });
+            let _ = self.root(&fire);
         }
         Ok(report)
     }
@@ -1660,26 +1781,38 @@ fn bin(op: &Bin, a: Value, b: Value) -> Value {
 }
 
 /// Runs PROG to the end, or while its clocks tick for SECONDS (None: no
-/// limit), printing what it prints with PRINT.
+/// limit), printing what it prints with PRINT (and what its extensions'
+/// processes write to stderr, if that's kept, after it).
 pub fn run_to_end(
     prog: Program,
     base_dir: PathBuf,
     seconds: Option<f64>,
     mut print: impl FnMut(&str),
 ) -> Result<(), String> {
+    run_split(prog, base_dir, seconds, |out| {
+        for line in out.0.iter().chain(&out.1) {
+            print(line);
+        }
+    })
+}
+
+/// [`run_to_end`], giving what it prints and what its extensions' processes
+/// wrote to stderr as two lists to SHOW.
+pub fn run_split(
+    prog: Program,
+    base_dir: PathBuf,
+    seconds: Option<f64>,
+    mut show: impl FnMut((Vec<String>, Vec<String>)),
+) -> Result<(), String> {
     let mut it = Interp::new(prog, base_dir)?;
     // what it printed is printed before what went wrong, if anything did
     let r = it.start();
-    for line in it.w.take_output() {
-        print(&line);
-    }
+    show(it.w.take_split());
     r?;
     let started = Instant::now();
     loop {
         let st = it.run(100_000);
-        for line in it.w.take_output() {
-            print(&line);
-        }
+        show(it.w.take_split());
         let st = st?;
         if st == Status::Idle {
             let Some(wait) = it.next_clock() else { return Ok(()) };
@@ -1690,10 +1823,56 @@ pub fn run_to_end(
             }
             std::thread::sleep(std::time::Duration::from_secs_f64(wait));
             let r = it.tick_clocks(false);
-            for line in it.w.take_output() {
-                print(&line);
-            }
+            show(it.w.take_split());
             r?;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each square answers with the param it was made with.
+    struct Counting(Vec<Option<i64>>);
+
+    impl Ext for Counting {
+        fn instance(&mut self, params: &[(&str, Value)]) -> Result<usize, String> {
+            self.0.push(Some(params[0].1.int()));
+            Ok(self.0.len() - 1)
+        }
+        fn drop_instance(&mut self, inst: usize) -> Result<(), String> {
+            self.0.get_mut(inst).and_then(Option::take).map(|_| ()).ok_or("gone".into())
+        }
+        fn eval(&mut self, inst: usize, _: &[(&str, Value)], _: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
+            Ok(vec![Value::Int(self.0.get(inst).copied().flatten().ok_or("gone")?)])
+        }
+        fn tick(
+            &mut self,
+            _: usize,
+            _: Option<&str>,
+            _: &[(&str, Value)],
+            _: &[(&str, &Type)],
+        ) -> Result<Ticked, String> {
+            Err("no ticks".into())
+        }
+    }
+
+    #[test]
+    fn a_renumbered_module_answers_to_the_old_numbers() {
+        let mut inner = Counting(Vec::new());
+        inner.instance(&[("p", Value::Int(10))]).unwrap();
+        inner.instance(&[("p", Value::Int(20))]).unwrap();
+        // squares 5 and 2 of the program: out of order, with gaps
+        let mut m = Renumbered { inner: Box::new(inner), map: HashMap::from([(5, 0), (2, 1)]), next: 6 };
+        let out = [("r", &Type::Int)];
+        assert_eq!(m.eval(5, &[], &out).unwrap(), vec![Value::Int(10)]);
+        assert_eq!(m.eval(2, &[], &out).unwrap(), vec![Value::Int(20)]);
+        assert!(m.eval(0, &[], &out).is_err(), "inner numbers aren't its own");
+        assert_eq!(m.instance(&[("p", Value::Int(30))]).unwrap(), 6, "a new one has a number nobody holds");
+        assert_eq!(m.eval(6, &[], &out).unwrap(), vec![Value::Int(30)]);
+        m.drop_instance(5).unwrap();
+        assert!(m.eval(5, &[], &out).is_err() && m.drop_instance(5).is_err());
+        assert_eq!(m.eval(2, &[], &out).unwrap(), vec![Value::Int(20)]);
     }
 }

@@ -290,6 +290,9 @@ private one, carry over too. The same type: the value moves; another:
 it, or it starts again. Modules (`ExtDef`) with the same path and kind move
 over with their `Handles`, so a Python process isn't restarted by an edit
 elsewhere, and an instance with the same square and params keeps its state.
+The others of a module that stays are freed (`Ext::drop_instance`) once the
+swap can't fail any more, and the ones the swap made are freed if it fails;
+numbers aren't reused.
 The modules `closes_first` (a C\# build holds a lock, a Rust dylib is
 loaded by path) end before their replacements open, and if that fails they
 open again without their state. Clocks are told apart by `Clock::square`:
@@ -315,14 +318,24 @@ a binary.
 - Types are Rust's: `i64`, `f64`, `bool`, `String`, `Vec<T>`,
   `BTreeMap<String, T>`, `lineit_rt::Image`, and a struct per record type.
 - A program with no fan-out keeps its state as fields of a struct passed as
-  `&mut`, `slot::Local<T>`. With fan-outs, branches run on threads
-  (`branch::fan_out`, `std::thread::scope`) and the state is shared: numbers
+  `&mut`, `slot::Local<T>`. With fan-outs, branches run on a pool of threads
+  (`branch::fan_out`, rayon, the `pool` feature of `lineit-rt`: one thread per
+  core, 64 MiB stacks; the first branch runs on the thread that fanned out)
+  and the state is shared: numbers
   and bools as relaxed atomics, the rest behind mutexes (`slot::Shared`).
   The generated code is the same either way; `with` and `with_mut` release
   their lock before they return, and arguments are computed first, so no
   statement holds two locks.
+- Branches can wait for each other (a `while` on a `::global` a sibling
+  sets), so the pool counts its branches, started or queued, and one past
+  the number of threads gets a thread of its own (16 MiB stack): a queued
+  branch is only stuck if every thread is, which takes more branches than
+  threads. Without rayon (it can't be fetched) a program is built without the
+  feature and every branch has a thread of its own.
 - Meets: each thread keeps the fan-outs it's inside of
-  (`branch::arrive`), and a branch that gets to a meet stops there.
+  (`branch::arrive`), and a branch that gets to a meet stops there. A thread
+  that waits for its fan-out can run other branches, so each branch puts back
+  what the thread was inside of when it's done.
 
 What isn't plain Rust calls the same functions the interpreter calls, so the
 two can't disagree: `tests/` and `examples/` are run both ways in CI, and

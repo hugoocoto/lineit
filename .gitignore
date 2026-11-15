@@ -8,3 +8,5 @@ docs/**/*.pdf
 # What the examples and tests write next to them
 /examples/symi-*.png
 /examples/*.exe
+# Claude Code: local settings, and the worktrees of its agents
+/.claude/

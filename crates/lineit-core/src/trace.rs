@@ -532,13 +532,13 @@ mod tests {
         let src = std::fs::read_to_string(dir.join("clock.lua")).unwrap();
         let t = record(lower(&src, &dir), dir, 100, Arc::new(AtomicBool::new(true))).unwrap();
         assert!(t.truncated && t.events.is_empty());
-        // `flow/stop` is the program ending, not a cut
+        // `flow/stop` is the program ending, not a cut: `never` is wired to run after it
         let src = r#"return { lineit = 1, squares = {
             { id = 1, module = "flow/entry" },
             { id = 2, module = "io/print", fields = { value = "once" } },
             { id = 3, module = "flow/stop" },
             { id = 4, module = "io/print", fields = { value = "never" } },
-        }, links = { { 1, "then", 2, "tick" }, { 2, "then", 3, "tick" }, { 3, "then", 4, "tick" } } }"#;
+        }, links = { { 1, "then", 2, "tick" }, { 2, "then", 3, "tick" }, { 2, "then", 4, "tick" } } }"#;
         let t = rec_src(src, 100);
         assert_eq!(squares(&t), [1, 2, 3]);
         assert!(!t.truncated && t.error.is_none());

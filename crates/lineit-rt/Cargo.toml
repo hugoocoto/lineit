@@ -16,6 +16,8 @@ image = ["dep:image"]
 lua = ["dep:mlua"]
 # code squares in languages run by their own interpreter (Python...)
 process = ["dep:serde_json", "dep:fs4"]
+# branches on a pool of threads, not a thread each
+pool = ["dep:rayon"]
 shader = ["dep:tree-sitter", "dep:tree-sitter-gdshader", "dep:libm"]
 
 [dependencies]
@@ -30,6 +32,8 @@ serde_json = { version = "1", optional = true }
 fs4 = { version = "1", optional = true }
 # sin, pow...: the same bits on every machine, as the tests compare outputs
 libm = { version = "0.2", optional = true }
+# the threads of the branches (the pool feature)
+rayon = { version = "1", optional = true }
 
 [lints.clippy]
 needless_range_loop = "allow"

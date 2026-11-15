@@ -38,6 +38,10 @@
 //!   `NAME.value`, or `NAME.1`, `NAME.2`... for several.
 //! - A parameter `&Shared` (or `&mut Shared`, to set them) has the
 //!   variables `::NAME` it uses as fields: `shared.total`.
+//! - No hidden state: `static mut`, a `static` of atomics, locks or cells,
+//!   and `thread_local!` are refused (in a function or not), and so is any
+//!   `static` inside a function (`const` for what doesn't change): what it
+//!   keeps goes in the struct of `&mut self`, where lineit sees it.
 //!
 //! The code goes in a crate of its own as it is, in a module with the glue
 //! after it ([`glue`]), so the lines of cargo's errors are the code's.
@@ -163,6 +167,73 @@ fn type_args(n: Node) -> Vec<Node> {
         .unwrap_or_default()
 }
 
+/// Types a `static` can change through a shared reference.
+fn interior_mutable(name: &str) -> bool {
+    name.starts_with("Atomic")
+        || matches!(
+            name,
+            "Mutex"
+                | "RwLock"
+                | "OnceLock"
+                | "OnceCell"
+                | "LazyLock"
+                | "LazyCell"
+                | "Cell"
+                | "RefCell"
+                | "UnsafeCell"
+                | "Lazy"
+                | "Condvar"
+        )
+}
+
+/// The first state lineit can't see: a `static` that changes (`static mut`,
+/// or of a type that does through `&`) or a `thread_local!`, anywhere in
+/// the code, and any `static` inside a function (`const` is that). A function that keeps one looks stateless.
+fn hidden_state(root: Node, src: &str) -> Result<(), String> {
+    let text = |n: Node| &src[n.byte_range()];
+    let goes = "what a Rust square keeps goes in the struct of its `&mut self`, where lineit sees it";
+    for n in descendants(root) {
+        let line = n.start_position().row + 1;
+        let mut up = n.parent();
+        let mut inside = false;
+        while let Some(p) = up {
+            inside |= p.kind() == "function_item";
+            up = p.parent();
+        }
+        let place = if inside { " inside a function" } else { "" };
+        match n.kind() {
+            "macro_invocation" => {
+                let m = n.child_by_field_name("macro").map(text).unwrap_or("");
+                let m = m.rsplit("::").next().unwrap_or(m);
+                if matches!(m, "thread_local" | "lazy_static") {
+                    return Err(format!("line {line}: `{m}!`{place} hides state from lineit: {goes}"));
+                }
+            }
+            "static_item" => {
+                let Some(name) = n.child_by_field_name("name") else { continue };
+                let mutable = {
+                    let mut c = n.walk();
+                    n.children(&mut c).any(|c| c.kind() == "mutable_specifier")
+                };
+                let cell = n.child_by_field_name("type").is_some_and(|t| {
+                    descendants(t).into_iter().any(|t| t.kind() == "type_identifier" && interior_mutable(text(t)))
+                });
+                if mutable || cell {
+                    return Err(format!("line {line}: `{}` is a `static` that changes{place}: {goes}", text(name)));
+                }
+                if inside {
+                    return Err(format!(
+                        "line {line}: `{}` is a `static`{place}: use `const` for what doesn't change; {goes}",
+                        text(name)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// A Rust type as lineit's, if it's one lineit can give and take.
 fn rust_type(n: Node, src: &str, cx: &dyn SigCx) -> Result<Type, String> {
     let text = &src[n.byte_range()];
@@ -209,6 +280,7 @@ fn read_with(source: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
     let tree = super::parse(source, tree_sitter_rust::LANGUAGE.into(), "Rust")?;
     let root = tree.root_node();
     let text = |n: Node| &source[n.byte_range()];
+    hidden_state(root, source)?;
     let structs = structs(root, source);
 
     // the `pub fn`, at the top or in an `impl`
@@ -632,7 +704,10 @@ fn write_crate(file: &str, source: &str, glue: &str) -> Result<(PathBuf, String)
     let code = format!("{source}{glue}");
     // the runtime lineit carries, as it is: no crates.io needed
     let rt = crate::codegen::write_runtime()?.to_string_lossy().replace('\\', "/");
-    let crate_name = format!("{CRATE_PREFIX}{:016x}", crate::codegen::fnv(code.as_bytes()));
+    // named for the runtime too: a crate depends on one copy of it, and the programs of
+    // another lineit with the same code can't use this crate (or its library in the target)
+    let key = format!("{code}\0{}", crate::codegen::runtime_id());
+    let crate_name = format!("{CRATE_PREFIX}{:016x}", crate::codegen::fnv(key.as_bytes()));
     let dir = crate::paths::cache_dir().join("code").join(&crate_name);
     let write = |path: PathBuf, text: &str| -> Result<(), String> {
         if std::fs::read_to_string(&path).ok().as_deref() == Some(text) {
@@ -666,6 +741,26 @@ mod tests {
 
     fn read(s: &str, cx: &dyn SigCx) -> Result<(Function, Read), String> {
         read_with(s, cx)
+    }
+
+    /// Two versions of lineit (runtimes that differ) with the same code
+    /// share the cache: each gets a crate of its own, that depends on its
+    /// runtime, or a program that has the crate of the other has two
+    /// `lineit-rt` ("package collision in the lockfile").
+    #[test]
+    fn versions_of_lineit_dont_share_crates() {
+        let source = format!("pub fn f() -> i64 {{ {} }}\n", std::process::id());
+        let (a_rt, a) = (crate::codegen::write_runtime().unwrap(), write_crate("code.rs", &source, "").unwrap());
+        crate::codegen::RT_SALT.with(|s| *s.borrow_mut() = "another version".into());
+        let (b_rt, b) = (crate::codegen::write_runtime().unwrap(), write_crate("code.rs", &source, "").unwrap());
+        crate::codegen::RT_SALT.with(|s| s.borrow_mut().clear());
+        assert_ne!(a_rt, b_rt);
+        assert_ne!(a.0, b.0, "the same crate for two runtimes");
+        assert_ne!(a.1, b.1, "the same library name for two runtimes");
+        for ((dir, _), rt) in [(a, a_rt), (b, b_rt)] {
+            let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+            assert!(toml.contains(&rt.to_string_lossy().replace('\\', "/")), "{toml}");
+        }
     }
 
     struct Cx;
@@ -733,5 +828,53 @@ impl Collatz {
         assert!(err("pub fn f(x: i32) {}").contains("i64 and f64"));
         assert!(err("pub fn f(x: Foo) {}").contains("`Foo` isn't a type"));
         assert!(err("pub fn f(").contains("line 1"));
+    }
+
+    #[test]
+    fn hidden_state_is_refused() {
+        let err = |s: &str| read(s, &Cx).unwrap_err();
+        let atomic = "use std::sync::atomic::{AtomicI64, Ordering::SeqCst};\npub fn counter() -> i64 {\n    static N: AtomicI64 = AtomicI64::new(0);\n    N.fetch_add(1, SeqCst) + 1\n}";
+        assert_eq!(
+            err(atomic),
+            "line 3: `N` is a `static` that changes inside a function: what a Rust square keeps goes in the struct of its `&mut self`, where lineit sees it"
+        );
+        // in a nested helper, in a method, of any shape
+        assert!(
+            err(
+                "pub fn f() -> i64 {\n    fn h() -> i64 {\n        static mut N: i64 = 0;\n        1\n    }\n    h()\n}"
+            )
+            .contains("line 3: `N` is a `static`")
+        );
+        assert!(err("pub struct S;\nimpl S {\n    pub fn f(&mut self) { static M: std::sync::Mutex<i64> = std::sync::Mutex::new(0); }\n}").contains("line 3: `M`"));
+        assert!(
+            err("pub fn f() { static O: std::sync::OnceLock<i64> = std::sync::OnceLock::new(); }")
+                .contains("`O` is a `static`")
+        );
+        assert!(
+            err("pub fn f() { thread_local! { static T: std::cell::Cell<i64> = std::cell::Cell::new(0); } }")
+                .contains("`thread_local!` inside a function")
+        );
+        // at the top: nothing of lineit's sees it either
+        assert!(err("static mut N: i64 = 0;\npub fn f() {}").contains("line 1: `N` is a `static` that changes:"));
+        assert!(err("static N: AtomicI64 = AtomicI64::new(0);\npub fn f() {}").contains("`N` is a `static`"));
+        assert!(
+            err("thread_local! { static T: Cell<i64> = Cell::new(0); }\npub fn f() {}")
+                .contains("line 1: `thread_local!` hides")
+        );
+        // any `static` in a function, read-only too: `const` is that
+        assert_eq!(
+            err("pub fn f() -> i64 {\n    static NAMES: [&str; 2] = [\"a\", \"b\"];\n    NAMES.len() as i64\n}"),
+            "line 2: `NAMES` is a `static` inside a function: use `const` for what doesn't change; what a Rust square keeps goes in the struct of its `&mut self`, where lineit sees it"
+        );
+        assert!(
+            err("pub fn f() -> i64 {\n    fn h() -> i64 {\n        static T: i64 = 5;\n        T\n    }\n    h()\n}")
+                .contains("line 3: `T` is a `static` inside a function")
+        );
+        // what can't change is no state
+        let (f, _) = read("const K: i64 = 3;\nstatic NAMES: [&str; 2] = [\"a\", \"b\"];\npub fn f(x: i64) -> i64 {\n    const T: i64 = 5;\n    const C: i64 = 2;\n    x * K * T * C\n}", &Cx).unwrap();
+        assert!(!f.ticked());
+        // and a struct's fields still are
+        let (f, _) = read(COLLATZ, &Cx).unwrap();
+        assert!(f.ticked());
     }
 }

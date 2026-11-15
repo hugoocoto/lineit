@@ -11,7 +11,7 @@ fn a_crash_is_an_error() {
     let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
-    assert!(stdout.contains("still talking\n"), "{stdout}");
+    assert!(stdout.contains("still talking\n"), "{stdout}\n{stderr}");
     assert!(stderr.contains("the code crashed"), "{stderr}");
     // what the code wrote to stdout itself is there too, and didn't get in
     // the way of lineit's talk with it

@@ -1893,22 +1893,27 @@ fn code_edit(ui: &mut egui::Ui, e: &mut FieldEdit, r: Rect, z: f32, tab_id: u64,
     // (the text box has no margin of its own with a frame set, even NONE:
     // it's put in the rect inside the margin)
     let inner = r.shrink2(vec2(2.0, 4.0) * z);
-    let resp = ui.put(inner, |ui: &mut egui::Ui| {
-        ui.set_clip_rect(ui.clip_rect().intersect(r));
-        ui.add(
-            egui::TextEdit::multiline(&mut e.text)
-                .id(id)
-                .code_editor()
-                .lock_focus(true)
-                .font(zoomed_mono(12.0 * z))
-                .layouter(&mut layouter)
-                .frame(egui::Frame::NONE)
-                .margin(Vec2::ZERO)
-                .desired_width(inner.width())
-                .desired_rows(1)
-                .text_color(theme.text),
-        )
-    });
+    // (not `put`: it centers a text box wider than the rect, a long line's, and
+    // the text moves left; the text stays at the corner, clipped to the square
+    // as the shown code is)
+    let resp = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(r));
+            ui.add(
+                egui::TextEdit::multiline(&mut e.text)
+                    .id(id)
+                    .code_editor()
+                    .lock_focus(true)
+                    .font(zoomed_mono(12.0 * z))
+                    .layouter(&mut layouter)
+                    .frame(egui::Frame::NONE)
+                    .margin(Vec2::ZERO)
+                    .desired_width(inner.width())
+                    .desired_rows(1)
+                    .text_color(theme.text),
+            )
+        })
+        .inner;
     if e.fresh {
         e.fresh = false;
         resp.request_focus();
@@ -2226,6 +2231,370 @@ mod text_tests {
             });
             out.drop_without_applying_deltas();
         });
+    }
+
+    /// A text box (a note's or a code square's) driven by events, frame by
+    /// frame, as the canvas draws it.
+    struct Rig {
+        ctx: egui::Context,
+        edit: FieldEdit,
+        r: Rect,
+        code: bool,
+        events: Vec<egui::Event>,
+        time: f64,
+    }
+
+    impl Rig {
+        fn new(code: bool, text: &str, ppp: f32) -> Self {
+            let ctx = egui::Context::default();
+            let mut fonts = egui::FontDefinitions::default();
+            for (from, name) in
+                [(egui::FontFamily::Proportional, ZOOMED_TEXT), (egui::FontFamily::Monospace, ZOOMED_MONO)]
+            {
+                let list = fonts.families[&from].clone();
+                fonts.families.insert(egui::FontFamily::Name(name.into()), list);
+            }
+            ctx.set_fonts(fonts);
+            ctx.set_pixels_per_point(ppp);
+            let key = FieldKey { sq: 1, name: "text".into(), param: true };
+            let edit = FieldEdit {
+                key,
+                text: text.to_string(),
+                error: false,
+                fresh: true,
+                choose: false,
+                title: String::new(),
+                multiline: true,
+                check: Check::Any,
+                rect: None,
+            };
+            let r = Rect::from_min_size(pos2(103.3, 57.9), vec2(220.0, 150.0));
+            let mut rig = Rig { ctx, edit, r, code, events: vec![], time: 0.0 };
+            rig.frame(1.0);
+            rig.frame(1.0);
+            rig
+        }
+
+        /// The rect at zoom Z: the one at zoom 1 scaled about its corner.
+        fn rect(&self, z: f32) -> Rect {
+            Rect::from_min_size(self.r.min, self.r.size() * z)
+        }
+
+        /// One frame at zoom Z, with the queued events; the shapes it drew.
+        fn frame(&mut self, z: f32) -> Vec<egui::epaint::ClippedShape> {
+            // a frame is a fifth of a second: no click is a double click
+            self.time += 0.2;
+            let input = egui::RawInput {
+                time: Some(self.time),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1200.0))),
+                events: std::mem::take(&mut self.events),
+                ..Default::default()
+            };
+            let (r, code) = (self.rect(z), self.code);
+            let edit = &mut self.edit;
+            let theme = super::super::theme::dark();
+            let mut out = self.ctx.run_pass(input, |ctx| {
+                ctx.root_ui(|ui| {
+                    if code {
+                        code_edit(ui, edit, r, z, 7, "rust", &theme);
+                    } else {
+                        note_edit(ui, edit, r, z, 7);
+                    }
+                });
+            });
+            let shapes = std::mem::take(&mut out.shapes);
+            out.drop_without_applying_deltas();
+            shapes
+        }
+
+        fn id(&self) -> Id {
+            self.ctx.memory(|m| m.focused()).expect("the text box has the focus")
+        }
+
+        /// The cursor (primary, secondary) in chars.
+        fn cursor(&self) -> (usize, usize) {
+            let st = egui::TextEdit::load_state(&self.ctx, self.id()).expect("state");
+            let c = st.cursor.char_range().expect("a cursor");
+            (c.primary.index.0, c.secondary.index.0)
+        }
+
+        fn button(&mut self, z: f32, at: Pos2, pressed: bool) {
+            self.events = vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }];
+            self.frame(z);
+        }
+
+        fn click(&mut self, z: f32, at: Pos2) {
+            self.events = vec![egui::Event::PointerMoved(at)];
+            self.frame(z);
+            self.button(z, at, true);
+            self.button(z, at, false);
+            self.frame(z);
+        }
+
+        fn key(&mut self, z: f32, key: egui::Key, shift: bool) {
+            let modifiers = egui::Modifiers { shift, ..Default::default() };
+            self.events = vec![
+                egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers },
+                egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers },
+            ];
+            self.frame(z);
+        }
+
+        fn type_text(&mut self, z: f32, t: &str) {
+            self.events = vec![egui::Event::Text(t.to_string())];
+            self.frame(z);
+        }
+
+        /// The galley of the text at zoom Z as it is shown (laid out at a
+        /// power of two, drawn scaled) and where its top left is.
+        fn shown(&self, z: f32) -> (std::sync::Arc<egui::Galley>, Pos2) {
+            let p = self.ctx.layer_painter(egui::LayerId::background());
+            let b = laid_at(z);
+            let r = self.rect(z);
+            let theme = super::super::theme::dark();
+            if self.code {
+                let g = p.layout_job(code_job(&self.edit.text, "rust", false, b, &theme));
+                (g, r.min + vec2(2.0, 4.0) * z)
+            } else {
+                (note_laid(&p, &self.edit.text, r.width() / z, b, NOTE_TEXT), r.min + vec2(10.0, 10.0) * z)
+            }
+        }
+
+        /// The screen position of the left of char K, in the middle of its
+        /// row, as the shown text draws it ([`paint_scaled`]: rows and
+        /// glyphs times Z / B).
+        fn shown_char(&self, z: f32, k: usize) -> Pos2 {
+            let (g, at) = self.shown(z);
+            let s = z / laid_at(z);
+            let c = g.pos_from_cursor(egui::text::CCursor::new(k));
+            at + vec2(c.min.x, c.center().y) * s
+        }
+    }
+
+    /// Every vertex of the text (the font's texture) in SHAPES, in the order
+    /// it's drawn.
+    fn text_vertices(ctx: &egui::Context, shapes: Vec<egui::epaint::ClippedShape>) -> Vec<Pos2> {
+        let prims = ctx.tessellate(shapes, ctx.pixels_per_point());
+        let mut v = Vec::new();
+        for p in prims {
+            if let egui::epaint::Primitive::Mesh(m) = p.primitive
+                && m.texture_id == egui::TextureId::Managed(0)
+            {
+                v.extend(m.vertices.iter().map(|x| x.pos));
+            }
+        }
+        v
+    }
+
+    /// What drawing the shown text puts on screen at zoom Z.
+    fn shown_vertices(rig: &Rig, z: f32) -> Vec<Pos2> {
+        let (g, at) = rig.shown(z);
+        let s = z / laid_at(z);
+        // (the text box draws only the rows that touch its rect)
+        let clip = rig.rect(z);
+        let g_rows = g.rows.iter().filter(|row| {
+            let y = at.y + row.rect().min.y * s..=at.y + row.rect().max.y * s;
+            *y.end() >= clip.min.y && *y.start() <= clip.max.y
+        });
+        let mut mesh = egui::Mesh::default();
+        for row in g_rows {
+            let first = mesh.vertices.len() as u32;
+            mesh.indices.extend(row.visuals.mesh.indices.iter().map(|i| i + first));
+            mesh.vertices.extend(row.visuals.mesh.vertices.iter().map(|v| egui::epaint::Vertex {
+                pos: at + (v.pos.to_vec2() + row.pos.to_vec2()) * s,
+                uv: v.uv,
+                color: v.color,
+            }));
+        }
+        mesh.texture_id = egui::TextureId::Managed(0);
+        let shape = egui::epaint::ClippedShape::new(Rect::EVERYTHING, egui::Shape::mesh(mesh));
+        text_vertices(&rig.ctx, vec![shape])
+    }
+
+    /// The most that the typed text's vertices are away from the shown ones.
+    fn drift(typed: &[Pos2], shown: &[Pos2]) -> f32 {
+        assert!(typed.len() >= shown.len(), "{} vs {} vertices", typed.len(), shown.len());
+        typed.iter().zip(shown).map(|(a, b)| (*a - *b).abs().max_elem()).fold(0.0, f32::max)
+    }
+
+    const ZOOMS: [f32; 13] = [0.55, 0.7, 0.99, 1.0, 1.01, 1.3, 1.5, 1.99, 2.0, 2.01, 3.0, 3.99, 4.01];
+
+    /// A code square's code with a line longer than the square.
+    const LONG_CODE: &str =
+        "fn main() {\n\tlet y = \"a long string that goes on and on and on and on past the end\";\n}";
+
+    const BODIES: [(bool, &str); 4] = [
+        (false, "some words to put on a note that wraps around\nand a second line\n\nlast"),
+        (false, "averyveryveryverylongwordwithnospacesinittomakeitbreakinthemiddle and more"),
+        (true, "fn main() {\n\tlet x = 1;\n\t\tlet y = 2;\n}"),
+        (true, "a\tb\tc\n\t\n"),
+    ];
+
+    /// The original bug: the text jumps between looking and typing. The
+    /// vertices of the text typed in are those of the text shown, at every
+    /// zoom, around the powers of two, at fractional pixel ratios too. (Up
+    /// to one device pixel: egui puts the text box on a grid of a 64th of a
+    /// point, and the text goes to the pixel nearest to that, so where the
+    /// text is half a pixel from a pixel, it may go to the other one.)
+    #[test]
+    fn typed_text_is_drawn_where_the_shown_text_is() {
+        for ppp in [1.0, 1.25, 1.5, 2.0] {
+            for (code, text) in BODIES {
+                let mut rig = Rig::new(code, text, ppp);
+                for z in ZOOMS {
+                    let shapes = rig.frame(z);
+                    let typed = text_vertices(&rig.ctx, shapes);
+                    let worst = drift(&typed, &shown_vertices(&rig, z));
+                    assert!(worst <= 1.01 / ppp, "ppp {ppp} z {z} code {code} {text:?}: moves by {worst}");
+                }
+            }
+        }
+    }
+
+    /// What is typed in a code square with a line longer than the square is
+    /// drawn where it is shown (clipped at the square's edge), and the
+    /// cursor goes by what is drawn: clicks, and typing at the end of the line.
+    #[test]
+    fn typed_code_with_a_long_line_stays_in_the_square() {
+        // (one device pixel at most: see typed_text_is_drawn_where_the_shown_text_is)
+        for z in ZOOMS {
+            let mut rig = Rig::new(true, LONG_CODE, 1.0);
+            let shapes = rig.frame(z);
+            let typed = text_vertices(&rig.ctx, shapes);
+            let worst = drift(&typed, &shown_vertices(&rig, z));
+            assert!(worst <= 1.01, "zoom {z}: moves by {worst}");
+            // clicks on the chars of the long line that are in the square
+            let line = LONG_CODE.lines().nth(1).unwrap();
+            let start = LONG_CODE.lines().next().unwrap().chars().count() + 1;
+            let room = rig.rect(z).max.x - 4.0 * z;
+            for col in [1, 2, 5, 12, 20, 30] {
+                let k = start + col;
+                let at = rig.shown_char(z, k) + vec2(0.5 * z, 0.0);
+                if at.x > room || col >= line.chars().count() {
+                    continue;
+                }
+                rig.click(z, at);
+                assert_eq!(rig.cursor().0, k, "click on char {k} at zoom {z} at {at:?}");
+            }
+            // typing at the end of the long line
+            rig.key(z, egui::Key::End, false);
+            let end = start + line.chars().count();
+            assert_eq!(rig.cursor().0, end, "End at zoom {z}");
+            rig.type_text(z, "xyz");
+            assert_eq!(rig.cursor().0, end + 3);
+            assert!(rig.edit.text.contains("end\";xyz"), "{:?}", rig.edit.text);
+            let shapes = rig.frame(z);
+            let typed = text_vertices(&rig.ctx, shapes);
+            let worst = drift(&typed, &shown_vertices(&rig, z));
+            assert!(worst <= 1.01, "zoom {z} after typing at the end: moves by {worst}");
+        }
+    }
+
+    /// A click on a char puts the cursor there, wherever the text is drawn.
+    #[test]
+    fn a_click_puts_the_cursor_where_the_text_is_drawn() {
+        for (code, text) in BODIES {
+            for z in [0.55, 1.0, 1.3, 2.01, 3.0] {
+                let mut rig = Rig::new(code, text, 1.0);
+                rig.frame(z);
+                let n = text.chars().count();
+                for k in [0, 1, n / 3, n / 2, n - 2] {
+                    if text.chars().nth(k) == Some('\n') {
+                        continue;
+                    }
+                    // a bit to the right of the left edge of the char: goes to it
+                    let at = rig.shown_char(z, k) + vec2(0.5 * z, 0.0);
+                    rig.click(z, at);
+                    assert_eq!(rig.cursor().0, k, "click on char {k} at zoom {z} (code {code}) at {at:?}");
+                }
+            }
+        }
+    }
+
+    /// Typing, the arrow keys and the selection with shift.
+    #[test]
+    fn typing_and_keys_move_the_cursor_as_text() {
+        for (code, text) in BODIES {
+            for z in [0.7, 1.0, 1.3, 2.01] {
+                let mut rig = Rig::new(code, text, 1.0);
+                rig.frame(z);
+                let n = text.chars().count();
+                rig.click(z, rig.shown_char(z, 3) + vec2(0.5 * z, 0.0));
+                assert_eq!(rig.cursor(), (3, 3));
+                rig.type_text(z, "xy");
+                assert_eq!(rig.cursor(), (5, 5));
+                assert_eq!(rig.edit.text.chars().skip(3).take(2).collect::<String>(), "xy");
+                // the new text is still drawn like the shown one
+                let shapes = rig.frame(z);
+                let typed = text_vertices(&rig.ctx, shapes);
+                let worst = drift(&typed, &shown_vertices(&rig, z));
+                assert!(worst < 0.05, "after typing at {z}: moves by {worst}");
+                rig.key(z, egui::Key::ArrowLeft, false);
+                assert_eq!(rig.cursor(), (4, 4));
+                rig.key(z, egui::Key::ArrowRight, true);
+                rig.key(z, egui::Key::ArrowRight, true);
+                assert_eq!(rig.cursor(), (6, 4), "shift+right twice, from 4");
+                rig.key(z, egui::Key::Backspace, false);
+                assert_eq!(rig.edit.text.chars().count(), n);
+            }
+        }
+    }
+
+    /// A drag from one char to another selects from one to the other.
+    #[test]
+    fn a_drag_selects_between_the_chars_it_goes_over() {
+        for (code, text) in BODIES {
+            for z in [0.7, 1.3, 2.5] {
+                let mut rig = Rig::new(code, text, 1.0);
+                rig.frame(z);
+                let (a, b) = (2, text.chars().count().min(40) / 2 + 3);
+                if text.chars().nth(a) == Some('\n') || text.chars().nth(b) == Some('\n') {
+                    continue;
+                }
+                let from = rig.shown_char(z, a) + vec2(0.5 * z, 0.0);
+                let to = rig.shown_char(z, b) + vec2(0.5 * z, 0.0);
+                rig.events = vec![egui::Event::PointerMoved(from)];
+                rig.frame(z);
+                rig.button(z, from, true);
+                for t in 1..=4 {
+                    rig.events = vec![egui::Event::PointerMoved(from + (to - from) * (t as f32 / 4.0))];
+                    rig.frame(z);
+                }
+                rig.button(z, to, false);
+                assert_eq!(rig.cursor(), (b, a), "drag {a} to {b} at {z} (code {code})");
+            }
+        }
+    }
+
+    /// Zooming while typing: the focus, the cursor and the text stay, and
+    /// nothing is drawn away from where the shown text would be.
+    #[test]
+    fn zooming_while_typing_keeps_the_cursor_and_the_text() {
+        for (code, text) in BODIES {
+            let mut rig = Rig::new(code, text, 1.0);
+            rig.frame(1.0);
+            rig.click(1.0, rig.shown_char(1.0, 5) + vec2(0.5, 0.0));
+            assert_eq!(rig.cursor(), (5, 5));
+            let id = rig.id();
+            let steps = [1.2, 1.7, 1.99, 2.0, 2.01, 2.8, 3.99, 4.0, 4.5, 3.0, 1.0, 0.8, 0.6, 1.0];
+            for z in steps {
+                // a key typed in the frame the zoom changes in
+                rig.type_text(z, "q");
+                assert_eq!(rig.id(), id, "focus kept at {z}");
+                let shapes = rig.frame(z);
+                let typed = text_vertices(&rig.ctx, shapes);
+                let worst = drift(&typed, &shown_vertices(&rig, z));
+                assert!(worst < 0.05, "zoom {z} (code {code}): moves by {worst}");
+            }
+            assert_eq!(rig.cursor().0, 5 + steps.len(), "the chars typed, at the cursor");
+            let typed: String = rig.edit.text.chars().skip(5).take(steps.len()).collect();
+            assert_eq!(typed, "q".repeat(steps.len()));
+        }
     }
 
     #[test]

@@ -149,7 +149,8 @@ fn outputs(mut got: Values, outputs: &[(&str, &Type)], defaults: bool) -> Result
 /// Runs a crate's module in a compiled program.
 pub struct Host {
     new: fn(&Values) -> Box<dyn Native>,
-    squares: Vec<Box<dyn Native>>,
+    /// None for one that was freed ([`Ext::drop_instance`]).
+    squares: Vec<Option<Box<dyn Native>>>,
 }
 
 impl Host {
@@ -158,15 +159,24 @@ impl Host {
             entries.into_iter().find(|e| e.name == name).ok_or_else(|| format!("the crate has no module `{name}`"))?;
         Ok(Host { new: e.new, squares: Vec::new() })
     }
+
+    fn square(&mut self, inst: usize) -> Result<&mut Box<dyn Native>, String> {
+        self.squares.get_mut(inst).and_then(Option::as_mut).ok_or_else(|| format!("no square {inst}"))
+    }
 }
 
 impl Ext for Host {
     fn instance(&mut self, params: &[(&str, Value)]) -> Result<usize, String> {
-        self.squares.push((self.new)(&named(params)));
+        self.squares.push(Some((self.new)(&named(params))));
         Ok(self.squares.len() - 1)
     }
+    fn drop_instance(&mut self, inst: usize) -> Result<(), String> {
+        self.square(inst).map(|_| ())?;
+        self.squares[inst] = None;
+        Ok(())
+    }
     fn eval(&mut self, inst: usize, inputs: &[(&str, Value)], outs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
-        let got = self.squares[inst].eval(&named(inputs))?;
+        let got = self.square(inst)?.eval(&named(inputs))?;
         Ok(outputs(got, outs, true)?.into_iter().map(|v| v.unwrap_or(Value::Int(0))).collect())
     }
     fn tick(
@@ -176,7 +186,7 @@ impl Ext for Host {
         inputs: &[(&str, Value)],
         outs: &[(&str, &Type)],
     ) -> Result<Ticked, String> {
-        let (got, fired) = self.squares[inst].tick(input, &named(inputs))?;
+        let (got, fired) = self.square(inst)?.tick(input, &named(inputs))?;
         Ok((outputs(got, outs, false)?, fired))
     }
     fn run(
@@ -186,14 +196,14 @@ impl Ext for Host {
         inputs: &[(&str, Value)],
         outs: &[(&str, &Type)],
     ) -> Result<Run, String> {
-        let (set, fire) = self.squares[inst].run(input, &named(inputs))?;
+        let (set, fire) = self.square(inst)?.run(input, &named(inputs))?;
         run_of(set, fire, outs)
     }
     fn state(&mut self, inst: usize) -> Result<Vec<(String, Value)>, String> {
-        Ok(self.squares[inst].state().into_iter().collect())
+        Ok(self.square(inst)?.state().into_iter().collect())
     }
     fn set_state(&mut self, inst: usize, state: &[(&str, Value)]) -> Result<(), String> {
-        self.squares[inst].set_state(&named(state))
+        self.square(inst)?.set_state(&named(state))
     }
 }
 

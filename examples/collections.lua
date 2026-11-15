@@ -78,7 +78,7 @@ return {
                 { 17, "length", 27, "1" },
                 { 16, "value", 27, "2" },
                 { 27, "text", 28, "value" },
-                { 24, "then", 28, "tick" },
+                { 26, "then", 28, "tick" },
                 { 4, "9", 29, "tick" },
                 { 5, "value", 30, "1" },
                 { 30, "text", 31, "value" },

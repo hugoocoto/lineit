@@ -34,7 +34,8 @@ use crate::value::{Record, Value};
 pub struct LuaModule {
     lua: Lua,
     module: Table,
-    instances: Vec<RegistryKey>,
+    /// None for one that was freed ([`LuaModule::drop_instance`]).
+    instances: Vec<Option<RegistryKey>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -112,8 +113,15 @@ impl LuaModule {
             p.set(*k, to_lua(&self.lua, v)?).map_err(err)?;
         }
         t.set("params", p).map_err(err)?;
-        self.instances.push(self.lua.create_registry_value(t).map_err(err)?);
+        self.instances.push(Some(self.lua.create_registry_value(t).map_err(err)?));
         Ok(self.instances.len() - 1)
+    }
+
+    /// Lets go of the table of square INST, and collects it.
+    pub fn drop_instance(&mut self, inst: usize) -> Result<(), String> {
+        let key = self.instances.get_mut(inst).and_then(Option::take).ok_or_else(|| format!("no square {inst}"))?;
+        self.lua.remove_registry_value(key).map_err(err)?;
+        self.lua.gc_collect().map_err(err)
     }
 
     fn inputs(&self, inputs: &[(&str, Value)]) -> Result<Table, String> {
@@ -138,7 +146,8 @@ impl LuaModule {
     }
 
     fn instance_table(&self, inst: usize) -> Result<Table, String> {
-        self.lua.registry_value(&self.instances[inst]).map_err(err)
+        let key = self.instances.get(inst).and_then(Option::as_ref).ok_or_else(|| format!("no square {inst}"))?;
+        self.lua.registry_value(key).map_err(err)
     }
 
     /// Calls `eval(i)` and returns OUTPUTS, by name and type, from what it
@@ -191,7 +200,8 @@ impl LuaModule {
 pub struct LuaCode {
     lua: Lua,
     glue: Table,
-    squares: Vec<RegistryKey>,
+    /// None for one that was freed.
+    squares: Vec<Option<RegistryKey>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -203,7 +213,8 @@ impl LuaCode {
     }
 
     fn square(&self, sq: usize) -> Result<mlua::Value, String> {
-        self.lua.registry_value(&self.squares[sq]).map_err(err)
+        let key = self.squares.get(sq).and_then(Option::as_ref).ok_or_else(|| format!("no square {sq}"))?;
+        self.lua.registry_value(key).map_err(err)
     }
 
     fn call(&self, sq: usize, inputs: &[(&str, Value)]) -> Result<(Table, Table), String> {
@@ -242,8 +253,14 @@ impl crate::ext::Ext for LuaCode {
     fn instance(&mut self, _params: &[(&str, Value)]) -> Result<usize, String> {
         let f: Function = self.glue.get("new").map_err(err)?;
         let sq: mlua::Value = f.call(()).map_err(err)?;
-        self.squares.push(self.lua.create_registry_value(sq).map_err(err)?);
+        self.squares.push(Some(self.lua.create_registry_value(sq).map_err(err)?));
         Ok(self.squares.len() - 1)
+    }
+
+    fn drop_instance(&mut self, sq: usize) -> Result<(), String> {
+        let key = self.squares.get_mut(sq).and_then(Option::take).ok_or_else(|| format!("no square {sq}"))?;
+        self.lua.remove_registry_value(key).map_err(err)?;
+        self.lua.gc_collect().map_err(err)
     }
 
     fn eval(&mut self, sq: usize, inputs: &[(&str, Value)], outputs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
@@ -386,7 +403,11 @@ fn stop_hook(
 /// What stops what a Lua runs ([`crate::ext::Handles`]).
 fn lua_handles(stop: &Arc<AtomicBool>) -> crate::ext::Handles {
     let stop = stop.clone();
-    crate::ext::Handles { kill: Some(Box::new(move || stop.store(true, Ordering::Relaxed))), stderr: None }
+    crate::ext::Handles {
+        kill: Some(Box::new(move || stop.store(true, Ordering::Relaxed))),
+        stderr: None,
+        stdout: None,
+    }
 }
 
 impl LuaModule {
@@ -468,6 +489,38 @@ pub fn from_lua(v: mlua::Value, ty: &Type) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_freed_square_is_collected() {
+        let mut m = LuaModule::load(
+            "t",
+            r#"freed = 0
+            return {
+                inputs = {}, outputs = { { "n", "int" } },
+                eval = function(i, self)
+                    if not self.seen then
+                        self.seen = true
+                        setmetatable(self, { __gc = function() freed = freed + 1 end })
+                    end
+                    return { n = 1 }
+                end,
+            }"#,
+        )
+        .unwrap();
+        let int = Type::Int;
+        let (a, b) = (m.instance(&[]).unwrap(), m.instance(&[]).unwrap());
+        for i in [a, b] {
+            m.eval(i, &[], &[("n", &int)]).unwrap();
+        }
+        let freed = |m: &LuaModule| m.lua.globals().get::<i64>("freed").unwrap();
+        assert_eq!(freed(&m), 0);
+        m.drop_instance(a).unwrap();
+        assert_eq!(freed(&m), 1);
+        assert!(m.eval(a, &[], &[("n", &int)]).is_err() && m.drop_instance(a).is_err());
+        // the other one goes on, and is numbered as before
+        assert_eq!(m.eval(b, &[], &[("n", &int)]).unwrap(), vec![Value::Int(1)]);
+        assert_eq!(m.instance(&[]).unwrap(), 2);
+    }
 
     #[test]
     fn eval_and_tick() {

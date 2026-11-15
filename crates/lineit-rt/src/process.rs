@@ -11,7 +11,12 @@
 //! {"op": "call", "sq": 0, "i": {"n": 4}}      -> {"set": {"pin": v}, "fire": [["even", {"half": 2}]]}
 //! {"op": "state", "sq": 0}                    -> {"state": {"count": 3}}
 //! {"op": "set_state", "sq": 0, "state": {...}} -> {}
+//! {"op": "drop", "sq": 0}                     -> {}
 //! ```
+//!
+//! `drop` frees a square (its number isn't used again). It's asked only of a
+//! process that said it knows it, with `{"drop": true}` as the answer to the
+//! load: one that doesn't keeps the squares it's done with.
 //!
 //! Any answer can be `{"error": "..."}` instead, and any can have
 //! `"printed": [lines]`: what the code printed, for the program's output.
@@ -33,6 +38,8 @@ pub struct Process {
     /// while a call waits for it.
     child: Arc<Mutex<Child>>,
     stderr: Option<Arc<Mutex<Vec<String>>>>,
+    /// Whether it frees squares when asked (`drop`).
+    drops: bool,
     to: ChildStdin,
     from: BufReader<ChildStdout>,
     /// The code's folder's run lock, held while it runs ([`busy`]).
@@ -101,8 +108,15 @@ impl Process {
                     let to = child.stdin.take().ok_or("no stdin")?;
                     let from = BufReader::new(child.stdout.take().ok_or("no stdout")?);
                     let stderr = crate::ext::stderr_of(&mut child);
-                    let mut p =
-                        Process { name: name.into(), child: Arc::new(Mutex::new(child)), stderr, to, from, _run: None };
+                    let mut p = Process {
+                        name: name.into(),
+                        child: Arc::new(Mutex::new(child)),
+                        stderr,
+                        drops: false,
+                        to,
+                        from,
+                        _run: None,
+                    };
                     // one that ends without answering isn't the language
                     // (Windows has a `python3` that only offers to install it)
                     // one that ended before it read this (a build that
@@ -114,6 +128,7 @@ impl Process {
                     }) {
                         Ok((Some(answer), said)) => {
                             let got = p.parse_map(answer);
+                            p.drops = got.as_ref().is_ok_and(|m| m.get("drop") == Some(&Json::Bool(true)));
                             // it's running: its folder is in use now
                             p._run = lock.and_then(|d| lock_file(d, RUN_LOCK)).inspect(|f| {
                                 let _ = fs4::FileExt::lock_shared(f);
@@ -283,12 +298,20 @@ impl Ext for Process {
                 let _ = child.lock().unwrap_or_else(|e| e.into_inner()).kill();
             })),
             stderr: self.stderr.clone(),
+            stdout: None,
         }
     }
 
     fn instance(&mut self, _params: &[(&str, Value)]) -> Result<usize, String> {
         let got = self.ask(json!({ "op": "new" }))?;
         got.get("sq").and_then(Json::as_u64).map(|n| n as usize).ok_or_else(|| format!("{}: no square", self.name))
+    }
+
+    fn drop_instance(&mut self, sq: usize) -> Result<(), String> {
+        if self.drops {
+            self.ask(json!({ "op": "drop", "sq": sq }))?;
+        }
+        Ok(())
     }
 
     fn eval(&mut self, sq: usize, inputs: &[(&str, Value)], outputs: &[(&str, &Type)]) -> Result<Vec<Value>, String> {
@@ -444,6 +467,34 @@ mod tests {
         let r = Process::start("F", &["sh"], &["-c", script], &[], dir.to_str(), host.to_str().unwrap(), "{}");
         std::fs::remove_dir_all(&dir).unwrap();
         r.err().expect("it doesn't answer")
+    }
+
+    /// What a host that is `sh -c SCRIPT` (it answers `{"sq": 0}` to each
+    /// line after the first) was asked, once it made a square and it was
+    /// freed.
+    fn asked_after_dropping(script: &str, log: &std::path::Path) -> String {
+        let mut p =
+            Process::start("F", &["sh"], &["-c", script], &[("LOG", log.to_str().unwrap())], None, "x", "{}").unwrap();
+        let sq = p.instance(&[]).unwrap();
+        p.drop_instance(sq).unwrap();
+        drop(p);
+        std::fs::read_to_string(log).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_square_is_freed_if_the_host_says_it_can() {
+        let log = std::env::temp_dir().join(format!("lineit-rt-drop-{}", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let host = |first: &str| {
+            format!("read l; echo '{first}'; while read l; do echo \"$l\" >> \"$LOG\"; echo '{{\"sq\": 0}}'; done")
+        };
+        let asked = asked_after_dropping(&host("{\"drop\": true}"), &log);
+        assert_eq!(asked, "{\"op\":\"new\"}\n{\"op\":\"drop\",\"sq\":0}\n");
+        // one that doesn't say it keeps the square, and isn't asked
+        let _ = std::fs::remove_file(&log);
+        let asked = asked_after_dropping(&host("{}"), &log);
+        assert_eq!(asked, "{\"op\":\"new\"}\n");
+        let _ = std::fs::remove_file(&log);
     }
 
     #[test]

@@ -113,8 +113,10 @@ pub fn read_canvas(source: &str, name: &str) -> Result<Canvas, String> {
                     to: l.get(3).map_err(|_| bad())?,
                     input: l.get(4).map_err(|_| bad())?,
                 };
-                // a wire to a square that isn't there is dropped, not an error
-                if c.square(link.from).is_some() && c.square(link.to).is_some() && !c.links.contains(&link) {
+                // a wire to a square that isn't there is kept: lowering reports it
+                if !c.links.contains(&link) {
+                    // no square made later takes the id the wire goes to
+                    c.next = c.next.max(link.from + 1).max(link.to + 1);
                     c.links.push(link);
                 }
             }
@@ -262,6 +264,14 @@ mod tests {
             "t",
         )
         .unwrap();
-        assert!(c.links.is_empty());
+        // kept, for lowering to report; only an exact duplicate is dropped
+        assert_eq!(c.links.len(), 1);
+        assert_eq!(c.next_id(), 3);
+        let c = read_canvas(
+            "return { lineit = 1, squares = { { id = 1, module = 'a' } }, links = { { 1, 'o', 2, 'i' }, { 1, 'o', 2, 'i' } } }",
+            "t",
+        )
+        .unwrap();
+        assert_eq!(c.links.len(), 1);
     }
 }

@@ -154,11 +154,13 @@ impl Canvas {
         for _ in 0..self.squares.len().min(64) {
             let mut changed = false;
             for l in &self.links {
+                // a wire to a square that isn't there moves nothing
                 if l.from == l.to {
                     continue;
                 }
-                let c = col[&l.from] + 1;
-                if c > col[&l.to] && c < 64 {
+                let (Some(&from), Some(&to)) = (col.get(&l.from), col.get(&l.to)) else { continue };
+                let c = from + 1;
+                if c > to && c < 64 {
                     col.insert(l.to, c);
                     changed = true;
                 }

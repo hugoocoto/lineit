@@ -216,11 +216,22 @@ fn run(args: &[String]) -> Result<(), String> {
             let (canvas, l) = load(&path)?;
             let prog = l.program.clone().ok_or_else(|| format!("it can't run:{}", diags(&path, &canvas, &l)))?;
             let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            // what code squares' processes write to stderr is kept, and goes to ours,
+            // not before lineit's own error
+            lineit_rt::ext::capture_stderr();
             use std::io::Write;
             let out = std::io::stdout();
             let mut out = std::io::BufWriter::new(out.lock());
-            let r = interp::run_to_end(prog, dir, seconds, |line| {
-                let _ = writeln!(out, "{line}");
+            let r = interp::run_split(prog, dir, seconds, |(printed, said)| {
+                for line in &printed {
+                    let _ = writeln!(out, "{line}");
+                }
+                if !said.is_empty() {
+                    let _ = out.flush();
+                    for line in &said {
+                        eprintln!("{line}");
+                    }
+                }
             });
             let _ = out.flush();
             r
@@ -242,6 +253,8 @@ fn run(args: &[String]) -> Result<(), String> {
             let (canvas, l) = load(&path)?;
             let prog = l.program.clone().ok_or_else(|| format!("it can't run:{}", diags(&path, &canvas, &l)))?;
             let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            // as for run, but what's said goes in the events' output, in the session
+            lineit_rt::ext::capture_stderr();
             bisectcmd::run(prog, dir, &opts, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())
         }
         Some(Command::Check) => {
@@ -265,6 +278,8 @@ fn run(args: &[String]) -> Result<(), String> {
         Some(Command::Test) => {
             let path = one_file(rest, &[])?;
             let (canvas, l) = load(&path)?;
+            // as for run: in the printed lines of a test that fails
+            lineit_rt::ext::capture_stderr();
             let all = lineit_core::codetest::run_canvas(&canvas, &l);
             let (mut passed, mut failed) = (0, 0);
             // the canvas's tests: a run from each test/case
